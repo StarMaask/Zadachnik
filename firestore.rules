@@ -1,0 +1,281 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isBoundedList(listVal, maxItems) {
+      return listVal == null || (
+        listVal is list &&
+        listVal.size() <= maxItems &&
+        (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() <= 500))
+      );
+    }
+
+    // 1. UserProfile Validation Helper
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+             data.siteName is string && data.siteName.size() >= 1 && data.siteName.size() <= 160 &&
+             data.activePersonaId is string && data.activePersonaId.size() >= 1 && data.activePersonaId.size() <= 64 &&
+             (!('biometricEnabled' in data) || data.biometricEnabled == null || data.biometricEnabled is bool) &&
+             (!('notificationsEnabled' in data) || data.notificationsEnabled == null || data.notificationsEnabled is bool) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       request.resource.data.keys().hasAll(['userId', 'displayName', 'siteName', 'activePersonaId', 'createdAt', 'updatedAt']) &&
+                       request.resource.data.keys().hasOnly(['userId', 'displayName', 'siteName', 'activePersonaId', 'biometricEnabled', 'notificationsEnabled', 'createdAt', 'updatedAt']) &&
+                       isValidUserProfile(request.resource.data);
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserProfile(request.resource.data) &&
+                       request.resource.data.userId == resource.data.userId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'siteName', 'activePersonaId', 'biometricEnabled', 'notificationsEnabled', 'updatedAt']);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    }
+
+    // 2. TaskDocument Validation Helper
+    function isValidTaskDocument(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.description is string && data.description.size() <= 2000 &&
+             data.creatorId is string && data.creatorId.size() <= 64 &&
+             data.creatorName is string && data.creatorName.size() <= 120 &&
+             data.assigneeId is string && data.assigneeId.size() <= 64 &&
+             data.assigneeName is string && data.assigneeName.size() <= 120 &&
+             data.groupId is string && data.groupId.size() <= 64 &&
+             data.groupName is string && data.groupName.size() <= 120 &&
+             data.siteId is string && data.siteId.size() <= 64 &&
+             data.priority is string && data.priority in ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] &&
+             data.status is string && data.status in ['NEW', 'IN_PROGRESS', 'ON_REVIEW', 'APPROVED', 'REJECTED', 'OVERDUE', 'CANCELLED', 'ARCHIVED'] &&
+             data.dueDateEpochDay is int &&
+             data.originalDueDateEpochDay is int &&
+             data.deadlineTime is string && data.deadlineTime.size() <= 16 &&
+             data.carryoverCount is int && data.carryoverCount >= 0 &&
+             data.requiresPhotoReport is bool &&
+             data.minPhotoCount is int && data.minPhotoCount >= 0 &&
+             data.requiresApproval is bool &&
+             data.recurrenceRule is string && data.recurrenceRule in ['NONE', 'DAILY', 'WEEKDAYS', 'WEEKLY', 'MONTHLY', 'CUSTOM'] &&
+             (!('tags' in data) || isBoundedList(data.tags, 10)) &&
+             (!('subtaskItems' in data) || isBoundedList(data.subtaskItems, 25)) &&
+             (!('photoItems' in data) || isBoundedList(data.photoItems, 30)) &&
+             (!('commentItems' in data) || isBoundedList(data.commentItems, 50)) &&
+             (!('historyItems' in data) || isBoundedList(data.historyItems, 50)) &&
+             (!('rejectionReason' in data) || data.rejectionReason == null || (data.rejectionReason is string && data.rejectionReason.size() <= 500)) &&
+             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName.size() <= 120)) &&
+             (!('geoLocation' in data) || data.geoLocation == null || (data.geoLocation is string && data.geoLocation.size() <= 120)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /tasks/{taskId} {
+      allow get: if isSignedIn() && isValidId(taskId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       isValidId(taskId) &&
+                       request.resource.data.keys().hasAll([
+                         'userId', 'title', 'description', 'creatorId', 'creatorName',
+                         'assigneeId', 'assigneeName', 'groupId', 'groupName', 'siteId',
+                         'priority', 'status', 'dueDateEpochDay', 'originalDueDateEpochDay',
+                         'deadlineTime', 'carryoverCount', 'requiresPhotoReport',
+                         'minPhotoCount', 'requiresApproval', 'recurrenceRule',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       request.resource.data.keys().hasOnly([
+                         'userId', 'title', 'description', 'creatorId', 'creatorName',
+                         'assigneeId', 'assigneeName', 'groupId', 'groupName', 'siteId',
+                         'priority', 'status', 'dueDateEpochDay', 'originalDueDateEpochDay',
+                         'deadlineTime', 'carryoverCount', 'requiresPhotoReport',
+                         'minPhotoCount', 'requiresApproval', 'recurrenceRule',
+                         'tags', 'subtaskItems', 'photoItems', 'commentItems',
+                         'historyItems', 'rejectionReason', 'approvedByName',
+                         'geoLocation', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidTaskDocument(request.resource.data);
+
+      allow update: if isSignedIn() &&
+                       isValidId(taskId) &&
+                       resource.data.userId == request.auth.uid &&
+                       resource.data.status != 'ARCHIVED' &&
+                       isValidTaskDocument(request.resource.data) &&
+                       request.resource.data.userId == resource.data.userId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.originalDueDateEpochDay == resource.data.originalDueDateEpochDay &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'title', 'description', 'assigneeId', 'assigneeName',
+                         'groupId', 'groupName', 'priority', 'status', 'dueDateEpochDay',
+                         'deadlineTime', 'carryoverCount', 'requiresPhotoReport',
+                         'minPhotoCount', 'requiresApproval', 'recurrenceRule',
+                         'tags', 'subtaskItems', 'photoItems', 'commentItems',
+                         'historyItems', 'rejectionReason', 'approvedByName',
+                         'geoLocation', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(taskId) && resource.data.userId == request.auth.uid;
+    }
+
+    // 3. ReportTemplateDocument Validation Helper
+    function isValidReportTemplateDocument(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+             data.reportType is string && data.reportType in [
+               'NEXT_DAY_PLAN', 'DAILY_REPORT', 'PERIOD_REPORT', 'PHOTO_QUALITY',
+               'OVERDUE_CARRYOVER', 'APPROVAL_SLA', 'DISCIPLINE_RATING',
+               'GROUP_SITE_SUMMARY', 'IDLE_ACTIVITY', 'RECURRING_EXECUTION',
+               'PERIOD_COMPARISON', 'INDIVIDUAL_1ON1', 'CUSTOM'
+             ] &&
+             data.sheetLayout is string && data.sheetLayout in ['SINGLE_SHEET', 'SPLIT_SHEETS'] &&
+             data.exportFormat is string && data.exportFormat in ['PDF', 'XLSX', 'DOCX', 'CSV'] &&
+             data.orgHeader is string && data.orgHeader.size() <= 300 &&
+             data.defaultPeriodDays is int && data.defaultPeriodDays >= 1 && data.defaultPeriodDays <= 366 &&
+             (!('columns' in data) || isBoundedList(data.columns, 20)) &&
+             (!('groupByField' in data) || data.groupByField == null || (data.groupByField is string && data.groupByField.size() <= 64)) &&
+             (!('includeSignatures' in data) || data.includeSignatures == null || data.includeSignatures is bool) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /report_templates/{templateId} {
+      allow get: if isSignedIn() && isValidId(templateId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       isValidId(templateId) &&
+                       request.resource.data.keys().hasAll([
+                         'userId', 'name', 'reportType', 'sheetLayout',
+                         'exportFormat', 'orgHeader', 'defaultPeriodDays',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       request.resource.data.keys().hasOnly([
+                         'userId', 'name', 'reportType', 'sheetLayout',
+                         'exportFormat', 'orgHeader', 'defaultPeriodDays',
+                         'columns', 'groupByField', 'includeSignatures',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidReportTemplateDocument(request.resource.data);
+
+      allow update: if isSignedIn() &&
+                       isValidId(templateId) &&
+                       resource.data.userId == request.auth.uid &&
+                       isValidReportTemplateDocument(request.resource.data) &&
+                       request.resource.data.userId == resource.data.userId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'name', 'reportType', 'sheetLayout', 'exportFormat',
+                         'orgHeader', 'defaultPeriodDays', 'columns',
+                         'groupByField', 'includeSignatures', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(templateId) && resource.data.userId == request.auth.uid;
+    }
+
+    // 4. GeneratedReportDocument Validation Helper
+    function isValidGeneratedReportDocument(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.templateId is string && data.templateId.size() >= 1 && data.templateId.size() <= 128 &&
+             data.templateName is string && data.templateName.size() >= 1 && data.templateName.size() <= 150 &&
+             data.reportType is string && data.reportType.size() >= 1 && data.reportType.size() <= 64 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 120 &&
+             data.periodLabel is string && data.periodLabel.size() >= 1 && data.periodLabel.size() <= 120 &&
+             data.sheetLayout is string && data.sheetLayout in ['SINGLE_SHEET', 'SPLIT_SHEETS'] &&
+             data.exportFormat is string && data.exportFormat in ['PDF', 'XLSX', 'DOCX', 'CSV'] &&
+             data.filePath is string && data.filePath.size() >= 1 && data.filePath.size() <= 500 &&
+             data.summaryText is string && data.summaryText.size() <= 5000 &&
+             (!('recipients' in data) || isBoundedList(data.recipients, 20)) &&
+             (!('filterSummary' in data) || data.filterSummary == null || (data.filterSummary is string && data.filterSummary.size() <= 300)) &&
+             (!('rowCount' in data) || data.rowCount == null || (data.rowCount is int && data.rowCount >= 0)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /generated_reports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       isValidId(reportId) &&
+                       request.resource.data.keys().hasAll([
+                         'userId', 'templateId', 'templateName', 'reportType',
+                         'authorName', 'periodLabel', 'sheetLayout', 'exportFormat',
+                         'filePath', 'summaryText', 'createdAt', 'updatedAt'
+                       ]) &&
+                       request.resource.data.keys().hasOnly([
+                         'userId', 'templateId', 'templateName', 'reportType',
+                         'authorName', 'periodLabel', 'sheetLayout', 'exportFormat',
+                         'filePath', 'summaryText', 'recipients', 'filterSummary',
+                         'rowCount', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidGeneratedReportDocument(request.resource.data);
+
+      allow update: if isSignedIn() &&
+                       isValidId(reportId) &&
+                       resource.data.userId == request.auth.uid &&
+                       isValidGeneratedReportDocument(request.resource.data) &&
+                       request.resource.data.userId == resource.data.userId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'filePath', 'summaryText', 'recipients', 'filterSummary',
+                         'rowCount', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(reportId) && resource.data.userId == request.auth.uid;
+    }
+
+    // 5. AuditLogDocument Validation Helper (Immutable Append-Only)
+    function isValidAuditLogDocument(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.actorId is string && data.actorId.size() >= 1 && data.actorId.size() <= 64 &&
+             data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
+             data.actorRole is string && data.actorRole in ['WORKER', 'ITR', 'HEAD'] &&
+             data.actionType is string && data.actionType.size() >= 1 && data.actionType.size() <= 64 &&
+             data.targetType is string && data.targetType.size() >= 1 && data.targetType.size() <= 64 &&
+             data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
+             data.details is string && data.details.size() >= 1 && data.details.size() <= 1000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+                       isValidId(logId) &&
+                       request.resource.data.keys().hasAll([
+                         'userId', 'actorId', 'actorName', 'actorRole',
+                         'actionType', 'targetType', 'targetId', 'details', 'createdAt'
+                       ]) &&
+                       request.resource.data.keys().hasOnly([
+                         'userId', 'actorId', 'actorName', 'actorRole',
+                         'actionType', 'targetType', 'targetId', 'details', 'createdAt'
+                       ]) &&
+                       isValidAuditLogDocument(request.resource.data);
+
+      allow update, delete: if false;
+    }
+  }
+}

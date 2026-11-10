@@ -1,0 +1,494 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user workspace settings and active corporate persona selection.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the workspace owner."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the user."
+        },
+        "siteName": {
+          "type": "string",
+          "description": "Name of the active construction/production site."
+        },
+        "activePersonaId": {
+          "type": "string",
+          "description": "ID of the active corporate employee persona in the workspace."
+        },
+        "biometricEnabled": {
+          "type": "boolean",
+          "description": "Whether biometric quick unlock is enabled."
+        },
+        "notificationsEnabled": {
+          "type": "boolean",
+          "description": "Whether local and push reminders are enabled."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "siteName",
+        "activePersonaId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TaskDocument": {
+      "title": "TaskDocument",
+      "description": "Corporate task with hierarchy metadata, photo report items, checklist items, comments, and carryover history.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID owning this workspace record."
+        },
+        "title": {
+          "type": "string",
+          "description": "Task title."
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed task instructions."
+        },
+        "creatorId": {
+          "type": "string",
+          "description": "Employee ID of task creator."
+        },
+        "creatorName": {
+          "type": "string",
+          "description": "Full name (FIO) of task creator."
+        },
+        "assigneeId": {
+          "type": "string",
+          "description": "Employee ID of primary assignee."
+        },
+        "assigneeName": {
+          "type": "string",
+          "description": "Full name (FIO) of primary assignee."
+        },
+        "groupId": {
+          "type": "string",
+          "description": "Work group or brigade ID."
+        },
+        "groupName": {
+          "type": "string",
+          "description": "Work group or brigade name."
+        },
+        "siteId": {
+          "type": "string",
+          "description": "Site/section identifier."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+          "description": "Task priority level."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["NEW", "IN_PROGRESS", "ON_REVIEW", "APPROVED", "REJECTED", "OVERDUE", "CANCELLED", "ARCHIVED"],
+          "description": "Lifecycle status of the task."
+        },
+        "dueDateEpochDay": {
+          "type": "integer",
+          "description": "Current due date as epoch day."
+        },
+        "originalDueDateEpochDay": {
+          "type": "integer",
+          "description": "Original scheduled due date as epoch day before any automatic carryovers."
+        },
+        "deadlineTime": {
+          "type": "string",
+          "description": "Deadline time in HH:mm format."
+        },
+        "carryoverCount": {
+          "type": "integer",
+          "description": "Number of times this task was automatically carried over to the next day."
+        },
+        "requiresPhotoReport": {
+          "type": "boolean",
+          "description": "Whether a photo report is mandatory before completion."
+        },
+        "minPhotoCount": {
+          "type": "integer",
+          "description": "Minimum number of photos required to mark the task completed."
+        },
+        "requiresApproval": {
+          "type": "boolean",
+          "description": "Whether supervisor approval is required after completion."
+        },
+        "recurrenceRule": {
+          "type": "string",
+          "enum": ["NONE", "DAILY", "WEEKDAYS", "WEEKLY", "MONTHLY", "CUSTOM"],
+          "description": "Recurrence schedule rule."
+        },
+        "coAssigneeIds": {
+          "type": "array",
+          "description": "Bounded list of co-assignee employee IDs."
+        },
+        "watcherIds": {
+          "type": "array",
+          "description": "Bounded list of observer employee IDs."
+        },
+        "tags": {
+          "type": "array",
+          "description": "Bounded list of task tags."
+        },
+        "subtaskItems": {
+          "type": "array",
+          "description": "Bounded list of encoded checklist items."
+        },
+        "photoItems": {
+          "type": "array",
+          "description": "Bounded list of encoded photo report metadata entries."
+        },
+        "commentItems": {
+          "type": "array",
+          "description": "Bounded list of encoded task and report comments."
+        },
+        "historyItems": {
+          "type": "array",
+          "description": "Bounded list of status and carryover history entries."
+        },
+        "rejectionReason": {
+          "type": "string",
+          "description": "Reason provided by supervisor when rejecting a report."
+        },
+        "approvedByName": {
+          "type": "string",
+          "description": "Full name of supervisor who approved the report."
+        },
+        "geoLocation": {
+          "type": "string",
+          "description": "GPS coordinates or site sector label."
+        },
+        "completedAtEpochMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds when marked completed."
+        },
+        "approvedAtEpochMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds when approved by supervisor."
+        },
+        "parentTaskId": {
+          "type": "string",
+          "description": "Optional parent task ID for dependencies."
+        },
+        "templateId": {
+          "type": "string",
+          "description": "Optional task template ID."
+        },
+        "version": {
+          "type": "integer",
+          "description": "Document optimistic concurrency version."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "description",
+        "creatorId",
+        "creatorName",
+        "assigneeId",
+        "assigneeName",
+        "groupId",
+        "groupName",
+        "siteId",
+        "priority",
+        "status",
+        "dueDateEpochDay",
+        "originalDueDateEpochDay",
+        "deadlineTime",
+        "carryoverCount",
+        "requiresPhotoReport",
+        "minPhotoCount",
+        "requiresApproval",
+        "recurrenceRule",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ReportTemplateDocument": {
+      "title": "ReportTemplateDocument",
+      "description": "Configurable report template for generating plans, daily reports, period summaries, and custom reports.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID owning this template."
+        },
+        "name": {
+          "type": "string",
+          "description": "Template display name."
+        },
+        "reportType": {
+          "type": "string",
+          "enum": [
+            "NEXT_DAY_PLAN",
+            "DAILY_REPORT",
+            "PERIOD_REPORT",
+            "PHOTO_QUALITY",
+            "OVERDUE_CARRYOVER",
+            "APPROVAL_SLA",
+            "DISCIPLINE_RATING",
+            "GROUP_SITE_SUMMARY",
+            "IDLE_ACTIVITY",
+            "RECURRING_EXECUTION",
+            "PERIOD_COMPARISON",
+            "INDIVIDUAL_1ON1",
+            "CUSTOM"
+          ],
+          "description": "Category of report."
+        },
+        "sheetLayout": {
+          "type": "string",
+          "enum": ["SINGLE_SHEET", "SPLIT_SHEETS"],
+          "description": "Whether plan and report are placed on a single sheet or split across sheet 1 and sheet 2."
+        },
+        "exportFormat": {
+          "type": "string",
+          "enum": ["PDF", "XLSX", "DOCX", "CSV"],
+          "description": "Default document export format."
+        },
+        "orgHeader": {
+          "type": "string",
+          "description": "Organization and site header text."
+        },
+        "defaultPeriodDays": {
+          "type": "integer",
+          "description": "Default number of days covered by the report."
+        },
+        "columns": {
+          "type": "array",
+          "description": "Bounded list of selected column identifiers."
+        },
+        "groupByField": {
+          "type": "string",
+          "description": "Field used to group rows (ASSIGNEE, GROUP, STATUS, NONE)."
+        },
+        "includeSignatures": {
+          "type": "boolean",
+          "description": "Whether to render signature blocks in the document footer."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "name",
+        "reportType",
+        "sheetLayout",
+        "exportFormat",
+        "orgHeader",
+        "defaultPeriodDays",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GeneratedReportDocument": {
+      "title": "GeneratedReportDocument",
+      "description": "Record of a generated report document with metadata, file path, and preview content.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID owning this generated report."
+        },
+        "templateId": {
+          "type": "string",
+          "description": "Source template ID."
+        },
+        "templateName": {
+          "type": "string",
+          "description": "Source template name."
+        },
+        "reportType": {
+          "type": "string",
+          "description": "Report category identifier."
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Full name (FIO) of the user who generated the report."
+        },
+        "periodLabel": {
+          "type": "string",
+          "description": "Formatted date or period string."
+        },
+        "sheetLayout": {
+          "type": "string",
+          "enum": ["SINGLE_SHEET", "SPLIT_SHEETS"],
+          "description": "Single-sheet or split-sheet mode used."
+        },
+        "exportFormat": {
+          "type": "string",
+          "enum": ["PDF", "XLSX", "DOCX", "CSV"],
+          "description": "Exported file format."
+        },
+        "filePath": {
+          "type": "string",
+          "description": "Local file path of generated document."
+        },
+        "summaryText": {
+          "type": "string",
+          "description": "Preview text summary of the generated report."
+        },
+        "recipients": {
+          "type": "array",
+          "description": "Bounded list of recipient names or emails."
+        },
+        "filterSummary": {
+          "type": "string",
+          "description": "Applied filter description."
+        },
+        "rowCount": {
+          "type": "integer",
+          "description": "Number of rows included in the report."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "templateId",
+        "templateName",
+        "reportType",
+        "authorName",
+        "periodLabel",
+        "sheetLayout",
+        "exportFormat",
+        "filePath",
+        "summaryText",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AuditLogDocument": {
+      "title": "AuditLogDocument",
+      "description": "Immutable append-only audit log entry recording privileged actions, approvals, rejections, and exports.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID owning this workspace audit log."
+        },
+        "actorId": {
+          "type": "string",
+          "description": "Employee ID of actor."
+        },
+        "actorName": {
+          "type": "string",
+          "description": "Full name (FIO) of actor."
+        },
+        "actorRole": {
+          "type": "string",
+          "description": "Role of actor at the time of action."
+        },
+        "actionType": {
+          "type": "string",
+          "description": "Type of audited operation."
+        },
+        "targetType": {
+          "type": "string",
+          "description": "Target entity type (TASK, REPORT, TEMPLATE, GROUP)."
+        },
+        "targetId": {
+          "type": "string",
+          "description": "Target entity ID."
+        },
+        "details": {
+          "type": "string",
+          "description": "Human-readable audit description."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of audit entry (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "actorId",
+        "actorName",
+        "actorRole",
+        "actionType",
+        "targetType",
+        "targetId",
+        "details",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Per-user workspace settings and active persona configuration."
+    },
+    "/tasks/{taskId}": {
+      "schema": {
+        "$ref": "#/entities/TaskDocument"
+      },
+      "description": "Root collection of corporate tasks isolated per authenticated user workspace."
+    },
+    "/report_templates/{templateId}": {
+      "schema": {
+        "$ref": "#/entities/ReportTemplateDocument"
+      },
+      "description": "Root collection of customizable report templates isolated per authenticated user workspace."
+    },
+    "/generated_reports/{reportId}": {
+      "schema": {
+        "$ref": "#/entities/GeneratedReportDocument"
+      },
+      "description": "Root collection of generated report records isolated per authenticated user workspace."
+    },
+    "/audit_logs/{logId}": {
+      "schema": {
+        "$ref": "#/entities/AuditLogDocument"
+      },
+      "description": "Append-only root collection of security and privileged action audit logs isolated per authenticated user workspace."
+    }
+  }
+}

@@ -118,6 +118,9 @@ object LocalWorkspaceStore {
         put("minPhotoCount", t.minPhotoCount)
         put("requiresApproval", t.requiresApproval)
         put("recurrenceRule", t.recurrenceRule)
+        put("targetVolume", t.targetVolume)
+        put("completedVolume", t.completedVolume)
+        put("volumeUnit", t.volumeUnit)
         put("tags", JSONArray(t.tags))
         put("subtaskItems", JSONArray(t.subtaskItems))
         put("photoItems", JSONArray(t.photoItems))
@@ -151,6 +154,9 @@ object LocalWorkspaceStore {
             minPhotoCount = obj.optLong("minPhotoCount", 1L),
             requiresApproval = obj.optBoolean("requiresApproval", true),
             recurrenceRule = obj.optString("recurrenceRule", "NONE"),
+            targetVolume = obj.optDouble("targetVolume", 0.0),
+            completedVolume = obj.optDouble("completedVolume", 0.0),
+            volumeUnit = obj.optString("volumeUnit", ""),
             tags = jsonArrayToList(obj.optJSONArray("tags")),
             subtaskItems = jsonArrayToList(obj.optJSONArray("subtaskItems")),
             photoItems = jsonArrayToList(obj.optJSONArray("photoItems")),

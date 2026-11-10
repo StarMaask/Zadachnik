@@ -12,34 +12,43 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.filled.Tune
@@ -47,13 +56,12 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -77,6 +85,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -86,12 +95,15 @@ import androidx.core.content.ContextCompat
 import com.example.data.model.CorporateEmployee
 import com.example.data.model.PhotoReportItem
 import com.example.data.model.RecurrenceRule
+import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
 import com.example.data.model.TaskDraft
 import com.example.data.model.TaskPriority
 import com.example.data.model.TaskStatus
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
+
+val STANDARD_VOLUME_UNITS = listOf("шт", "кг", "м²", "м³", "п.м.", "т", "л", "компл.", "ч")
 
 @Composable
 fun statusColor(status: TaskStatus): Color = when (status) {
@@ -114,8 +126,9 @@ fun priorityColor(priority: TaskPriority): Color = when (priority) {
 }
 
 /**
- * Лаконичная табличная строка задачи (без визуального шума).
+ * Компактная адаптивная карточка задачи с отображением исполнителя, чек-листа и объёма выполнения.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TaskItemCard(
     task: TaskDocument,
@@ -126,9 +139,13 @@ fun TaskItemCard(
 ) {
     val isApproved = task.taskStatus == TaskStatus.APPROVED
     val textDeco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
-    val cardAlpha = if (isApproved) 0.62f else 1f
+    val cardAlpha = if (isApproved) 0.65f else 1f
     val subtasks = remember(task.subtaskItems) { task.decodedSubtasks() }
     val doneSubtasks = subtasks.count { it.isDone }
+    val targetVol = task.effectiveTargetVolume
+    val completedVol = task.effectiveCompletedVolume
+    val unitLabel = task.effectiveVolumeUnit.ifBlank { "шт" }
+    val pct = task.completionPercent()
 
     Surface(
         modifier = modifier
@@ -157,7 +174,7 @@ fun TaskItemCard(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -169,11 +186,11 @@ fun TaskItemCard(
                         style = MaterialTheme.typography.titleSmall.copy(textDecoration = textDeco),
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Surface(
                         color = statusColor(task.taskStatus).copy(alpha = 0.12f),
                         shape = RoundedCornerShape(6.dp)
@@ -199,10 +216,44 @@ fun TaskItemCard(
                     )
                 }
 
+                // Индикатор объёма выполнения (если задан плановый объём)
+                if (targetVol > 0.0) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Объём: ${SubtaskItem.formatVolumeNumber(completedVol)} из ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (pct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "$pct%",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (pct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(3.dp))
+                    LinearProgressIndicator(
+                        progress = { (pct / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = if (pct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                }
+
+                // Интерактивный чек-лист прямо на карточке
                 if (subtasks.isNotEmpty() && onToggleSubtask != null) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        subtasks.forEach { sub ->
+                        subtasks.take(3).forEach { sub ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -213,12 +264,16 @@ fun TaskItemCard(
                                 Checkbox(
                                     checked = sub.isDone,
                                     onCheckedChange = { onToggleSubtask(sub.id) },
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(22.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = sub.title,
-                                    style = MaterialTheme.typography.labelMedium.copy(
+                                    text = if (sub.hasVolume) {
+                                        "${sub.title} (${sub.formatVolumeStatus()})"
+                                    } else {
+                                        sub.title
+                                    },
+                                    style = MaterialTheme.typography.labelSmall.copy(
                                         textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
                                     ),
                                     color = if (sub.isDone) {
@@ -227,7 +282,8 @@ fun TaskItemCard(
                                         MaterialTheme.colorScheme.onSurface
                                     },
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
                         }
@@ -236,33 +292,32 @@ fun TaskItemCard(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Компактная информационная строка (табличный вид метаданных)
-                Row(
+                // Адаптивная строка метаданных (FlowRow не обрезается на узких экранах)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = task.assigneeName.ifBlank { "Исполнитель" },
+                        text = "👤 ${task.assigneeName.ifBlank { "Исполнитель" }}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        overflow = TextOverflow.Ellipsis
                     )
 
                     Text(
-                        text = "${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} ${task.deadlineTime}",
+                        text = "📅 ${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} ${task.deadlineTime}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     if (subtasks.isNotEmpty()) {
                         Text(
-                            text = "✓ $doneSubtasks/${subtasks.size}",
+                            text = "✓ $doneSubtasks/${subtasks.size} ($pct%)",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Medium,
-                            color = if (doneSubtasks == subtasks.size) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary
+                            color = if (pct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary
                         )
                     }
 
@@ -293,7 +348,7 @@ fun TaskItemCard(
                 IconButton(
                     onClick = onDelete,
                     modifier = Modifier
-                        .padding(end = 4.dp)
+                        .padding(end = 2.dp)
                         .size(36.dp)
                         .testTag("delete_task_${task.id}")
                 ) {
@@ -309,6 +364,13 @@ fun TaskItemCard(
     }
 }
 
+/**
+ * Диалог детального просмотра задачи:
+ * - Полностью адаптирован под любые размеры экранов телефонов (фиксированная шапка и нижняя панель кнопок).
+ * - Отчётность персонала по объёму выполнения в чек-листе (100% = выполнено).
+ * - Непрерывная съёмка с камеры, фотоштамп СМР, полноэкранный просмотр и удаление фото.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TaskDetailDialog(
     task: TaskDocument,
@@ -317,7 +379,9 @@ fun TaskDetailDialog(
     onAddPhoto: (uriString: String, gpsCoords: String, comment: String) -> Unit,
     onDeletePhoto: (photoId: String) -> Unit = {},
     onToggleSubtask: (subtaskId: String) -> Unit,
-    onAddSubtask: (title: String) -> Unit = {},
+    onUpdateSubtaskVolume: (subtaskId: String, completedVol: Double) -> Unit = { _, _ -> },
+    onUpdateTaskVolume: (completedVol: Double) -> Unit = {},
+    onAddSubtask: (title: String, targetVolume: Double, unit: String) -> Unit = { _, _, _ -> },
     onAddComment: (text: String, mentionedUser: String) -> Unit,
     onSubmitCompletion: (note: String) -> Unit,
     onApproveReport: (comment: String) -> Unit,
@@ -328,7 +392,21 @@ fun TaskDetailDialog(
     val context = LocalContext.current
     var photoComment by remember { mutableStateOf("") }
     val photoGps = remember(task.geoLocation) { task.geoLocation ?: "Участок №1" }
+
+    // Поля для добавления нового пункта чек-листа (с возможным объёмом)
     var newSubtaskTitle by remember { mutableStateOf("") }
+    var newSubtaskTargetVolText by remember { mutableStateOf("") }
+    var newSubtaskUnit by remember { mutableStateOf(task.effectiveVolumeUnit.ifBlank { "шт" }) }
+    var showAddSubtaskVolumeFields by remember { mutableStateOf(false) }
+
+    // Поле для ввода выполненного объёма по задаче в целом
+    val targetVol = task.effectiveTargetVolume
+    val completedVol = task.effectiveCompletedVolume
+    val unitLabel = task.effectiveVolumeUnit.ifBlank { "шт" }
+    var taskCompletedVolInput by remember(task.id, completedVol) {
+        mutableStateOf(if (completedVol > 0.0) SubtaskItem.formatVolumeNumber(completedVol) else "")
+    }
+
     var newCommentText by remember { mutableStateOf("") }
     var supervisorNote by remember { mutableStateOf("") }
     var rejectionReasonInput by remember { mutableStateOf("") }
@@ -361,7 +439,6 @@ fun TaskDetailDialog(
                 photoComment.ifBlank { "Снимок с камеры #${task.photoItems.size + 1}" }
             )
             burstShotCount++
-            // Если включена непрерывная (серийная) съёмка — сразу открываем камеру для следующего кадра
             if (continuousShootingMode) {
                 launchCameraAgain()
             }
@@ -405,625 +482,826 @@ fun TaskDetailDialog(
     val canApproveThisTask = activeEmployee.role.canApproveReportOf(assigneeRole)
     val isApproved = task.taskStatus == TaskStatus.APPROVED
     val textDeco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
+    val completionPct = task.completionPercent()
+    val isVolume100 = task.isVolumeCompleted100Percent()
+    val canSubmitCompletion = task.hasEnoughPhotos() && (!task.hasVolumeTracking() || isVolume100)
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
-        Surface(
+        BoxWithConstraints(
             modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .padding(vertical = 16.dp)
-                .imePadding(),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface
+                .fillMaxSize()
+                .systemBarsPadding()
+                .imePadding()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(
+            Surface(
                 modifier = Modifier
-                    .verticalScroll(rememberScrollState())
-                    .padding(18.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
-                // Шапка карточки задачи с кнопками Удалить и Закрыть
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        color = statusColor(task.taskStatus).copy(alpha = 0.12f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(
-                            text = "${task.taskStatus.titleRu} • ${task.taskPriority.titleRu}",
-                            color = statusColor(task.taskStatus),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = { showDeleteConfirm = true },
-                            modifier = Modifier.testTag("dialog_delete_task_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DeleteOutline,
-                                contentDescription = "Удалить задачу",
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                        IconButton(onClick = onDismiss) {
-                            Icon(Icons.Default.Close, contentDescription = "Закрыть")
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = task.title,
-                    style = MaterialTheme.typography.titleMedium.copy(textDecoration = textDeco),
-                    fontWeight = FontWeight.Bold
-                )
-                if (task.description.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = task.description,
-                        style = MaterialTheme.typography.bodyMedium.copy(textDecoration = textDeco),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Компактная таблица параметров задачи
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Исполнитель:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(task.assigneeName, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Срок:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                "${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} до ${task.deadlineTime}",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        if (!task.approvedByName.isNullOrBlank()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Принял:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    task.approvedByName,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color(0xFF16A34A),
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // РАЗДЕЛ 1: ЧЕК-ЛИСТ ПОДЗАДАЧ (интерактивный)
-                Spacer(modifier = Modifier.height(14.dp))
-                val subtasks = task.decodedSubtasks()
-                Text(
-                    text = "Чек-лист (${subtasks.count { it.isDone }}/${subtasks.size})",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-
-                if (subtasks.isEmpty()) {
-                    Text(
-                        text = "Пункты чек-листа не добавлены",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column {
-                            subtasks.forEachIndexed { idx, sub ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onToggleSubtask(sub.id) }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                        .testTag("subtask_row_${sub.id}"),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Checkbox(
-                                        checked = sub.isDone,
-                                        onCheckedChange = { onToggleSubtask(sub.id) },
-                                        modifier = Modifier.testTag("subtask_checkbox_${sub.id}")
-                                    )
-                                    Text(
-                                        text = sub.title,
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
-                                        ),
-                                        color = if (sub.isDone) {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                                if (idx < subtasks.lastIndex) {
-                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Быстрое добавление пункта в чек-лист
-                if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = newSubtaskTitle,
-                            onValueChange = { newSubtaskTitle = it },
-                            placeholder = { Text("Новый пункт чек-листа...") },
-                            singleLine = true,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("add_subtask_input")
-                        )
-                        IconButton(
-                            onClick = {
-                                if (newSubtaskTitle.isNotBlank()) {
-                                    onAddSubtask(newSubtaskTitle)
-                                    newSubtaskTitle = ""
-                                }
-                            },
-                            modifier = Modifier.testTag("add_subtask_button")
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Добавить пункт")
-                        }
-                    }
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-
-                // РАЗДЕЛ 2: ФОТООТЧЁТ (просмотр, удаление, серийная камера, фотоштамп)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Фотоотчёт (${task.photoItems.size}/${task.minPhotoCount})",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (!task.hasEnoughPhotos()) {
-                        Text(
-                            text = "Нужно мин. ${task.minPhotoCount} фото",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                val photos = task.decodedPhotos()
-                if (photos.isEmpty()) {
-                    Text(
-                        text = "Фотографии не прикреплены. Нажмите «Камера» или «+ Фотоштамп СМР» ниже.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        photos.forEachIndexed { idx, ph ->
-                            val bitmap = remember(ph.uriString) {
-                                PhotoCaptureUtils.loadBitmapFromUriOrPath(ph.uriString)
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { selectedPhotoForPreview = ph }
-                                    .testTag("photo_item_${ph.id}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Миниатюра реального фото
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.primaryContainer,
-                                        shape = RoundedCornerShape(8.dp),
-                                        modifier = Modifier.size(52.dp)
-                                    ) {
-                                        if (bitmap != null) {
-                                            Image(
-                                                bitmap = bitmap.asImageBitmap(),
-                                                contentDescription = "Миниатюра фото ${idx + 1}",
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .fillMaxHeight()
-                                                    .fillMaxWidth()
-                                            )
-                                        } else {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Icon(
-                                                    imageVector = Icons.Default.PhotoCamera,
-                                                    contentDescription = "Фото ${idx + 1}",
-                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    Spacer(modifier = Modifier.width(10.dp))
-
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "Фото #${idx + 1} • ${ph.capturedAtText}",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = ph.comment,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "Нажмите для просмотра",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-
-                                    IconButton(
-                                        onClick = { selectedPhotoForPreview = ph },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Visibility,
-                                            contentDescription = "Просмотреть фото",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-
-                                    if (task.taskStatus != TaskStatus.APPROVED) {
-                                        IconButton(
-                                            onClick = { onDeletePhoto(ph.id) },
-                                            modifier = Modifier
-                                                .size(36.dp)
-                                                .testTag("delete_photo_${ph.id}")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.DeleteOutline,
-                                                contentDescription = "Удалить фото",
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Управление съёмкой (доступно до утверждения задачи)
-                if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Переключатель непрерывной (серийной) съёмки
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // 1. ЗАКРЕПЛЁННАЯ ВЕРХНЯЯ ПАНЕЛЬ (всегда видна на любом экране телефона)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp),
+                            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Surface(
+                            color = statusColor(task.taskStatus).copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
                             Text(
-                                text = "Непрерывная съёмка (серия фото подряд)",
+                                text = "${task.taskStatus.titleRu} • ${task.taskPriority.titleRu}",
+                                color = statusColor(task.taskStatus),
                                 style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                             )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { showDeleteConfirm = true },
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .testTag("dialog_delete_task_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = "Удалить задачу",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // 2. ПРОКРУЧИВАЕМАЯ ЦЕНТРАЛЬНАЯ ОБЛАСТЬ
+                    Column(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = task.title,
+                            style = MaterialTheme.typography.titleMedium.copy(textDecoration = textDeco),
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (task.description.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Камера открывается снова сразу после каждого кадра",
-                                style = MaterialTheme.typography.labelSmall,
+                                text = task.description,
+                                style = MaterialTheme.typography.bodySmall.copy(textDecoration = textDeco),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Switch(
-                            checked = continuousShootingMode,
-                            onCheckedChange = { continuousShootingMode = it },
-                            modifier = Modifier.testTag("continuous_camera_switch")
-                        )
-                    }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                    OutlinedTextField(
-                        value = photoComment,
-                        onValueChange = { photoComment = it },
-                        placeholder = { Text("Подпись к фото (необязательно)...") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("photo_comment_input"),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                val hasCamPerm = ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.CAMERA
-                                ) == PackageManager.PERMISSION_GRANTED
-                                if (hasCamPerm) {
-                                    burstShotCount = 0
-                                    cameraLauncher.launch(null)
-                                } else {
-                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                }
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("capture_camera_button")
+                        // Таблица реквизитов задачи
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = "Камера", modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (continuousShootingMode) "Камера (серия)" else "Камера")
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                val savedStampPath = PhotoCaptureUtils.generatePhotoStampFile(
-                                    context = context,
-                                    taskTitle = task.title,
-                                    authorName = activeEmployee.shortName,
-                                    gpsCoords = photoGps,
-                                    comment = photoComment.ifBlank { "Контрольный снимок узла" },
-                                    photoIndex = task.photoItems.size + 1
-                                )
-                                onAddPhoto(
-                                    savedStampPath,
-                                    photoGps,
-                                    photoComment.ifBlank { "Фотоштамп СМР #${task.photoItems.size + 1}" }
-                                )
-                                photoComment = ""
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("instant_photo_stamp_button")
-                        ) {
-                            Icon(Icons.Default.AddAPhoto, contentDescription = "Фотоштамп СМР", modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("+ Фотоштамп СМР")
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    val canComplete = task.hasEnoughPhotos()
-                    Button(
-                        onClick = {
-                            onSubmitCompletion(photoComment)
-                            if (canComplete) onDismiss()
-                        },
-                        enabled = canComplete,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF16A34A),
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp)
-                            .testTag("submit_task_completion_button")
-                    ) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (canComplete) {
-                                if (task.requiresApproval) "Отправить на проверку" else "Завершить задачу"
-                            } else {
-                                "Добавьте ещё ${task.minPhotoCount - task.photoItems.size} фото для закрытия"
-                            },
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-
-                // Решение проверяющего (для ИТР и Руководителя)
-                if (canApproveThisTask && (task.taskStatus == TaskStatus.ON_REVIEW || task.taskStatus == TaskStatus.IN_PROGRESS)) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-                    Text(
-                        text = "Приёмка работы (${activeEmployee.role.titleRu})",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = supervisorNote,
-                        onValueChange = { supervisorNote = it },
-                        placeholder = { Text("Комментарий проверяющего (необязательно)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                onApproveReport(supervisorNote)
-                                onDismiss()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF16A34A),
-                                contentColor = Color.White
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("approve_report_button")
-                        ) {
-                            Icon(Icons.Default.ThumbUp, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Принять")
-                        }
-                        OutlinedButton(
-                            onClick = { showRejectDialog = true },
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("reject_report_button")
-                        ) {
-                            Icon(Icons.Default.ThumbDown, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Отклонить", color = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
-
-                // Подменю для комментариев, истории и архива (чтобы не перегружать карточку)
-                Spacer(modifier = Modifier.height(10.dp))
-                TextButton(
-                    onClick = { showExtraSections = !showExtraSections },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(
-                        imageVector = if (showExtraSections) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = null
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        if (showExtraSections) {
-                            "Скрыть комментарии и историю"
-                        } else {
-                            "Комментарии (${task.commentItems.size}) и история (${task.historyItems.size})"
-                        }
-                    )
-                }
-
-                AnimatedVisibility(visible = showExtraSections) {
-                    Column {
-                        val comments = task.decodedComments()
-                        comments.forEach { cmt ->
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 3.dp)
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Column(modifier = Modifier.padding(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Исполнитель:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(task.assigneeName, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Срок:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text(
-                                        text = "${cmt.authorName} • ${cmt.createdAtText}",
+                                        "${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} до ${task.deadlineTime}",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.SemiBold
                                     )
-                                    Text(text = cmt.text, style = MaterialTheme.typography.bodySmall)
                                 }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            OutlinedTextField(
-                                value = newCommentText,
-                                onValueChange = { newCommentText = it },
-                                placeholder = { Text("Написать комментарий...") },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true
-                            )
-                            IconButton(
-                                onClick = {
-                                    if (newCommentText.isNotBlank()) {
-                                        onAddComment(newCommentText, "")
-                                        newCommentText = ""
+                                if (targetVol > 0.0) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Объём работ:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            "${SubtaskItem.formatVolumeNumber(completedVol)} из ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel ($completionPct%)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (completionPct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary
+                                        )
                                     }
                                 }
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
                             }
                         }
 
-                        val history = task.decodedHistory()
-                        if (history.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
+                        // РАЗДЕЛ 1: ЧЕК-ЛИСТ И ОТЧЁТНОСТЬ ПЕРСОНАЛА ПО ОБЪЁМУ ВЫПОЛНЕНИЯ (100% = ВЫПОЛНЕНО)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        val subtasks = task.decodedSubtasks()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                text = "Журнал событий:",
-                                style = MaterialTheme.typography.labelMedium,
+                                text = "Чек-лист и объём выполнения",
+                                style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
-                            history.forEach { h ->
+                            Surface(
+                                color = if (completionPct >= 100) Color(0xFFDCFCE7) else MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
                                 Text(
-                                    text = "• ${h.timestampText} (${h.actorName}): ${h.note}",
+                                    text = "Выполнено: $completionPct%",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(vertical = 1.dp)
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (completionPct >= 100) Color(0xFF166534) else MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                 )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Задача считается выполненной при достижении 100% объёма работ. Если работа выполнена не до конца, в отчёт попадёт фактический объём.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = { (completionPct / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = if (completionPct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+
+                        // Блок ввода фактического объёма по задаче (если задан плановый объём)
+                        if (targetVol > 0.0 && task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "Отчёт по объёму: план ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedTextField(
+                                            value = taskCompletedVolInput,
+                                            onValueChange = { taskCompletedVolInput = it },
+                                            label = { Text("Факт ($unitLabel)") },
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("task_completed_volume_input")
+                                        )
+                                        Button(
+                                            onClick = {
+                                                val parsed = taskCompletedVolInput.replace(",", ".").toDoubleOrNull() ?: 0.0
+                                                onUpdateTaskVolume(parsed)
+                                            },
+                                            modifier = Modifier.testTag("save_task_volume_button")
+                                        ) {
+                                            Text("Сохранить")
+                                        }
+                                    }
+                                    // Быстрые кнопки доли выполнения объёма
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        listOf(25, 50, 75, 100).forEach { pctStep ->
+                                            val stepVal = (targetVol * pctStep) / 100.0
+                                            FilterChip(
+                                                selected = completionPct == pctStep,
+                                                onClick = {
+                                                    taskCompletedVolInput = SubtaskItem.formatVolumeNumber(stepVal)
+                                                    onUpdateTaskVolume(stepVal)
+                                                },
+                                                label = {
+                                                    Text("$pctStep% (${SubtaskItem.formatVolumeNumber(stepVal)} $unitLabel)")
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            if (task.taskStatus != TaskStatus.ARCHIVED) {
-                                TextButton(
-                                    onClick = {
-                                        onArchiveTask()
-                                        onDismiss()
+
+                        // Список пунктов чек-листа (с отчётностью по объёму для каждого пункта)
+                        if (subtasks.isEmpty()) {
+                            Text(
+                                text = "Пункты чек-листа не добавлены",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column {
+                                    subtasks.forEachIndexed { idx, sub ->
+                                        var subVolInput by remember(sub.id, sub.completedVolume) {
+                                            mutableStateOf(
+                                                if (sub.completedVolume > 0.0) SubtaskItem.formatVolumeNumber(sub.completedVolume) else ""
+                                            )
+                                        }
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                                                .testTag("subtask_row_${sub.id}")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { onToggleSubtask(sub.id) },
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Checkbox(
+                                                    checked = sub.isDone,
+                                                    onCheckedChange = { onToggleSubtask(sub.id) },
+                                                    modifier = Modifier.testTag("subtask_checkbox_${sub.id}")
+                                                )
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = sub.title,
+                                                        style = MaterialTheme.typography.bodySmall.copy(
+                                                            textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
+                                                        ),
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = if (sub.isDone) {
+                                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurface
+                                                        }
+                                                    )
+                                                    if (sub.hasVolume) {
+                                                        Text(
+                                                            text = "Выполнено: ${sub.formatVolumeStatus()}",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = if (sub.progressPercent >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            // Если у пункта чек-листа задан объём — поле ввода выполненного объёма прямо в строке чек-листа
+                                            if (sub.hasVolume && task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = 36.dp, top = 4.dp),
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    OutlinedTextField(
+                                                        value = subVolInput,
+                                                        onValueChange = { subVolInput = it },
+                                                        placeholder = {
+                                                            Text("из ${SubtaskItem.formatVolumeNumber(sub.targetVolume)} ${sub.unit.ifBlank { "шт" }}")
+                                                        },
+                                                        singleLine = true,
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            val v = subVolInput.replace(",", ".").toDoubleOrNull() ?: 0.0
+                                                            onUpdateSubtaskVolume(sub.id, v)
+                                                        },
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                                    ) {
+                                                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("Факт", style = MaterialTheme.typography.labelSmall)
+                                                    }
+                                                    TextButton(
+                                                        onClick = {
+                                                            subVolInput = SubtaskItem.formatVolumeNumber(sub.targetVolume)
+                                                            onUpdateSubtaskVolume(sub.id, sub.targetVolume)
+                                                        },
+                                                        contentPadding = PaddingValues(horizontal = 8.dp)
+                                                    ) {
+                                                        Text("100%", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (idx < subtasks.lastIndex) {
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                        }
                                     }
-                                ) {
-                                    Text("В архив")
                                 }
                             }
-                            TextButton(
-                                onClick = { showDeleteConfirm = true }
+                        }
+
+                        // Добавление нового пункта в чек-лист (с возможностью указать объём и ед. изм.)
+                        if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text("Удалить задачу", color = MaterialTheme.colorScheme.error)
+                                OutlinedTextField(
+                                    value = newSubtaskTitle,
+                                    onValueChange = { newSubtaskTitle = it },
+                                    placeholder = { Text("Новый пункт чек-листа...") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("add_subtask_input")
+                                )
+                                IconButton(
+                                    onClick = { showAddSubtaskVolumeFields = !showAddSubtaskVolumeFields },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Straighten,
+                                        contentDescription = "Задать объём пункта",
+                                        tint = if (showAddSubtaskVolumeFields) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        if (newSubtaskTitle.isNotBlank()) {
+                                            val vol = newSubtaskTargetVolText.replace(",", ".").toDoubleOrNull() ?: 0.0
+                                            onAddSubtask(newSubtaskTitle, vol, if (vol > 0.0) newSubtaskUnit else "")
+                                            newSubtaskTitle = ""
+                                            newSubtaskTargetVolText = ""
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .testTag("add_subtask_button")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = "Добавить пункт")
+                                }
+                            }
+
+                            AnimatedVisibility(visible = showAddSubtaskVolumeFields) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = newSubtaskTargetVolText,
+                                        onValueChange = { newSubtaskTargetVolText = it },
+                                        label = { Text("Объём пункта") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = newSubtaskUnit,
+                                        onValueChange = { newSubtaskUnit = it },
+                                        label = { Text("Ед. изм. (шт, кг...)") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
+
+                        // РАЗДЕЛ 2: ФОТООТЧЁТ
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Фотоотчёт (${task.photoItems.size}/${task.minPhotoCount})",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (!task.hasEnoughPhotos()) {
+                                Text(
+                                    text = "Нужно мин. ${task.minPhotoCount} фото",
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        val photos = task.decodedPhotos()
+                        if (photos.isEmpty()) {
+                            Text(
+                                text = "Фотографии не прикреплены. Нажмите «Камера» или «+ Фотоштамп СМР».",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                photos.forEachIndexed { idx, ph ->
+                                    val bitmap = remember(ph.uriString) {
+                                        PhotoCaptureUtils.loadBitmapFromUriOrPath(ph.uriString)
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { selectedPhotoForPreview = ph }
+                                            .testTag("photo_item_${ph.id}")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.primaryContainer,
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.size(48.dp)
+                                            ) {
+                                                if (bitmap != null) {
+                                                    Image(
+                                                        bitmap = bitmap.asImageBitmap(),
+                                                        contentDescription = "Миниатюра фото ${idx + 1}",
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                } else {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.PhotoCamera,
+                                                            contentDescription = "Фото ${idx + 1}",
+                                                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            Spacer(modifier = Modifier.width(8.dp))
+
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "Фото #${idx + 1} • ${ph.capturedAtText}",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                                Text(
+                                                    text = ph.comment,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+
+                                            IconButton(
+                                                onClick = { selectedPhotoForPreview = ph },
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Visibility,
+                                                    contentDescription = "Просмотреть фото",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+
+                                            if (task.taskStatus != TaskStatus.APPROVED) {
+                                                IconButton(
+                                                    onClick = { onDeletePhoto(ph.id) },
+                                                    modifier = Modifier
+                                                        .size(34.dp)
+                                                        .testTag("delete_photo_${ph.id}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.DeleteOutline,
+                                                        contentDescription = "Удалить фото",
+                                                        tint = MaterialTheme.colorScheme.error,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Непрерывная съёмка (серия фото)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Автоматически делать несколько фото подряд",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = continuousShootingMode,
+                                    onCheckedChange = { continuousShootingMode = it },
+                                    modifier = Modifier.testTag("continuous_camera_switch")
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = photoComment,
+                                onValueChange = { photoComment = it },
+                                placeholder = { Text("Подпись к фото (необязательно)...") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("photo_comment_input"),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        val hasCamPerm = ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.CAMERA
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (hasCamPerm) {
+                                            burstShotCount = 0
+                                            cameraLauncher.launch(null)
+                                        } else {
+                                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("capture_camera_button")
+                                ) {
+                                    Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(if (continuousShootingMode) "Камера (серия)" else "Камера", style = MaterialTheme.typography.labelMedium)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        val savedStampPath = PhotoCaptureUtils.generatePhotoStampFile(
+                                            context = context,
+                                            taskTitle = task.title,
+                                            authorName = activeEmployee.shortName,
+                                            gpsCoords = photoGps,
+                                            comment = photoComment.ifBlank { "Контрольный снимок узла" },
+                                            photoIndex = task.photoItems.size + 1
+                                        )
+                                        onAddPhoto(
+                                            savedStampPath,
+                                            photoGps,
+                                            photoComment.ifBlank { "Фотоштамп СМР #${task.photoItems.size + 1}" }
+                                        )
+                                        photoComment = ""
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("instant_photo_stamp_button")
+                                ) {
+                                    Icon(Icons.Default.AddAPhoto, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("+ Фотоштамп СМР", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+
+                        // Подменю для комментариев и истории
+                        Spacer(modifier = Modifier.height(6.dp))
+                        TextButton(
+                            onClick = { showExtraSections = !showExtraSections },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = if (showExtraSections) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                if (showExtraSections) {
+                                    "Скрыть комментарии и журнал"
+                                } else {
+                                    "Комментарии (${task.commentItems.size}) и журнал (${task.historyItems.size})"
+                                }
+                            )
+                        }
+
+                        AnimatedVisibility(visible = showExtraSections) {
+                            Column {
+                                val comments = task.decodedComments()
+                                comments.forEach { cmt ->
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 3.dp)
+                                    ) {
+                                        Column(modifier = Modifier.padding(8.dp)) {
+                                            Text(
+                                                text = "${cmt.authorName} • ${cmt.createdAtText}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(text = cmt.text, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = newCommentText,
+                                        onValueChange = { newCommentText = it },
+                                        placeholder = { Text("Написать комментарий...") },
+                                        modifier = Modifier.weight(1f),
+                                        singleLine = true
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            if (newCommentText.isNotBlank()) {
+                                                onAddComment(newCommentText, "")
+                                                newCommentText = ""
+                                            }
+                                        }
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
+                                    }
+                                }
+
+                                val history = task.decodedHistory()
+                                if (history.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    history.forEach { h ->
+                                        Text(
+                                            text = "• ${h.timestampText} (${h.actorName}): ${h.note}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (task.taskStatus != TaskStatus.ARCHIVED) {
+                                    TextButton(
+                                        onClick = {
+                                            onArchiveTask()
+                                            onDismiss()
+                                        }
+                                    ) {
+                                        Text("Переместить задачу в архив")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. ЗАКРЕПЛЁННАЯ НИЖНЯЯ ПАНЕЛЬ ДЕЙСТВИЙ (всегда видна внизу экрана телефона!)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                            val buttonLabel = when {
+                                !task.hasEnoughPhotos() -> "Добавьте ещё ${task.minPhotoCount - task.photoItems.size} фото"
+                                task.hasVolumeTracking() && !isVolume100 -> "Для закрытия нужен объём 100% (сейчас $completionPct%)"
+                                task.requiresApproval -> "Отправить на проверку (100%)"
+                                else -> "Завершить задачу (100%)"
+                            }
+                            Button(
+                                onClick = {
+                                    onSubmitCompletion(photoComment)
+                                    if (canSubmitCompletion) onDismiss()
+                                },
+                                enabled = canSubmitCompletion,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF16A34A),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp)
+                                    .testTag("submit_task_completion_button")
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = buttonLabel,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        if (canApproveThisTask && (task.taskStatus == TaskStatus.ON_REVIEW || task.taskStatus == TaskStatus.IN_PROGRESS)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        onApproveReport(supervisorNote)
+                                        onDismiss()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF16A34A),
+                                        contentColor = Color.White
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(42.dp)
+                                        .testTag("approve_report_button")
+                                ) {
+                                    Icon(Icons.Default.ThumbUp, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Принять отчёт", style = MaterialTheme.typography.labelMedium)
+                                }
+                                OutlinedButton(
+                                    onClick = { showRejectDialog = true },
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(42.dp)
+                                        .testTag("reject_report_button")
+                                ) {
+                                    Icon(Icons.Default.ThumbDown, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Отклонить", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                                }
                             }
                         }
                     }
@@ -1032,7 +1310,6 @@ fun TaskDetailDialog(
         }
     }
 
-    // Полноэкранный просмотр фотографии с функцией удаления
     selectedPhotoForPreview?.let { photoItem ->
         FullScreenPhotoDialog(
             photo = photoItem,
@@ -1121,134 +1398,146 @@ fun FullScreenPhotoDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
-        Surface(
+        BoxWithConstraints(
             modifier = Modifier
-                .fillMaxWidth(0.96f)
-                .padding(vertical = 20.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = Color(0xFF0F172A)
+                .fillMaxSize()
+                .systemBarsPadding()
+                .padding(horizontal = 10.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Просмотр фотоотчёта",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "${photo.authorName} • ${photo.capturedAtText}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF94A3B8)
-                        )
-                    }
-                    Row {
-                        if (canDelete) {
-                            IconButton(
-                                onClick = onDelete,
-                                modifier = Modifier.testTag("fullscreen_delete_photo_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteOutline,
-                                    contentDescription = "Удалить это фото",
-                                    tint = Color(0xFFEF4444)
-                                )
-                            }
-                        }
-                        IconButton(onClick = onDismiss) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Закрыть просмотр",
-                                tint = Color.White
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight),
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0xFF0F172A)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Просмотр фотоотчёта",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "${photo.authorName} • ${photo.capturedAtText}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF94A3B8)
                             )
                         }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Surface(
-                    color = Color(0xFF1E293B),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 260.dp, max = 440.dp)
-                ) {
-                    if (bitmap != null) {
-                        Image(
-                            bitmap = bitmap.asImageBitmap(),
-                            contentDescription = "Полноэкранное фото",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                        )
-                    } else {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.padding(24.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Row {
+                            if (canDelete) {
+                                IconButton(
+                                    onClick = onDelete,
+                                    modifier = Modifier.testTag("fullscreen_delete_photo_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Удалить это фото",
+                                        tint = Color(0xFFEF4444)
+                                    )
+                                }
+                            }
+                            IconButton(onClick = onDismiss) {
                                 Icon(
-                                    imageVector = Icons.Default.PhotoCamera,
-                                    contentDescription = null,
-                                    tint = Color(0xFF60A5FA),
-                                    modifier = Modifier.size(48.dp)
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = photo.comment,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = Color.White
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Закрыть просмотр",
+                                    tint = Color.White
                                 )
                             }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                Text(
-                    text = photo.comment,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = "Геометка: ${photo.gpsCoords}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF94A3B8)
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (canDelete) {
-                        OutlinedButton(
-                            onClick = onDelete,
-                            border = BorderStroke(1.dp, Color(0xFFEF4444)),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Удалить фото", color = Color(0xFFEF4444))
+                    Surface(
+                        color = Color(0xFF1E293B),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .heightIn(min = 200.dp, max = 380.dp)
+                    ) {
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "Полноэкранное фото",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                        } else {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(24.dp)
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        imageVector = Icons.Default.PhotoCamera,
+                                        contentDescription = null,
+                                        tint = Color(0xFF60A5FA),
+                                        modifier = Modifier.size(44.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = photo.comment,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color.White
+                                    )
+                                }
+                            }
                         }
                     }
-                    Button(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f)
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = photo.comment,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Геометка: ${photo.gpsCoords}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF94A3B8)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text("Закрыть")
+                        if (canDelete) {
+                            OutlinedButton(
+                                onClick = onDelete,
+                                border = BorderStroke(1.dp, Color(0xFFEF4444)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Удалить фото", color = Color(0xFFEF4444))
+                            }
+                        }
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Закрыть")
+                        }
                     }
                 }
             }
@@ -1256,6 +1545,13 @@ fun FullScreenPhotoDialog(
     }
 }
 
+/**
+ * Диалог создания задачи:
+ * - Полностью адаптируется под экран любого телефона (верхняя шапка и нижние кнопки всегда видны).
+ * - Всегда отображает блок выбора исполнителя (чипы сотрудников + поле ввода ФИО исполнителя).
+ * - Ручной ввод минимального количества фотографий для обязательного фотоотчёта.
+ * - Постановка объёма выполнения задачи (при необходимости) с выбором единиц измерения (шт, кг, м² и др., включая ручной ввод своей единицы).
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CreateTaskDialog(
@@ -1270,12 +1566,27 @@ fun CreateTaskDialog(
     }
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
+
+    // Выбор исполнителя (из списка или ввод ФИО вручную)
     var selectedAssignee by remember(assignees) { mutableStateOf(assignees.first()) }
+    var useCustomAssigneeName by remember { mutableStateOf(false) }
+    var customAssigneeName by remember { mutableStateOf("") }
+
     var selectedPriority by remember { mutableStateOf(TaskPriority.MEDIUM) }
     var isTomorrow by remember { mutableStateOf(false) }
     var deadlineTime by remember { mutableStateOf("18:00") }
+
+    // Обязательный фотоотчёт с возможностью ручного ввода минимального числа фото
     var requiresPhoto by remember { mutableStateOf(true) }
-    var minPhotoCount by remember { mutableIntStateOf(1) }
+    var minPhotoCountText by remember { mutableStateOf("1") }
+
+    // Объём выполнения задачи с выбором единиц измерения (шт, кг и другое)
+    var hasVolumeRequirement by remember { mutableStateOf(false) }
+    var targetVolumeText by remember { mutableStateOf("") }
+    var selectedUnit by remember { mutableStateOf("шт") }
+    var isCustomUnitSelected by remember { mutableStateOf(false) }
+    var customUnitText by remember { mutableStateOf("") }
+
     var requiresApproval by remember { mutableStateOf(true) }
     var selectedRecurrence by remember { mutableStateOf(RecurrenceRule.NONE) }
     var subtasksRaw by remember { mutableStateOf("") }
@@ -1286,274 +1597,507 @@ fun CreateTaskDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
-        Surface(
+        BoxWithConstraints(
             modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .padding(vertical = 12.dp)
-                .imePadding(),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface
+                .fillMaxSize()
+                .systemBarsPadding()
+                .imePadding()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                // Заголовок диалога
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Новая задача",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
-                    }
-                }
-
-                // Прокручиваемая форма
-                Column(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedTextField(
-                        value = title,
-                        onValueChange = {
-                            title = it
-                            if (it.isNotBlank()) titleError = false
-                        },
-                        label = { Text("Название задачи *") },
-                        isError = titleError,
-                        supportingText = if (titleError) {
-                            { Text("Введите название задачи") }
-                        } else null,
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("create_task_title_input")
-                    )
-
-                    OutlinedTextField(
-                        value = description,
-                        onValueChange = { description = it },
-                        label = { Text("Описание / требования (необязательно)") },
-                        maxLines = 3,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("create_task_desc_input")
-                    )
-
-                    // Выбор исполнителя (только реальные пользователи)
-                    if (assignees.size > 1) {
-                        Text(
-                            text = "Исполнитель:",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            assignees.forEach { emp ->
-                                FilterChip(
-                                    selected = selectedAssignee.id == emp.id,
-                                    onClick = { selectedAssignee = emp },
-                                    label = { Text("${emp.shortName} (${emp.role.titleRu})") }
-                                )
-                            }
-                        }
-                    }
-
-                    // Срок и приоритет в компактной строке
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilterChip(
-                            selected = !isTomorrow,
-                            onClick = { isTomorrow = false },
-                            label = { Text("На сегодня") },
-                            modifier = Modifier.weight(1f)
-                        )
-                        FilterChip(
-                            selected = isTomorrow,
-                            onClick = { isTomorrow = true },
-                            label = { Text("На завтра") },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // 1. ЗАКРЕПЛЁННАЯ ВЕРХНЯЯ ПАНЕЛЬ
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        TaskPriority.entries.forEach { prio ->
-                            FilterChip(
-                                selected = selectedPriority == prio,
-                                onClick = { selectedPriority = prio },
-                                label = { Text(prio.titleRu) }
-                            )
-                        }
-                    }
-
-                    // Фотоотчёт
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
+                            .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Обязательный фотоотчёт",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                            if (requiresPhoto) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    listOf(1, 2, 3).forEach { count ->
+                        Text(
+                            text = "Постановка задачи",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // 2. ПРОКРУЧИВАЕМАЯ ФОРМА
+                    Column(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = {
+                                title = it
+                                if (it.isNotBlank()) titleError = false
+                            },
+                            label = { Text("Наименование задачи *") },
+                            isError = titleError,
+                            supportingText = if (titleError) {
+                                { Text("Введите наименование задачи") }
+                            } else null,
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("create_task_title_input")
+                        )
+
+                        // СТРОКА ВЫБОРА ИСПОЛНИТЕЛЯ (всегда отображается!)
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Исполнитель задания:",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    assignees.forEach { emp ->
                                         FilterChip(
-                                            selected = minPhotoCount == count,
-                                            onClick = { minPhotoCount = count },
-                                            label = { Text("$count фото") }
+                                            selected = !useCustomAssigneeName && selectedAssignee.id == emp.id,
+                                            onClick = {
+                                                useCustomAssigneeName = false
+                                                selectedAssignee = emp
+                                            },
+                                            label = { Text("${emp.shortName} (${emp.role.titleRu})") },
+                                            modifier = Modifier.testTag("select_assignee_${emp.id}")
                                         )
+                                    }
+                                    FilterChip(
+                                        selected = useCustomAssigneeName,
+                                        onClick = { useCustomAssigneeName = true },
+                                        label = { Text("+ Указать ФИО исполнителя") },
+                                        modifier = Modifier.testTag("custom_assignee_chip")
+                                    )
+                                }
+
+                                AnimatedVisibility(visible = useCustomAssigneeName) {
+                                    OutlinedTextField(
+                                        value = customAssigneeName,
+                                        onValueChange = { customAssigneeName = it },
+                                        label = { Text("ФИО исполнителя (новый или из бригады)") },
+                                        placeholder = { Text("Например: Петров А.С.") },
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("custom_assignee_name_input")
+                                    )
+                                }
+                            }
+                        }
+
+                        // БЛОК ОБЪЁМА ВЫПОЛНЕНИЯ ЗАДАЧИ С ВЫБОРОМ ЕДИНИЦ ИЗМЕРЕНИЯ (шт, кг и другое)
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Объём выполнения задачи",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "Отчётность в чек-листе по объёму (100% = выполнено)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = hasVolumeRequirement,
+                                        onCheckedChange = { hasVolumeRequirement = it },
+                                        modifier = Modifier.testTag("toggle_volume_requirement_switch")
+                                    )
+                                }
+
+                                AnimatedVisibility(visible = hasVolumeRequirement) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = targetVolumeText,
+                                            onValueChange = { targetVolumeText = it },
+                                            label = { Text("Плановый объём работ *") },
+                                            placeholder = { Text("Например: 150") },
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("create_task_target_volume_input")
+                                        )
+
+                                        Text(
+                                            text = "Единица измерения:",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            STANDARD_VOLUME_UNITS.forEach { unitItem ->
+                                                FilterChip(
+                                                    selected = !isCustomUnitSelected && selectedUnit == unitItem,
+                                                    onClick = {
+                                                        isCustomUnitSelected = false
+                                                        selectedUnit = unitItem
+                                                    },
+                                                    label = { Text(unitItem) },
+                                                    modifier = Modifier.testTag("unit_chip_$unitItem")
+                                                )
+                                            }
+                                            FilterChip(
+                                                selected = isCustomUnitSelected,
+                                                onClick = { isCustomUnitSelected = true },
+                                                label = { Text("Другое...") },
+                                                modifier = Modifier.testTag("unit_chip_custom")
+                                            )
+                                        }
+
+                                        AnimatedVisibility(visible = isCustomUnitSelected) {
+                                            OutlinedTextField(
+                                                value = customUnitText,
+                                                onValueChange = { customUnitText = it },
+                                                label = { Text("Своя единица измерения") },
+                                                placeholder = { Text("Например: секц., рул., рейс, узел") },
+                                                singleLine = true,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("custom_unit_input")
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                        Switch(
-                            checked = requiresPhoto,
-                            onCheckedChange = { requiresPhoto = it }
-                        )
-                    }
 
-                    // Чек-лист подзадач
-                    OutlinedTextField(
-                        value = subtasksRaw,
-                        onValueChange = { subtasksRaw = it },
-                        label = { Text("Пункты чек-листа (каждый с новой строки)") },
-                        placeholder = { Text("Например:\nПроверить комплектацию\nВыполнить фотофиксацию") },
-                        maxLines = 4,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("create_task_subtasks_input")
-                    )
-
-                    // Дополнительные настройки в подменю
-                    TextButton(
-                        onClick = { showAdvancedOptions = !showAdvancedOptions },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            if (showAdvancedOptions) "Скрыть доп. параметры"
-                            else "Дополнительные параметры (повтор, время, участок)"
-                        )
-                    }
-
-                    AnimatedVisibility(visible = showAdvancedOptions) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Повторяемость:", style = MaterialTheme.typography.labelMedium)
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                listOf(
-                                    RecurrenceRule.NONE,
-                                    RecurrenceRule.DAILY,
-                                    RecurrenceRule.WEEKDAYS,
-                                    RecurrenceRule.WEEKLY
-                                ).forEach { rule ->
-                                    FilterChip(
-                                        selected = selectedRecurrence == rule,
-                                        onClick = { selectedRecurrence = rule },
-                                        label = { Text(rule.titleRu) }
-                                    )
-                                }
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(
-                                    value = deadlineTime,
-                                    onValueChange = { deadlineTime = it },
-                                    label = { Text("Время") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                OutlinedTextField(
-                                    value = geoLocation,
-                                    onValueChange = { geoLocation = it },
-                                    label = { Text("Участок / зона") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1.5f)
-                                )
-                            }
-                            OutlinedTextField(
-                                value = tagsRaw,
-                                onValueChange = { tagsRaw = it },
-                                label = { Text("Теги через запятую") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                        // Срок и приоритет
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = !isTomorrow,
+                                onClick = { isTomorrow = false },
+                                label = { Text("На сегодня") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = isTomorrow,
+                                onClick = { isTomorrow = true },
+                                label = { Text("На завтра") },
+                                modifier = Modifier.weight(1f)
                             )
                         }
-                    }
-                }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Закреплённая панель кнопок внизу (всегда видна над клавиатурой)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Отмена")
-                    }
-                    Button(
-                        onClick = {
-                            if (title.isBlank()) {
-                                titleError = true
-                                return@Button
-                            }
-                            val dueDay = if (isTomorrow) currentEpochDay + 1L else currentEpochDay
-                            val subtasks = subtasksRaw.lines()
-                                .map { it.trim() }
-                                .filter { it.isNotBlank() }
-                            val tags = tagsRaw.split(",")
-                                .map { it.trim() }
-                                .filter { it.isNotBlank() }
-
-                            onCreate(
-                                TaskDraft(
-                                    title = title.trim(),
-                                    description = description.trim(),
-                                    assigneeId = selectedAssignee.id,
-                                    priority = selectedPriority,
-                                    dueDateEpochDay = dueDay,
-                                    deadlineTime = deadlineTime.ifBlank { "18:00" },
-                                    requiresPhotoReport = requiresPhoto,
-                                    minPhotoCount = if (requiresPhoto) minPhotoCount else 0,
-                                    requiresApproval = requiresApproval,
-                                    recurrenceRule = selectedRecurrence,
-                                    tags = tags,
-                                    subtasks = subtasks,
-                                    geoLocation = geoLocation.trim()
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            TaskPriority.entries.forEach { prio ->
+                                FilterChip(
+                                    selected = selectedPriority == prio,
+                                    onClick = { selectedPriority = prio },
+                                    label = { Text(prio.titleRu) }
                                 )
+                            }
+                        }
+
+                        // БЛОК ОБЯЗАТЕЛЬНОГО ФОТООТЧЁТА С РУЧНЫМ ВВОДОМ МИНИМАЛЬНОГО ЧИСЛА ФОТО
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Обязательный фотоотчёт",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Switch(
+                                        checked = requiresPhoto,
+                                        onCheckedChange = { requiresPhoto = it }
+                                    )
+                                }
+
+                                AnimatedVisibility(visible = requiresPhoto) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            IconButton(
+                                                onClick = {
+                                                    val cur = minPhotoCountText.toIntOrNull() ?: 1
+                                                    minPhotoCountText = (cur - 1).coerceAtLeast(1).toString()
+                                                },
+                                                modifier = Modifier.size(36.dp)
+                                            ) {
+                                                Icon(Icons.Default.Remove, contentDescription = "Уменьшить")
+                                            }
+                                            OutlinedTextField(
+                                                value = minPhotoCountText,
+                                                onValueChange = { valDigits ->
+                                                    minPhotoCountText = valDigits.filter { it.isDigit() }
+                                                },
+                                                label = { Text("Мин. кол-во фото (вручную)") },
+                                                singleLine = true,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .testTag("min_photo_manual_input")
+                                            )
+                                            IconButton(
+                                                onClick = {
+                                                    val cur = minPhotoCountText.toIntOrNull() ?: 1
+                                                    minPhotoCountText = (cur + 1).coerceAtMost(99).toString()
+                                                },
+                                                modifier = Modifier.size(36.dp)
+                                            ) {
+                                                Icon(Icons.Default.Add, contentDescription = "Увеличить")
+                                            }
+                                        }
+
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            listOf(1, 2, 3, 5, 10).forEach { preset ->
+                                                FilterChip(
+                                                    selected = (minPhotoCountText.toIntOrNull() ?: 1) == preset,
+                                                    onClick = { minPhotoCountText = preset.toString() },
+                                                    label = { Text("$preset фото") }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Чек-лист и описание
+                        OutlinedTextField(
+                            value = subtasksRaw,
+                            onValueChange = { subtasksRaw = it },
+                            label = { Text("Пункты чек-листа (каждый с новой строки)") },
+                            placeholder = { Text("Оставьте пустым для автоматического чек-листа по объёму") },
+                            maxLines = 3,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("create_task_subtasks_input")
+                        )
+
+                        OutlinedTextField(
+                            value = description,
+                            onValueChange = { description = it },
+                            label = { Text("Описание / примечание (необязательно)") },
+                            maxLines = 2,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("create_task_desc_input")
+                        )
+
+                        // Дополнительные настройки в подменю
+                        TextButton(
+                            onClick = { showAdvancedOptions = !showAdvancedOptions },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                if (showAdvancedOptions) "Скрыть доп. параметры"
+                                else "Доп. параметры (повтор, время, участок)"
                             )
-                            onDismiss()
-                        },
+                        }
+
+                        AnimatedVisibility(visible = showAdvancedOptions) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Повторяемость:", style = MaterialTheme.typography.labelMedium)
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf(
+                                        RecurrenceRule.NONE,
+                                        RecurrenceRule.DAILY,
+                                        RecurrenceRule.WEEKDAYS,
+                                        RecurrenceRule.WEEKLY
+                                    ).forEach { rule ->
+                                        FilterChip(
+                                            selected = selectedRecurrence == rule,
+                                            onClick = { selectedRecurrence = rule },
+                                            label = { Text(rule.titleRu) }
+                                        )
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        value = deadlineTime,
+                                        onValueChange = { deadlineTime = it },
+                                        label = { Text("Время") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = geoLocation,
+                                        onValueChange = { geoLocation = it },
+                                        label = { Text("Участок / зона") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1.5f)
+                                    )
+                                }
+                                OutlinedTextField(
+                                    value = tagsRaw,
+                                    onValueChange = { tagsRaw = it },
+                                    label = { Text("Теги через запятую") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. ЗАКРЕПЛЁННАЯ НИЖНЯЯ ПАНЕЛЬ КНОПОК (всегда видна на любом телефоне!)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Row(
                         modifier = Modifier
-                            .weight(1.4f)
-                            .testTag("confirm_create_task_button")
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text("Поставить задачу", fontWeight = FontWeight.SemiBold)
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                        ) {
+                            Text("Отмена")
+                        }
+                        Button(
+                            onClick = {
+                                if (title.isBlank()) {
+                                    titleError = true
+                                    return@Button
+                                }
+                                val dueDay = if (isTomorrow) currentEpochDay + 1L else currentEpochDay
+                                val subtasks = subtasksRaw.lines()
+                                    .map { it.trim() }
+                                    .filter { it.isNotBlank() }
+                                val tags = tagsRaw.split(",")
+                                    .map { it.trim() }
+                                    .filter { it.isNotBlank() }
+                                val resolvedMinPhotos = (minPhotoCountText.toIntOrNull() ?: 1).coerceAtLeast(1)
+                                val resolvedTargetVol = if (hasVolumeRequirement) {
+                                    (targetVolumeText.replace(",", ".").toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
+                                } else {
+                                    0.0
+                                }
+                                val resolvedUnit = if (hasVolumeRequirement) {
+                                    if (isCustomUnitSelected) customUnitText.trim().ifBlank { "ед." } else selectedUnit
+                                } else {
+                                    ""
+                                }
+
+                                onCreate(
+                                    TaskDraft(
+                                        title = title.trim(),
+                                        description = description.trim(),
+                                        assigneeId = selectedAssignee.id,
+                                        customAssigneeName = if (useCustomAssigneeName) customAssigneeName.trim() else "",
+                                        priority = selectedPriority,
+                                        dueDateEpochDay = dueDay,
+                                        deadlineTime = deadlineTime.ifBlank { "18:00" },
+                                        requiresPhotoReport = requiresPhoto,
+                                        minPhotoCount = if (requiresPhoto) resolvedMinPhotos else 0,
+                                        requiresApproval = requiresApproval,
+                                        recurrenceRule = selectedRecurrence,
+                                        targetVolume = resolvedTargetVol,
+                                        volumeUnit = resolvedUnit,
+                                        tags = tags,
+                                        subtasks = subtasks,
+                                        geoLocation = geoLocation.trim()
+                                    )
+                                )
+                                onDismiss()
+                            },
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .height(44.dp)
+                                .testTag("confirm_create_task_button")
+                        ) {
+                            Text("Поставить задачу", fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }

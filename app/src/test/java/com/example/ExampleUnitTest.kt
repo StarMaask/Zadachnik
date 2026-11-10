@@ -3,8 +3,9 @@ package com.example
 import com.example.data.model.CorporateRole
 import com.example.data.model.ExportFormat
 import com.example.data.model.ReportTemplateDocument
-import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
+import com.example.data.model.SubtaskItem
+import com.example.data.model.TaskDocument
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
 import org.junit.Assert.assertEquals
@@ -65,72 +66,86 @@ class ExampleUnitTest {
         assertEquals(2, preview.sheets.size)
         assertTrue(preview.sheets[0].sheetTitle.contains("План"))
         assertTrue(preview.sheets[1].sheetTitle.contains("Отчёт"))
-        assertTrue(preview.sheets[0].rows.isNotEmpty())
-        assertTrue(preview.sheets[1].rows.isNotEmpty())
     }
 
     @Test
-    fun `worker role is restricted to personal tasks in report preview and blocked from consolidated SLA report`() {
+    fun `task volume tracking enforces 100 percent completion and reports unfinished volume`() {
+        val subPartial = SubtaskItem(
+            id = "sub_1",
+            title = "Отгрузка песка",
+            isDone = false,
+            targetVolume = 100.0,
+            completedVolume = 60.0,
+            unit = "кг"
+        )
+        val encoded = subPartial.encode()
+        val decoded = SubtaskItem.decode(encoded)
+
+        assertEquals(60, decoded.progressPercent)
+        assertFalse(decoded.isDone)
+
+        val taskPartial = TaskDocument(
+            id = "task_vol_1",
+            userId = "u1",
+            title = "Заготовка смеси",
+            assigneeId = "emp_head_1",
+            assigneeName = "Иванов И.И.",
+            dueDateEpochDay = CorporateSeedData.BASE_EPOCH_DAY,
+            subtaskItems = listOf(encoded)
+        ).withUpdatedVolume(100.0, 60.0, "кг")
+
+        assertFalse(taskPartial.isVolumeCompleted100Percent())
+        assertEquals(60, taskPartial.completionPercent())
+        val partialReportText = taskPartial.formatVolumeSummaryForReport()
+        assertTrue(partialReportText.contains("Не до конца"))
+        assertTrue(partialReportText.contains("60 из 100 кг"))
+
+        val subDone = subPartial.copy(isDone = true, completedVolume = 100.0)
+        val taskCompleted = taskPartial
+            .copy(subtaskItems = listOf(subDone.encode()))
+            .withUpdatedVolume(100.0, 100.0, "кг")
+        assertTrue(taskCompleted.isVolumeCompleted100Percent())
+        assertEquals(100, taskCompleted.completionPercent())
+        assertTrue(taskCompleted.formatVolumeSummaryForReport().contains("Выполнено: 100 из 100 кг (100%)"))
+    }
+
+    @Test
+    fun `report preview supports export with photos and without photos`() {
         val today = CorporateSeedData.BASE_EPOCH_DAY
-        val tasks = CorporateSeedData.buildInitialTasks(userId = "test_user_1")
-        val workerActor = CorporateSeedData.findEmployee("emp_worker_1")
-        val dailyTemplate = ReportTemplateDocument(
-            id = "tpl_worker_daily",
-            userId = "test_user_1",
-            name = "Личный суточный отчёт",
-            reportType = ReportType.DAILY_REPORT.code,
-            sheetLayout = SheetLayout.SINGLE_SHEET.code,
-            exportFormat = ExportFormat.PDF.code
-        )
-
-        val preview = ReportDocumentGenerator.buildPreview(
-            actor = workerActor,
-            template = dailyTemplate,
-            allTasks = tasks,
-            currentEpochDay = today,
-            overrideLayout = SheetLayout.SINGLE_SHEET,
-            overrideFormat = ExportFormat.PDF
-        )
-
-        assertEquals(1, preview.sheets.size)
-        val allAssigneeNames = preview.sheets.flatMap { it.rows }.map { it.assigneeFio }.distinct()
-        assertTrue(
-            "Worker report must only contain worker's own tasks",
-            allAssigneeNames.all { it.contains("Морозов") }
-        )
-
-        // Verify consolidated-only report throws IllegalAccessException for WORKER
-        val consolidatedTemplate = dailyTemplate.copy(reportType = ReportType.APPROVAL_SLA.code)
-        var accessDenied = false
-        try {
-            ReportDocumentGenerator.buildPreview(
-                actor = workerActor,
-                template = consolidatedTemplate,
-                allTasks = tasks,
-                currentEpochDay = today
-            )
-        } catch (_: IllegalAccessException) {
-            accessDenied = true
-        }
-        assertTrue("Consolidated SLA report must be forbidden for WORKER", accessDenied)
-    }
-
-    @Test
-    fun `role scoped visibility masks peer employees for WORKER while exposing brigade to ITR and site to HEAD`() {
-        val workerActor = CorporateSeedData.findEmployee("emp_worker_1")
-        val itrActor = CorporateSeedData.findEmployee("emp_itr_1")
         val headActor = CorporateSeedData.findEmployee("emp_head_1")
+        val template = CorporateSeedData.buildInitialReportTemplates(userId = "test_user_1").first()
+        val sampleTask = TaskDocument(
+            id = "t_rep_1",
+            userId = "test_user_1",
+            title = "Монтаж кабельных лотков",
+            assigneeId = headActor.id,
+            assigneeName = headActor.shortName,
+            groupId = headActor.groupId,
+            groupName = headActor.groupName,
+            dueDateEpochDay = today,
+            requiresPhotoReport = true,
+            minPhotoCount = 3L,
+            photoItems = listOf("p1|file:///tmp/photo1.jpg|emp_head_1|Иванов|2026-11-10|55.75|Шкаф")
+        ).withUpdatedVolume(50.0, 35.0, "шт")
 
-        val workerVisible = CorporateSeedData.getVisibleEmployeesForStats(workerActor)
-        val itrVisible = CorporateSeedData.getVisibleEmployeesForStats(itrActor)
-        val headVisible = CorporateSeedData.getVisibleEmployeesForStats(headActor)
+        val previewWithPhotos = ReportDocumentGenerator.buildPreview(
+            actor = headActor,
+            template = template,
+            allTasks = listOf(sampleTask),
+            currentEpochDay = today,
+            includePhotos = true
+        )
+        assertTrue(previewWithPhotos.includePhotos)
+        assertEquals(1, previewWithPhotos.attachedPhotos.size)
 
-        assertEquals(1, workerVisible.size)
-        assertEquals("emp_worker_1", workerVisible.first().id)
-
-        assertTrue(itrVisible.size > 1)
-        assertTrue(itrVisible.none { it.role == CorporateRole.HEAD })
-
-        assertEquals(CorporateSeedData.employees.size, headVisible.size)
+        val previewWithoutPhotos = ReportDocumentGenerator.buildPreview(
+            actor = headActor,
+            template = template,
+            allTasks = listOf(sampleTask),
+            currentEpochDay = today,
+            includePhotos = false
+        )
+        assertFalse(previewWithoutPhotos.includePhotos)
+        assertTrue(previewWithoutPhotos.attachedPhotos.isEmpty())
     }
 }

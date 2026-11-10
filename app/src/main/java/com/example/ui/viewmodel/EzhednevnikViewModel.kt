@@ -745,17 +745,78 @@ class EzhednevnikViewModel(
         }
 
         val actor = activeEmployee.value
-        val assignee = availableEmployees.value.firstOrNull { it.id == draft.assigneeId } ?: actor
+        val customFio = draft.customAssigneeName.trim()
+        val assignee: CorporateEmployee = if (customFio.isNotBlank()) {
+            val existingByName = availableEmployees.value.firstOrNull {
+                it.fullName.equals(customFio, ignoreCase = true) ||
+                    it.shortName.equals(customFio, ignoreCase = true)
+            }
+            if (existingByName != null) {
+                existingByName
+            } else {
+                val newEmpId = "emp_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+                val newMember = SiteMemberDocument(
+                    id = newEmpId,
+                    memberId = newEmpId,
+                    email = "$newEmpId@site1.ru",
+                    fullName = customFio,
+                    position = "Исполнитель",
+                    role = CorporateRole.WORKER.code,
+                    approvalStatus = MemberApprovalStatus.APPROVED.code,
+                    groupId = CorporateSeedData.workGroups.first().id,
+                    groupName = CorporateSeedData.workGroups.first().name,
+                    approvedByName = actor.fullName
+                )
+                upsertLocalMember(newMember)
+                newMember.toCorporateEmployee()
+            }
+        } else {
+            availableEmployees.value.firstOrNull { it.id == draft.assigneeId } ?: actor
+        }
 
         val taskId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
-        val encodedSubtasks = draft.subtasks
+        val safeTargetVol = draft.targetVolume.coerceAtLeast(0.0)
+        val safeUnit = draft.volumeUnit.trim().ifBlank { if (safeTargetVol > 0.0) "шт" else "" }
+
+        val rawSubtaskLines = draft.subtasks
             .map { it.trim() }
             .filter { it.isNotBlank() }
-            .mapIndexed { idx, s ->
-                SubtaskItem("sub_${System.currentTimeMillis()}_${idx + 1}", s, false).encode()
-            }
 
-        val newTask = TaskDocument(
+        val encodedSubtasks = if (rawSubtaskLines.isEmpty() && safeTargetVol > 0.0) {
+            listOf(
+                SubtaskItem(
+                    id = "sub_vol_main",
+                    title = cleanTitle,
+                    isDone = false,
+                    targetVolume = safeTargetVol,
+                    completedVolume = 0.0,
+                    unit = safeUnit
+                ).encode()
+            )
+        } else {
+            rawSubtaskLines.mapIndexed { idx, s ->
+                if (s.contains("|")) {
+                    s
+                } else if (idx == 0 && safeTargetVol > 0.0) {
+                    SubtaskItem(
+                        id = "sub_${System.currentTimeMillis()}_${idx + 1}",
+                        title = s,
+                        isDone = false,
+                        targetVolume = safeTargetVol,
+                        completedVolume = 0.0,
+                        unit = safeUnit
+                    ).encode()
+                } else {
+                    SubtaskItem(
+                        id = "sub_${System.currentTimeMillis()}_${idx + 1}",
+                        title = s,
+                        isDone = false
+                    ).encode()
+                }
+            }
+        }
+
+        val baseTask = TaskDocument(
             id = taskId,
             userId = effectiveUserId,
             title = cleanTitle,
@@ -777,6 +838,9 @@ class EzhednevnikViewModel(
             minPhotoCount = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L,
             requiresApproval = draft.requiresApproval,
             recurrenceRule = draft.recurrenceRule.code,
+            targetVolume = safeTargetVol,
+            completedVolume = 0.0,
+            volumeUnit = safeUnit,
             tags = draft.tags,
             subtaskItems = encodedSubtasks,
             photoItems = emptyList(),
@@ -786,14 +850,17 @@ class EzhednevnikViewModel(
                     nowText(),
                     actor.shortName,
                     TaskStatus.NEW.code,
-                    "Задача создана"
+                    if (safeTargetVol > 0.0) {
+                        "Задача создана (плановый объём: ${SubtaskItem.formatVolumeNumber(safeTargetVol)} $safeUnit)"
+                    } else {
+                        "Задача создана"
+                    }
                 ).encode()
             ),
             geoLocation = draft.geoLocation.ifBlank { "Участок №1" }
-        )
+        ).withUpdatedVolume(safeTargetVol, 0.0, safeUnit)
 
-        // Мгновенно добавляем задачу в локальный список и сбрасываем фильтр, чтобы она сразу отобразилась
-        upsertLocalTask(newTask)
+        upsertLocalTask(baseTask)
         _searchQuery.value = ""
         if (_selectedFilter.value != TaskFilterTab.ALL &&
             _selectedFilter.value != TaskFilterTab.TODAY &&
@@ -806,13 +873,17 @@ class EzhednevnikViewModel(
             _selectedFilter.value = TaskFilterTab.TODAY
         }
 
-        _bannerMessage.value = "Задача «$cleanTitle» добавлена"
+        _bannerMessage.value = "Задача «$cleanTitle» назначена: ${assignee.shortName}"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
                 repository.createTask(
                     actor = actor,
-                    draft = draft,
+                    draft = draft.copy(
+                        assigneeId = assignee.id,
+                        subtasks = encodedSubtasks,
+                        tags = baseTask.tags
+                    ),
                     resolvedAssignee = assignee,
                     customTaskId = taskId
                 )
@@ -896,35 +967,202 @@ class EzhednevnikViewModel(
 
     fun toggleSubtask(task: TaskDocument, subtaskId: String) {
         val currentTask = findTaskById(task.id) ?: task
-        val actor = activeEmployee.value
         val decoded = currentTask.decodedSubtasks()
-        val updatedSubtasks = decoded.map { item ->
-            if (item.id == subtaskId) item.copy(isDone = !item.isDone) else item
-        }.map { it.encode() }
+        val updatedDecoded = decoded.map { item ->
+            if (item.id == subtaskId) {
+                val nextDone = !item.isDone
+                val nextCompletedVol = if (item.hasVolume) {
+                    if (nextDone) item.targetVolume else 0.0
+                } else {
+                    item.completedVolume
+                }
+                item.copy(isDone = nextDone, completedVolume = nextCompletedVol)
+            } else {
+                item
+            }
+        }
+        val updatedEncoded = updatedDecoded.map { it.encode() }
 
-        val updatedTask = currentTask.copy(subtaskItems = updatedSubtasks)
+        // Синхронизируем общий объём задачи с чек-листом, если объём ведётся по пунктам
+        val tVol = currentTask.effectiveTargetVolume
+        val nextTaskCompletedVol = if (tVol > 0.0 && updatedDecoded.isNotEmpty()) {
+            val volSubs = updatedDecoded.filter { it.hasVolume }
+            if (volSubs.size == 1 && volSubs.first().targetVolume == tVol) {
+                volSubs.first().completedVolume
+            } else {
+                val avgRatio = updatedDecoded.sumOf { it.progressPercent } / (updatedDecoded.size * 100.0)
+                (tVol * avgRatio).coerceIn(0.0, tVol)
+            }
+        } else {
+            currentTask.effectiveCompletedVolume
+        }
+
+        val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW && updatedDecoded.any { it.progressPercent > 0 }) {
+            TaskStatus.IN_PROGRESS.code
+        } else {
+            currentTask.status
+        }
+
+        val updatedTask = currentTask
+            .copy(subtaskItems = updatedEncoded, status = nextStatus)
+            .withUpdatedVolume(tVol, nextTaskCompletedVol, currentTask.effectiveVolumeUnit)
+
         upsertLocalTask(updatedTask)
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.toggleSubtask(actor, currentTask, subtaskId)
+                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
             }
         }
     }
 
-    fun addSubtaskToTask(task: TaskDocument, title: String) {
+    fun updateSubtaskVolume(task: TaskDocument, subtaskId: String, newCompletedVol: Double) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val decoded = currentTask.decodedSubtasks()
+        val updatedDecoded = decoded.map { item ->
+            if (item.id == subtaskId) {
+                val clamped = if (item.targetVolume > 0.0) {
+                    newCompletedVol.coerceIn(0.0, item.targetVolume)
+                } else {
+                    newCompletedVol.coerceAtLeast(0.0)
+                }
+                val isDoneNow = if (item.targetVolume > 0.0) clamped >= item.targetVolume else item.isDone
+                item.copy(completedVolume = clamped, isDone = isDoneNow)
+            } else {
+                item
+            }
+        }
+        val updatedEncoded = updatedDecoded.map { it.encode() }
+
+        val tVol = currentTask.effectiveTargetVolume
+        val nextTaskCompletedVol = if (tVol > 0.0) {
+            val matchingVolSub = updatedDecoded.firstOrNull { it.id == subtaskId && it.targetVolume == tVol }
+            if (matchingVolSub != null) {
+                matchingVolSub.completedVolume
+            } else {
+                val avgRatio = updatedDecoded.sumOf { it.progressPercent } / (updatedDecoded.size.coerceAtLeast(1) * 100.0)
+                (tVol * avgRatio).coerceIn(0.0, tVol)
+            }
+        } else {
+            currentTask.effectiveCompletedVolume
+        }
+
+        val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW && newCompletedVol > 0.0) {
+            TaskStatus.IN_PROGRESS.code
+        } else {
+            currentTask.status
+        }
+
+        val updatedTask = currentTask
+            .copy(
+                subtaskItems = updatedEncoded,
+                status = nextStatus,
+                historyItems = currentTask.historyItems + StatusHistoryEntry(
+                    nowText(),
+                    actor.shortName,
+                    nextStatus,
+                    "Отчёт по чек-листу: выполнено ${SubtaskItem.formatVolumeNumber(newCompletedVol)} (${updatedDecoded.firstOrNull { it.id == subtaskId }?.progressPercent ?: 0}%)"
+                ).encode()
+            )
+            .withUpdatedVolume(tVol, nextTaskCompletedVol, currentTask.effectiveVolumeUnit)
+
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Объём по пункту чек-листа сохранён (${updatedTask.completionPercent()}%)"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+            }
+        }
+    }
+
+    fun updateTaskVolumeProgress(task: TaskDocument, newCompletedVol: Double) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val tVol = currentTask.effectiveTargetVolume
+        if (tVol <= 0.0) return
+
+        val clamped = newCompletedVol.coerceIn(0.0, tVol)
+        val unit = currentTask.effectiveVolumeUnit.ifBlank { "шт" }
+        val pct = ((clamped / tVol) * 100.0).toInt().coerceIn(0, 100)
+
+        // Синхронизируем с подзадачей объёма в чек-листе
+        val decoded = currentTask.decodedSubtasks()
+        val updatedDecoded = decoded.map { sub ->
+            if (sub.id == "sub_vol_main" || sub.targetVolume == tVol) {
+                sub.copy(
+                    completedVolume = clamped,
+                    isDone = clamped >= tVol
+                )
+            } else if (pct == 100) {
+                sub.copy(
+                    isDone = true,
+                    completedVolume = if (sub.hasVolume) sub.targetVolume else sub.completedVolume
+                )
+            } else {
+                sub
+            }
+        }
+        val updatedEncoded = updatedDecoded.map { it.encode() }
+
+        val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW && clamped > 0.0) {
+            TaskStatus.IN_PROGRESS.code
+        } else {
+            currentTask.status
+        }
+
+        val updatedTask = currentTask
+            .copy(
+                subtaskItems = updatedEncoded,
+                status = nextStatus,
+                historyItems = currentTask.historyItems + StatusHistoryEntry(
+                    nowText(),
+                    actor.shortName,
+                    nextStatus,
+                    "Обновлён объём работ: ${SubtaskItem.formatVolumeNumber(clamped)} из ${SubtaskItem.formatVolumeNumber(tVol)} $unit ($pct%)"
+                ).encode()
+            )
+            .withUpdatedVolume(tVol, clamped, unit)
+
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Выполнено: ${SubtaskItem.formatVolumeNumber(clamped)} из ${SubtaskItem.formatVolumeNumber(tVol)} $unit ($pct%)"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+            }
+        }
+    }
+
+    fun addSubtaskToTask(
+        task: TaskDocument,
+        title: String,
+        targetVolume: Double = 0.0,
+        unit: String = ""
+    ) {
         val clean = title.trim()
         if (clean.isBlank()) return
         val currentTask = findTaskById(task.id) ?: task
         val newItem = SubtaskItem(
             id = "sub_${System.currentTimeMillis()}",
             title = clean,
-            isDone = false
+            isDone = false,
+            targetVolume = targetVolume.coerceAtLeast(0.0),
+            completedVolume = 0.0,
+            unit = unit.trim()
         ).encode()
+        val updatedEncoded = currentTask.subtaskItems + newItem
         val updatedTask = currentTask.copy(
-            subtaskItems = currentTask.subtaskItems + newItem
+            subtaskItems = updatedEncoded
         )
         upsertLocalTask(updatedTask)
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+            }
+        }
     }
 
     fun addComment(task: TaskDocument, text: String, mentionedUser: String) {
@@ -960,6 +1198,10 @@ class EzhednevnikViewModel(
             _bannerMessage.value = "Прикрепите минимум ${currentTask.minPhotoCount} фото (сейчас: ${currentTask.photoItems.size})"
             return
         }
+        if (currentTask.hasVolumeTracking() && !currentTask.isVolumeCompleted100Percent()) {
+            _bannerMessage.value = "Задача считается выполненной при 100% объёма в чек-листе (сейчас: ${currentTask.completionPercent()}%)"
+            return
+        }
         val nextStatus = if (currentTask.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
         val updatedTask = currentTask.copy(
             status = nextStatus.code,
@@ -968,14 +1210,14 @@ class EzhednevnikViewModel(
                 nowText(),
                 actor.shortName,
                 nextStatus.code,
-                note.ifBlank { "Отправлено на проверку" }
+                note.ifBlank { "Отправлено на проверку (выполнено 100%)" }
             ).encode()
         )
         upsertLocalTask(updatedTask)
         _bannerMessage.value = if (nextStatus == TaskStatus.ON_REVIEW) {
-            "Задача отправлена на проверку"
+            "Задача (100%) отправлена на проверку"
         } else {
-            "Задача выполнена"
+            "Задача выполнена на 100%"
         }
 
         viewModelScope.launch {
@@ -1067,7 +1309,7 @@ class EzhednevnikViewModel(
                             nowText(),
                             "Автоперенос",
                             t.status,
-                            "Перенесено на следующий день (перенос №${t.carryoverCount + 1L})"
+                            "Перенесено на следующий день (выполнено ${t.completionPercent()}%, перенос №${t.carryoverCount + 1L})"
                         ).encode()
                     )
                 } else {
@@ -1091,7 +1333,8 @@ class EzhednevnikViewModel(
         template: ReportTemplateDocument,
         sheetLayout: SheetLayout,
         exportFormat: ExportFormat,
-        saveToHistory: Boolean
+        saveToHistory: Boolean,
+        includePhotos: Boolean = true
     ) {
         viewModelScope.launch {
             val actor = activeEmployee.value
@@ -1106,7 +1349,8 @@ class EzhednevnikViewModel(
                         allTasks = allTasks,
                         currentEpochDay = day,
                         overrideLayout = sheetLayout,
-                        overrideFormat = exportFormat
+                        overrideFormat = exportFormat,
+                        includePhotos = includePhotos
                     )
                 }
             }
@@ -1119,7 +1363,7 @@ class EzhednevnikViewModel(
                         id = "rep_${System.currentTimeMillis()}",
                         userId = effectiveUserId,
                         templateId = template.id.ifBlank { "tpl_custom" },
-                        templateName = template.name,
+                        templateName = "${template.name} (${if (includePhotos) "с фото" else "без фото"})",
                         reportType = template.reportType,
                         authorName = actor.fullName,
                         periodLabel = generated.periodLabel,

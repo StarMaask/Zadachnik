@@ -472,8 +472,15 @@ fun MainFeatureScreen(
                                 autoReportNight = autoReportNight,
                                 onToggleAutoPlan = viewModel::toggleAutoSchedulePlan,
                                 onToggleAutoReport = viewModel::toggleAutoScheduleReport,
-                                onGenerateReport = { tpl, layout, fmt, save ->
-                                    viewModel.previewOrGenerateReport(context, tpl, layout, fmt, save)
+                                onGenerateReport = { tpl, layout, fmt, save, includePhotos ->
+                                    viewModel.previewOrGenerateReport(
+                                        context = context,
+                                        template = tpl,
+                                        sheetLayout = layout,
+                                        exportFormat = fmt,
+                                        saveToHistory = save,
+                                        includePhotos = includePhotos
+                                    )
                                 },
                                 onSaveCustomTemplate = viewModel::saveCustomTemplate
                             )
@@ -495,7 +502,8 @@ fun MainFeatureScreen(
                                         template = statTpl,
                                         sheetLayout = SheetLayout.SINGLE_SHEET,
                                         exportFormat = fmt,
-                                        saveToHistory = true
+                                        saveToHistory = true,
+                                        includePhotos = true
                                     )
                                 }
                             )
@@ -540,7 +548,9 @@ fun MainFeatureScreen(
             onAddPhoto = { uri, gps, cmt -> viewModel.addPhotoToTask(task, uri, gps, cmt) },
             onDeletePhoto = { photoId -> viewModel.deletePhotoFromTask(task, photoId) },
             onToggleSubtask = { subId -> viewModel.toggleSubtask(task, subId) },
-            onAddSubtask = { title -> viewModel.addSubtaskToTask(task, title) },
+            onUpdateSubtaskVolume = { subId, vol -> viewModel.updateSubtaskVolume(task, subId, vol) },
+            onUpdateTaskVolume = { vol -> viewModel.updateTaskVolumeProgress(task, vol) },
+            onAddSubtask = { title, vol, unit -> viewModel.addSubtaskToTask(task, title, vol, unit) },
             onAddComment = { txt, mention -> viewModel.addComment(task, txt, mention) },
             onSubmitCompletion = { note -> viewModel.submitCompletion(task, note) },
             onApproveReport = { note -> viewModel.approveReport(task, note) },
@@ -601,7 +611,7 @@ private fun TodayTasksContent(
         modifier = Modifier
             .fillMaxSize()
             .testTag("today_tasks_list"),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 88.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 88.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // Компактное уведомление для Руководителя при наличии новых заявок
@@ -783,7 +793,8 @@ private fun TodayTasksContent(
                         TaskItemCard(
                             task = task,
                             onClick = { onTaskClick(task) },
-                            onDelete = { onDeleteTask(task) }
+                            onDelete = { onDeleteTask(task) },
+                            onToggleSubtask = { subId -> onToggleSubtask(task, subId) }
                         )
                     }
                 }

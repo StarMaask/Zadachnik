@@ -647,8 +647,12 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             ?.takeIf { it.isNotBlank() }
             ?: "task_${UUID.randomUUID().toString().replace("-", "").take(16)}"
         val docRef = db.collection("tasks").document(docId)
-        val encodedSubtasks = draft.subtasks.mapIndexed { idx, title ->
-            SubtaskItem("sub_${idx + 1}", title, false).encode()
+        val encodedSubtasks = draft.subtasks.mapIndexed { idx, raw ->
+            if (raw.contains("|")) {
+                raw
+            } else {
+                SubtaskItem("sub_${idx + 1}", raw, false).encode()
+            }
         }
         val initialHistory = listOf(
             StatusHistoryEntry(
@@ -658,6 +662,12 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 note = "Задача поставлена исполнителю ${assignee.shortName}"
             ).encode()
         )
+        val mergedTags = if (draft.targetVolume > 0.0) {
+            listOf("__vol__|${draft.targetVolume}|0.0|${draft.volumeUnit.replace("|", "/")}") +
+                draft.tags.filterNot { it.startsWith("__vol__|") }
+        } else {
+            draft.tags
+        }
 
         val taskModel = TaskDocument(
             id = docId,
@@ -681,7 +691,10 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             minPhotoCount = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L,
             requiresApproval = draft.requiresApproval,
             recurrenceRule = draft.recurrenceRule.code,
-            tags = draft.tags.take(10),
+            targetVolume = draft.targetVolume,
+            completedVolume = 0.0,
+            volumeUnit = draft.volumeUnit,
+            tags = mergedTags.take(10),
             subtaskItems = encodedSubtasks.take(25),
             photoItems = emptyList(),
             commentItems = emptyList(),
@@ -763,17 +776,20 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
     suspend fun updateSubtasksList(
         task: TaskDocument,
-        encodedSubtasks: List<String>
+        encodedSubtasks: List<String>,
+        encodedTags: List<String>? = null
     ): Result<Unit> = runCatching {
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
         val docRef = db.collection("tasks").document(task.id)
+        val payload = mutableMapOf<String, Any>(
+            "subtaskItems" to encodedSubtasks.take(25),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        if (encodedTags != null) {
+            payload["tags"] = encodedTags.take(10)
+        }
         try {
-            docRef.update(
-                mapOf(
-                    "subtaskItems" to encodedSubtasks.take(25),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
+            docRef.update(payload).await()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

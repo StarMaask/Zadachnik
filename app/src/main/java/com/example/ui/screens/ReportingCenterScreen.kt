@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,8 +12,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,7 +29,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.HideImage
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Preview
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tune
@@ -51,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -82,12 +89,14 @@ fun ReportingCenterScreen(
         template: ReportTemplateDocument,
         layout: SheetLayout,
         format: ExportFormat,
-        saveToHistory: Boolean
+        saveToHistory: Boolean,
+        includePhotos: Boolean
     ) -> Unit,
     onSaveCustomTemplate: (ReportTemplateDocument) -> Unit
 ) {
     var selectedLayout by remember { mutableStateOf(SheetLayout.SPLIT_SHEETS) }
     var selectedFormat by remember { mutableStateOf(ExportFormat.PDF) }
+    var includePhotosInReport by remember { mutableStateOf(true) }
     var showSettingsSubmenu by remember { mutableStateOf(false) }
     var showCustomTemplateDialog by remember { mutableStateOf(false) }
 
@@ -111,10 +120,10 @@ fun ReportingCenterScreen(
         modifier = Modifier
             .fillMaxSize()
             .testTag("reporting_center_list"),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Компактная панель выбора формата и подменю настроек
+        // Компактная панель выбора режима выгрузки (С фото / Без фото), формата и подменю настроек
         item {
             Surface(
                 shape = RoundedCornerShape(12.dp),
@@ -122,7 +131,7 @@ fun ReportingCenterScreen(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
+                Column(modifier = Modifier.padding(12.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -135,7 +144,7 @@ fun ReportingCenterScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Формат: ${selectedFormat.code} • ${selectedLayout.shortRu}",
+                                text = "Формат: ${selectedFormat.code} • ${if (includePhotosInReport) "С фото" else "Без фото"} • ${selectedLayout.shortRu}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -144,6 +153,58 @@ fun ReportingCenterScreen(
                             Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(if (showSettingsSubmenu) "Скрыть" else "Параметры")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Быстрый выбор: выгрузка отчёта С фото или Без фото + формат файла
+                    Text(
+                        text = "Режим выгрузки фотоотчёта и формат:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = includePhotosInReport,
+                            onClick = { includePhotosInReport = true },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.PhotoCamera,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            },
+                            label = { Text("С фото") },
+                            modifier = Modifier.testTag("report_mode_with_photos")
+                        )
+                        FilterChip(
+                            selected = !includePhotosInReport,
+                            onClick = { includePhotosInReport = false },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.HideImage,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            },
+                            label = { Text("Без фото") },
+                            modifier = Modifier.testTag("report_mode_without_photos")
+                        )
+                        ExportFormat.entries.forEach { fmt ->
+                            FilterChip(
+                                selected = selectedFormat == fmt,
+                                onClick = { selectedFormat = fmt },
+                                label = { Text(fmt.code) },
+                                modifier = Modifier.testTag("export_format_${fmt.code}")
+                            )
                         }
                     }
 
@@ -166,18 +227,6 @@ fun ReportingCenterScreen(
                                         onClick = { selectedLayout = layout },
                                         label = { Text(layout.shortRu) },
                                         modifier = Modifier.testTag("sheet_layout_${layout.code}")
-                                    )
-                                }
-                            }
-
-                            Text("Формат файла:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                ExportFormat.entries.forEach { fmt ->
-                                    FilterChip(
-                                        selected = selectedFormat == fmt,
-                                        onClick = { selectedFormat = fmt },
-                                        label = { Text(fmt.code) },
-                                        modifier = Modifier.testTag("export_format_${fmt.code}")
                                     )
                                 }
                             }
@@ -227,7 +276,7 @@ fun ReportingCenterScreen(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
+                Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         text = tpl.name,
                         style = MaterialTheme.typography.titleSmall,
@@ -241,7 +290,7 @@ fun ReportingCenterScreen(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     if (isLockedForWorker) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -265,29 +314,39 @@ fun ReportingCenterScreen(
                         ) {
                             OutlinedButton(
                                 onClick = {
-                                    onGenerateReport(tpl, selectedLayout, selectedFormat, false)
+                                    onGenerateReport(tpl, selectedLayout, selectedFormat, false, includePhotosInReport)
                                 },
                                 modifier = Modifier
                                     .weight(1f)
                                     .testTag("preview_report_${rType.code}"),
-                                contentPadding = PaddingValues(vertical = 8.dp)
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                             ) {
                                 Icon(Icons.Default.Preview, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Просмотр", style = MaterialTheme.typography.labelMedium)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (includePhotosInReport) "Просмотр (с фото)" else "Просмотр (без фото)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                             Button(
                                 onClick = {
-                                    onGenerateReport(tpl, selectedLayout, selectedFormat, true)
+                                    onGenerateReport(tpl, selectedLayout, selectedFormat, true, includePhotosInReport)
                                 },
                                 modifier = Modifier
                                     .weight(1f)
                                     .testTag("generate_report_${rType.code}"),
-                                contentPadding = PaddingValues(vertical = 8.dp)
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                             ) {
                                 Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Скачать ${selectedFormat.code}", style = MaterialTheme.typography.labelMedium)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Скачать ${selectedFormat.code}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }
@@ -297,7 +356,7 @@ fun ReportingCenterScreen(
 
         if (generatedReports.isNotEmpty()) {
             item {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Сформированные файлы (${generatedReports.size})",
                     style = MaterialTheme.typography.titleSmall,
@@ -363,150 +422,220 @@ fun ReportPreviewDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
-        Surface(
+        BoxWithConstraints(
             modifier = Modifier
-                .fillMaxWidth(0.96f)
-                .padding(vertical = 14.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface
+                .fillMaxSize()
+                .systemBarsPadding()
+                .imePadding()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(
+            Surface(
                 modifier = Modifier
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 4.dp
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = result.reportTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "${result.exportFormat.code} • ${result.periodLabel}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                if (result.sheets.size > 1) {
-                    TabRow(selectedTabIndex = activeSheetTab) {
-                        result.sheets.forEachIndexed { index, _ ->
-                            Tab(
-                                selected = activeSheetTab == index,
-                                onClick = { activeSheetTab = index },
-                                text = {
-                                    Text(
-                                        text = if (index == 0) "Лист 1: План" else "Лист 2: Отчёт",
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    // Закрепленная верхняя шапка
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = result.reportTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${result.exportFormat.code} • ${if (result.includePhotos) "С фотоотчётом" else "Без фото"} • ${result.periodLabel}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                        }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
 
-                val currentSheet = result.sheets.getOrElse(activeSheetTab) { result.sheets.first() }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-                if (currentSheet.rows.isEmpty()) {
-                    Text(
-                        text = "Нет задач за выбранный период.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 12.dp)
-                    )
-                } else {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column {
-                            currentSheet.rows.forEachIndexed { idx, row ->
-                                val isApproved = row.statusLabel == TaskStatus.APPROVED.titleRu
-                                val deco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
+                    if (result.sheets.size > 1) {
+                        TabRow(selectedTabIndex = activeSheetTab) {
+                            result.sheets.forEachIndexed { index, _ ->
+                                Tab(
+                                    selected = activeSheetTab == index,
+                                    onClick = { activeSheetTab = index },
+                                    text = {
                                         Text(
-                                            text = "${row.index}. ${row.taskTitle}",
-                                            style = MaterialTheme.typography.bodySmall.copy(textDecoration = deco),
+                                            text = if (index == 0) "Лист 1: План" else "Лист 2: Отчёт",
                                             fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Text(
-                                            text = row.statusLabel,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.SemiBold
+                                            style = MaterialTheme.typography.labelMedium
                                         )
                                     }
-                                    Text(
-                                        text = "${row.assigneeFio} • Срок: ${row.deadlineLabel} • Фото: ${row.photoInfo}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (idx < currentSheet.rows.lastIndex) {
-                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                }
+                                )
                             }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            ReportDocumentGenerator.shareGeneratedReport(context, result, "SHARE")
-                        },
+                    // Прокручиваемая средняя область таблицы
+                    Column(
                         modifier = Modifier
-                            .weight(1f)
-                            .testTag("share_report_button")
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Поделиться")
+                        val currentSheet = result.sheets.getOrElse(activeSheetTab) { result.sheets.first() }
+
+                        if (currentSheet.rows.isEmpty()) {
+                            Text(
+                                text = "Нет задач за выбранный период.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column {
+                                    currentSheet.rows.forEachIndexed { idx, row ->
+                                        val isApproved = row.statusLabel == TaskStatus.APPROVED.titleRu
+                                        val deco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
+                                        val isPartialVolume = row.completionPercent in 0..99 && row.volumeInfo.startsWith("Не до конца")
+
+                                        Column(modifier = Modifier.padding(10.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.Top
+                                            ) {
+                                                Text(
+                                                    text = "${row.index}. ${row.taskTitle}",
+                                                    style = MaterialTheme.typography.bodySmall.copy(textDecoration = deco),
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = row.statusLabel,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = "Объём работ: ${row.volumeInfo}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (isPartialVolume) {
+                                                    Color(0xFFB45309)
+                                                } else if (row.completionPercent >= 100) {
+                                                    Color(0xFF15803D)
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                }
+                                            )
+                                            val metaLine = buildString {
+                                                append("${row.assigneeFio} • Срок: ${row.deadlineLabel}")
+                                                if (result.includePhotos) {
+                                                    append(" • Фото: ${row.photoInfo}")
+                                                }
+                                            }
+                                            Text(
+                                                text = metaLine,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (idx < currentSheet.rows.lastIndex) {
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (result.includePhotos && result.attachedPhotos.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "В отчёт включено приложение с фотофиксацией (${result.attachedPhotos.size} фото).",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
+                        }
                     }
-                    OutlinedButton(
-                        onClick = {
-                            ReportDocumentGenerator.shareGeneratedReport(context, result, "EMAIL")
-                        },
-                        modifier = Modifier.weight(1f)
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // Закрепленная нижняя панель отправки/экспорта
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Почта")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            ReportDocumentGenerator.shareGeneratedReport(context, result, "MESSENGER")
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Чат")
+                        Button(
+                            onClick = {
+                                ReportDocumentGenerator.shareGeneratedReport(context, result, "SHARE")
+                            },
+                            modifier = Modifier
+                                .weight(1.2f)
+                                .testTag("share_report_button"),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Поделиться", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                ReportDocumentGenerator.shareGeneratedReport(context, result, "EMAIL")
+                            },
+                            modifier = Modifier.weight(0.9f),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Почта", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                ReportDocumentGenerator.shareGeneratedReport(context, result, "MESSENGER")
+                            },
+                            modifier = Modifier.weight(0.9f),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Чат", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 }
             }
@@ -531,7 +660,7 @@ fun CustomTemplateConstructorDialog(
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     text = "Новый шаблон отчёта",
                     style = MaterialTheme.typography.titleMedium,
@@ -554,7 +683,12 @@ fun CustomTemplateConstructorDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf("ASSIGNEE" to "По ФИО", "GROUP" to "По группе", "STATUS" to "По статусу").forEach { (code, label) ->
                         FilterChip(
                             selected = groupBy == code,

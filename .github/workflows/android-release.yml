@@ -21,17 +21,35 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "17"
+          java-version: "21"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Ensure debug.keystore exists for CI build
+      - name: Setup Android SDK & Accept Licenses (API 36.1)
         run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "platform-tools" "build-tools;36.0.0" "platforms;android-36" "platforms;android-36.1" || true
+
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+          validate-wrappers: false
+
+      - name: Prepare Keystore, .env & Firebase Config for CI Build
+        env:
+          CUSTOM_GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ ! -f .env ]; then
+            if [ -f .env.example ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
+          fi
+
           if [ ! -f debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
               base64 -d debug.keystore.base64 > debug.keystore
@@ -43,8 +61,26 @@ jobs:
             fi
           fi
 
+          mkdir -p app/src/main/res/values
+          if [ ! -f app/src/main/res/values/firebase_applet_config.xml ]; then
+            cat << 'EOF' > app/src/main/res/values/firebase_applet_config.xml
+          <?xml version="1.0" encoding="utf-8" standalone="no"?>
+          <resources>
+              <string name="firestore_database_id" translatable="false">ai-studio-android-4226c707-0da4-4c25-89ac-248f3f255608</string>
+          </resources>
+          EOF
+          fi
+
+          if [ ! -f app/google-services.json ]; then
+            if [ -n "$CUSTOM_GOOGLE_SERVICES_JSON" ]; then
+              echo "$CUSTOM_GOOGLE_SERVICES_JSON" > app/google-services.json
+            else
+              echo "ewogICJwcm9qZWN0X2luZm8iOiB7CiAgICAicHJvamVjdF9udW1iZXIiOiAiMTAzOTgxMjg0MzcyOSIsCiAgICAicHJvamVjdF9pZCI6ICJnZW4tbGFuZy1jbGllbnQtMDkyNTI1NTQ1NSIsCiAgICAic3RvcmFnZV9idWNrZXQiOiAiZ2VuLWxhbmctY2xpZW50LTA5MjUyNTU0NTUuZmlyZWJhc2VzdG9yYWdlLmFwcCIKICB9LAogICJjbGllbnQiOiBbCiAgICB7CiAgICAgICJjbGllbnRfaW5mbyI6IHsKICAgICAgICAibW9iaWxlc2RrX2FwcF9pZCI6ICIxOjEwMzk4MTI4NDM3Mjk6YW5kcm9pZDoxNTY4YTgzOTJhZDQ5YjUyZWE4ZGYwIiwKICAgICAgICAiYW5kcm9pZF9jbGllbnRfaW5mbyI6IHsKICAgICAgICAgICJwYWNrYWdlX25hbWUiOiAiY29tLmFpc3R1ZGlvLmV6aGVkbmV2bmlrLmtweG1yeiIKICAgICAgICB9CiAgICAgIH0sCiAgICAgICJvYXV0aF9jbGllbnQiOiBbCiAgICAgICAgewogICAgICAgICAgImNsaWVudF9pZCI6ICIxMDM5ODEyODQzNzI5LXNzYmUybW05NG5uODI0ZjdxcXJncjVjODhqazllZ3NhLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwKICAgICAgICAgICJjbGllbnRfdHlwZSI6IDEsCiAgICAgICAgICAiYW5kcm9pZF9pbmZvIjogewogICAgICAgICAgICAicGFja2FnZV9uYW1lIjogImNvbS5haXN0dWRpby5lemhlZG5ldm5pay5rcHhtcnoiLAogICAgICAgICAgICAiY2VydGlmaWNhdGVfaGFzaCI6ICI1M2QzYTFiZTYwOGVmYjA1YTgwMWY3MWMxOGM3MTY4NjAxYjBhMmIwIgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgewogICAgICAgICAgImNsaWVudF9pZCI6ICIxMDM5ODEyODQzNzI5LXR0Zzc0YWZocWxuMXFrdmVhN2JvY2EzMmYxa21iYjVwLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwKICAgICAgICAgICJjbGllbnRfdHlwZSI6IDMKICAgICAgICB9CiAgICAgIF0sCiAgICAgICJhcGlfa2V5IjogWwogICAgICAgIHsKICAgICAgICAgICJjdXJyZW50X2tleSI6ICJBSXphU3lCNzhRYXFWdVI5ZHZreHA5Yi02TVVxS1dtbVJxeVhpN0EiCiAgICAgICAgfQogICAgICBdLAogICAgICAic2VydmljZXMiOiB7CiAgICAgICAgImFwcGludml0ZV9zZXJ2aWNlIjogewogICAgICAgICAgIm90aGVyX3BsYXRmb3JtX29hdXRoX2NsaWVudCI6IFsKICAgICAgICAgICAgewogICAgICAgICAgICAgICJjbGllbnRfaWQiOiAiMTAzOTgxMjg0MzcyOS10dGc3NGFmaHFsbjFxa3ZlYTdib2NhMzJmMWttYmI1cC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsCiAgICAgICAgICAgICAgImNsaWVudF90eXBlIjogMwogICAgICAgICAgICB9CiAgICAgICAgICBdCiAgICAgICAgfQogICAgICB9CiAgICB9LAogICAgewogICAgICAiY2xpZW50X2luZm8iOiB7CiAgICAgICAgIm1vYmlsZXNka19hcHBfaWQiOiAiMToxMDM5ODEyODQzNzI5OmFuZHJvaWQ6OGE5YTQ4NTE4MTQ3NTBjYWVhOGRmMCIsCiAgICAgICAgImFuZHJvaWRfY2xpZW50X2luZm8iOiB7CiAgICAgICAgICAicGFja2FnZV9uYW1lIjogImNvbS5haXN0dWRpby5wZGZ2aWV3ZXIuZXhwZXJ0IgogICAgICAgIH0KICAgICAgfSwKICAgICAgIm9hdXRoX2NsaWVudCI6IFsKICAgICAgICB7CiAgICAgICAgICAiY2xpZW50X2lkIjogIjEwMzk4MTI4NDM3MjktMGs3cTZzaTIxbmpvcmYxdWJjajcyZGRyYWVmNnAwcnUuYXBwcy5nb29nbGV1c2VyY29udGVudC5jb20iLAogICAgICAgICAgImNsaWVudF90eXBlIjogMSwKICAgICAgICAgICJhbmRyb2lkX2luZm8iOiB7CiAgICAgICAgICAgICJwYWNrYWdlX25hbWUiOiAiY29tLmFpc3R1ZGlvLnBkZnZpZXdlci5leHBlcnQiLAogICAgICAgICAgICAiY2VydGlmaWNhdGVfaGFzaCI6ICJkNWUxOTM4ZWNlZTA5NTMwOWY5YzJiMzBjNjA0Nzc3MjI4ZjZkNTQyIgogICAgICAgICAgfQogICAgICAgIH0sCiAgICAgICAgewogICAgICAgICAgImNsaWVudF9pZCI6ICIxMDM5ODEyODQzNzI5LXR0Zzc0YWZocWxuMXFrdmVhN2JvY2EzMmYxa21iYjVwLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwKICAgICAgICAgICJjbGllbnRfdHlwZSI6IDMKICAgICAgICB9CiAgICAgIF0sCiAgICAgICJhcGlfa2V5IjogWwogICAgICAgIHsKICAgICAgICAgICJjdXJyZW50X2tleSI6ICJBSXphU3lCNzhRYXFWdVI5ZHZreHA5Yi02TVVxS1dtbVJxeVhpN0EiCiAgICAgICAgfQogICAgICBdLAogICAgICAic2VydmljZXMiOiB7CiAgICAgICAgImFwcGludml0ZV9zZXJ2aWNlIjogewogICAgICAgICAgIm90aGVyX3BsYXRmb3JtX29hdXRoX2NsaWVudCI6IFsKICAgICAgICAgICAgewogICAgICAgICAgICAgICJjbGllbnRfaWQiOiAiMTAzOTgxMjg0MzcyOS10dGc3NGFmaHFsbjFxa3ZlYTdib2NhMzJmMWttYmI1cC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsCiAgICAgICAgICAgICAgImNsaWVudF90eXBlIjogMwogICAgICAgICAgICB9CiAgICAgICAgICBdCiAgICAgICAgfQogICAgICB9CiAgICB9CiAgXSwKICAiY29uZmlndXJhdGlvbl92ZXJzaW9uIjogIjEiCn0=" | base64 -d > app/google-services.json
+            fi
+          fi
+
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleDebug --no-configuration-cache --stacktrace
 
       - name: Copy APK to release directory
         run: |

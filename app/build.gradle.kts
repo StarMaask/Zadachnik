@@ -21,6 +21,12 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    if (!file("google-services.json").exists()) {
+      resValue("string", "default_web_client_id", "placeholder-web-client-id")
+    }
+    if (!file("src/main/res/values/firebase_applet_config.xml").exists()) {
+      resValue("string", "firestore_database_id", "ai-studio-android-4226c707-0da4-4c25-89ac-248f3f255608")
+    }
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
@@ -63,6 +69,7 @@ android {
   buildFeatures {
     compose = true
     buildConfig = true
+    resValues = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {

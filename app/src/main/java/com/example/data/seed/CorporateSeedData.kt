@@ -769,4 +769,48 @@ object CorporateSeedData {
             details = "Автоматический перенос невыполненных задач на следующий день с сохранением originalDueDate"
         )
     )
+
+    fun buildInitialSiteMembers(): List<com.example.data.model.SiteMemberDocument> {
+        val activeFromRoster = employees.map { emp ->
+            com.example.data.model.SiteMemberDocument(
+                id = emp.id,
+                memberId = emp.id,
+                email = emp.email,
+                fullName = emp.fullName,
+                position = emp.position,
+                role = emp.role.code,
+                approvalStatus = com.example.data.model.MemberApprovalStatus.APPROVED.code,
+                groupId = emp.groupId,
+                groupName = emp.groupName,
+                approvedByName = "Ковалёв Дмитрий Сергеевич"
+            )
+        }
+        val pendingRequests = listOf(
+            com.example.data.model.SiteMemberDocument(
+                id = "pending_emp_1",
+                memberId = "pending_emp_1",
+                email = "samoilov.va@glavstroy.ru",
+                fullName = "Самойлов Виктор Андреевич",
+                position = "Электромонтажник 4 разряда",
+                role = "PENDING",
+                approvalStatus = com.example.data.model.MemberApprovalStatus.PENDING.code,
+                groupId = "grp_mep",
+                groupName = "Бригада №2 • Инженерные сети (ЭОМ и ОВиК)",
+                approvedByName = null
+            ),
+            com.example.data.model.SiteMemberDocument(
+                id = "pending_emp_2",
+                memberId = "pending_emp_2",
+                email = "tikhonov.dy@glavstroy.ru",
+                fullName = "Тихонов Денис Юрьевич",
+                position = "Мастер СМР / Геодезист",
+                role = "PENDING",
+                approvalStatus = com.example.data.model.MemberApprovalStatus.PENDING.code,
+                groupId = "grp_monolith",
+                groupName = "Бригада №1 • Монолит и ЖБК",
+                approvedByName = null
+            )
+        )
+        return pendingRequests + activeFromRoster
+    }
 }

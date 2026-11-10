@@ -8,9 +8,11 @@ import com.example.data.model.CorporateRole
 import com.example.data.model.EmployeeDisciplineStat
 import com.example.data.model.GeneratedReportDocument
 import com.example.data.model.GroupStatBreakdown
+import com.example.data.model.MemberApprovalStatus
 import com.example.data.model.PhotoReportItem
 import com.example.data.model.RecurrenceRule
 import com.example.data.model.ReportTemplateDocument
+import com.example.data.model.SiteMemberDocument
 import com.example.data.model.StatisticsSummary
 import com.example.data.model.StatusHistoryEntry
 import com.example.data.model.SubtaskItem
@@ -19,6 +21,7 @@ import com.example.data.model.TaskDocument
 import com.example.data.model.TaskDraft
 import com.example.data.model.TaskStatus
 import com.example.data.model.UserProfile
+import com.example.data.model.WorkGroup
 import com.example.data.seed.CorporateSeedData
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
@@ -167,6 +170,30 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         )
     }
 
+    fun observeSiteMembers(): Flow<List<SiteMemberDocument>> = flow {
+        val uid = auth.currentUser?.uid ?: ""
+        val path = "site_members"
+        emitAll(
+            db.collection(path)
+                .snapshots()
+                .map { querySnapshot ->
+                    querySnapshot.toObjects(
+                        SiteMemberDocument::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedWith(
+                        compareBy<SiteMemberDocument> { !it.isPendingRole }
+                            .thenBy { it.fullName }
+                    )
+                }
+                .catch { error ->
+                    if (uid.isNotBlank()) {
+                        logStreamErrorIfActive(error, OperationType.LIST, path, uid)
+                    }
+                    throw error
+                }
+        )
+    }
+
     private fun logStreamErrorIfActive(
         error: Throwable,
         operationType: OperationType,
@@ -254,6 +281,26 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     )
                 )
             }
+            CorporateSeedData.buildInitialSiteMembers().forEach { member ->
+                val safeId = member.memberId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+                val docRef = db.collection("site_members").document(safeId)
+                val memberPayload = mutableMapOf<String, Any>(
+                    "memberId" to safeId,
+                    "email" to member.email.take(160),
+                    "fullName" to member.fullName.take(120),
+                    "position" to member.position.take(120),
+                    "role" to member.role,
+                    "approvalStatus" to member.approvalStatus,
+                    "groupId" to member.groupId.take(64),
+                    "groupName" to member.groupName.take(120),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (member.approvedByName != null) {
+                    memberPayload["approvedByName"] = member.approvedByName.take(120)
+                }
+                batch.set(docRef, memberPayload)
+            }
             try {
                 batch.commit().await()
             } catch (e: CancellationException) {
@@ -263,6 +310,299 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 throw e
             }
         }
+    }
+
+    suspend fun registerOrResolveSiteMember(
+        rawMemberId: String,
+        email: String,
+        fullName: String,
+        position: String = "Специалист участка",
+        requestedGroup: WorkGroup = CorporateSeedData.workGroups.first(),
+        forceHeadActivation: Boolean = false
+    ): Result<SiteMemberDocument> = runCatching {
+        val safeMemberId = rawMemberId
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .take(120)
+            .ifBlank { "usr_${System.currentTimeMillis()}" }
+        val normalizedEmail = email.trim().lowercase().ifBlank { "$safeMemberId@site1.ru" }
+        val isAutoHead = forceHeadActivation || SiteMemberDocument.isRootHeadEmail(normalizedEmail)
+
+        val resolvedRole = if (isAutoHead) CorporateRole.HEAD.code else "PENDING"
+        val resolvedStatus = if (isAutoHead) {
+            MemberApprovalStatus.APPROVED.code
+        } else {
+            MemberApprovalStatus.PENDING.code
+        }
+        val resolvedGroup = if (isAutoHead) {
+            CorporateSeedData.workGroups.last()
+        } else {
+            requestedGroup
+        }
+        val resolvedPosition = if (isAutoHead) {
+            "Начальник строительного участка"
+        } else {
+            position.ifBlank { "Специалист участка" }
+        }
+
+        if (auth.currentUser != null) {
+            // Check if pre-registered by email or already registered by memberId
+            val existingByEmail = try {
+                db.collection("site_members")
+                    .whereEqualTo("email", normalizedEmail)
+                    .limit(1)
+                    .get()
+                    .await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+
+            val existingDoc = existingByEmail?.documents?.firstOrNull()
+            if (existingDoc != null && existingDoc.exists()) {
+                val existingObj = existingDoc.toObject(
+                    SiteMemberDocument::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                )
+                if (existingObj != null) {
+                    if (isAutoHead && existingObj.role != CorporateRole.HEAD.code) {
+                        existingDoc.reference.update(
+                            mapOf(
+                                "role" to CorporateRole.HEAD.code,
+                                "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                                "position" to "Начальник строительного участка",
+                                "approvedByName" to "Система (Автоопределение руководителя)",
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        ).await()
+                        return@runCatching existingObj.copy(
+                            role = CorporateRole.HEAD.code,
+                            approvalStatus = MemberApprovalStatus.APPROVED.code,
+                            position = "Начальник строительного участка"
+                        )
+                    }
+                    return@runCatching existingObj
+                }
+            }
+
+            val docRef = db.collection("site_members").document(safeMemberId)
+            val payload = mutableMapOf<String, Any>(
+                "memberId" to safeMemberId,
+                "email" to normalizedEmail.take(160),
+                "fullName" to fullName.ifBlank { "Сотрудник участка" }.take(120),
+                "position" to resolvedPosition.take(120),
+                "role" to resolvedRole,
+                "approvalStatus" to resolvedStatus,
+                "groupId" to resolvedGroup.id.take(64),
+                "groupName" to resolvedGroup.name.take(120),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (isAutoHead) {
+                payload["approvedByName"] = "Система (Владелец / Код руководителя)"
+            }
+            try {
+                docRef.set(payload).await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            }
+        }
+
+        SiteMemberDocument(
+            id = safeMemberId,
+            memberId = safeMemberId,
+            email = normalizedEmail,
+            fullName = fullName.ifBlank { "Сотрудник участка" },
+            position = resolvedPosition,
+            role = resolvedRole,
+            approvalStatus = resolvedStatus,
+            groupId = resolvedGroup.id,
+            groupName = resolvedGroup.name,
+            approvedByName = if (isAutoHead) "Система (Владелец / Код руководителя)" else null
+        )
+    }
+
+    suspend fun assignRoleToSiteMember(
+        actor: CorporateEmployee,
+        targetMember: SiteMemberDocument,
+        assignedRole: CorporateRole,
+        assignedGroup: WorkGroup,
+        customPosition: String? = null
+    ): Result<SiteMemberDocument> = runCatching {
+        if (actor.role != CorporateRole.HEAD) {
+            throw IllegalAccessException("Назначать роли пользователям может только Руководитель участка")
+        }
+        val safeId = targetMember.memberId.ifBlank { targetMember.id }
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+        val newPosition = customPosition?.takeIf { it.isNotBlank() }
+            ?: targetMember.position.ifBlank { assignedRole.titleRu }
+
+        val updatedMember = targetMember.copy(
+            id = safeId,
+            memberId = safeId,
+            role = assignedRole.code,
+            approvalStatus = MemberApprovalStatus.APPROVED.code,
+            groupId = assignedGroup.id,
+            groupName = assignedGroup.name,
+            position = newPosition,
+            approvedByName = actor.fullName
+        )
+
+        val currentUid = auth.currentUser?.uid
+        if (currentUid != null) {
+            val docRef = db.collection("site_members").document(safeId)
+            val snap = try {
+                docRef.get().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (snap != null && snap.exists()) {
+                docRef.update(
+                    mapOf(
+                        "role" to assignedRole.code,
+                        "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                        "groupId" to assignedGroup.id.take(64),
+                        "groupName" to assignedGroup.name.take(120),
+                        "position" to newPosition.take(120),
+                        "approvedByName" to actor.fullName.take(120),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                docRef.set(
+                    mapOf(
+                        "memberId" to safeId,
+                        "email" to updatedMember.email.ifBlank { "$safeId@site1.ru" }.take(160),
+                        "fullName" to updatedMember.fullName.take(120),
+                        "position" to newPosition.take(120),
+                        "role" to assignedRole.code,
+                        "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                        "groupId" to assignedGroup.id.take(64),
+                        "groupName" to assignedGroup.name.take(120),
+                        "approvedByName" to actor.fullName.take(120),
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+
+            appendAuditLog(
+                uid = currentUid,
+                actor = actor,
+                actionType = "ASSIGN_USER_ROLE",
+                targetType = "USER",
+                targetId = safeId,
+                details = "Назначена роль «${assignedRole.titleRu}» и подразделение «${assignedGroup.name}» сотруднику ${updatedMember.fullName} (${updatedMember.email})"
+            )
+        }
+        updatedMember
+    }
+
+    suspend fun rejectSiteMemberAccess(
+        actor: CorporateEmployee,
+        targetMember: SiteMemberDocument
+    ): Result<SiteMemberDocument> = runCatching {
+        if (actor.role != CorporateRole.HEAD) {
+            throw IllegalAccessException("Отклонять заявки на вход может только Руководитель участка")
+        }
+        val safeId = targetMember.memberId.ifBlank { targetMember.id }
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+        val updatedMember = targetMember.copy(
+            approvalStatus = MemberApprovalStatus.REJECTED.code,
+            approvedByName = actor.fullName
+        )
+        val currentUid = auth.currentUser?.uid
+        if (currentUid != null) {
+            val docRef = db.collection("site_members").document(safeId)
+            try {
+                docRef.update(
+                    mapOf(
+                        "approvalStatus" to MemberApprovalStatus.REJECTED.code,
+                        "approvedByName" to actor.fullName.take(120),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Ignore if only local seed
+            }
+            appendAuditLog(
+                uid = currentUid,
+                actor = actor,
+                actionType = "REJECT_USER_ACCESS",
+                targetType = "USER",
+                targetId = safeId,
+                details = "Отклонён доступ в систему пользователю ${targetMember.fullName} (${targetMember.email})"
+            )
+        }
+        updatedMember
+    }
+
+    suspend fun preRegisterSiteMemberByEmail(
+        actor: CorporateEmployee,
+        email: String,
+        fullName: String,
+        position: String,
+        assignedRole: CorporateRole,
+        assignedGroup: WorkGroup
+    ): Result<SiteMemberDocument> = runCatching {
+        if (actor.role != CorporateRole.HEAD) {
+            throw IllegalAccessException("Регистрировать сотрудников и назначать роли может только Руководитель")
+        }
+        require(email.isNotBlank()) { "Укажите Email сотрудника" }
+        require(fullName.isNotBlank()) { "Укажите ФИО сотрудника" }
+
+        val normalizedEmail = email.trim().lowercase()
+        val safeId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+        val resolvedPosition = position.ifBlank { assignedRole.titleRu }
+
+        val newMember = SiteMemberDocument(
+            id = safeId,
+            memberId = safeId,
+            email = normalizedEmail,
+            fullName = fullName.trim(),
+            position = resolvedPosition,
+            role = assignedRole.code,
+            approvalStatus = MemberApprovalStatus.APPROVED.code,
+            groupId = assignedGroup.id,
+            groupName = assignedGroup.name,
+            approvedByName = actor.fullName
+        )
+
+        val currentUid = auth.currentUser?.uid
+        if (currentUid != null) {
+            val docRef = db.collection("site_members").document(safeId)
+            docRef.set(
+                mapOf(
+                    "memberId" to safeId,
+                    "email" to normalizedEmail.take(160),
+                    "fullName" to newMember.fullName.take(120),
+                    "position" to resolvedPosition.take(120),
+                    "role" to assignedRole.code,
+                    "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                    "groupId" to assignedGroup.id.take(64),
+                    "groupName" to assignedGroup.name.take(120),
+                    "approvedByName" to actor.fullName.take(120),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            appendAuditLog(
+                uid = currentUid,
+                actor = actor,
+                actionType = "PRE_REGISTER_USER",
+                targetType = "USER",
+                targetId = safeId,
+                details = "Предварительно зарегистрирован сотрудник ${newMember.fullName} ($normalizedEmail) с ролью «${assignedRole.titleRu}»"
+            )
+        }
+        newMember
     }
 
     suspend fun switchActivePersona(

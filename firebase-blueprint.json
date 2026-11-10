@@ -457,6 +457,73 @@
         "details",
         "createdAt"
       ]
+    },
+    "SiteMemberDocument": {
+      "title": "SiteMemberDocument",
+      "description": "Corporate site member registration, role approval queue (PENDING, APPROVED, REJECTED), and Head role assignment.",
+      "type": "object",
+      "properties": {
+        "memberId": {
+          "type": "string",
+          "description": "Unique member identifier (UID or email-based key)."
+        },
+        "email": {
+          "type": "string",
+          "description": "Corporate or Google email of the employee."
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Full name (FIO) of the employee."
+        },
+        "position": {
+          "type": "string",
+          "description": "Job title or specialization."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["PENDING", "WORKER", "ITR", "HEAD"],
+          "description": "Assigned role in the corporate hierarchy."
+        },
+        "approvalStatus": {
+          "type": "string",
+          "enum": ["PENDING", "APPROVED", "REJECTED"],
+          "description": "Current role assignment status."
+        },
+        "groupId": {
+          "type": "string",
+          "description": "Assigned brigade or work group ID."
+        },
+        "groupName": {
+          "type": "string",
+          "description": "Assigned brigade or work group name."
+        },
+        "approvedByName": {
+          "type": "string",
+          "description": "Full name of the Head who assigned the role."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": [
+        "memberId",
+        "email",
+        "fullName",
+        "position",
+        "role",
+        "approvalStatus",
+        "groupId",
+        "groupName",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -489,6 +556,12 @@
         "$ref": "#/entities/AuditLogDocument"
       },
       "description": "Append-only root collection of security and privileged action audit logs isolated per authenticated user workspace."
+    },
+    "/site_members/{memberId}": {
+      "schema": {
+        "$ref": "#/entities/SiteMemberDocument"
+      },
+      "description": "Site-wide employee role requests and role assignments managed by the Head."
     }
   }
 }

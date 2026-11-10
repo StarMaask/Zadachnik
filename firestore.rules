@@ -277,5 +277,51 @@ service cloud.firestore {
 
       allow update, delete: if false;
     }
+
+    // 6. SiteMemberDocument Validation Helper (Role Assignment & Pending Queue)
+    function isValidSiteMemberDocument(data) {
+      return data.memberId is string && data.memberId.size() >= 1 && data.memberId.size() <= 128 &&
+             data.email is string && data.email.size() >= 1 && data.email.size() <= 160 &&
+             data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
+             data.position is string && data.position.size() <= 120 &&
+             data.role is string && data.role in ['PENDING', 'WORKER', 'ITR', 'HEAD'] &&
+             data.approvalStatus is string && data.approvalStatus in ['PENDING', 'APPROVED', 'REJECTED'] &&
+             data.groupId is string && data.groupId.size() <= 64 &&
+             data.groupName is string && data.groupName.size() <= 120 &&
+             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName.size() <= 120)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /site_members/{memberId} {
+      allow get, list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+                       isValidId(memberId) &&
+                       request.resource.data.keys().hasAll([
+                         'memberId', 'email', 'fullName', 'position',
+                         'role', 'approvalStatus', 'groupId', 'groupName',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       request.resource.data.keys().hasOnly([
+                         'memberId', 'email', 'fullName', 'position',
+                         'role', 'approvalStatus', 'groupId', 'groupName',
+                         'approvedByName', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidSiteMemberDocument(request.resource.data);
+
+      allow update: if isSignedIn() &&
+                       isValidId(memberId) &&
+                       isValidSiteMemberDocument(request.resource.data) &&
+                       request.resource.data.memberId == resource.data.memberId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'email', 'fullName', 'position', 'role',
+                         'approvalStatus', 'groupId', 'groupName',
+                         'approvedByName', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(memberId);
+    }
   }
 }

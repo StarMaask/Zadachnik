@@ -559,3 +559,82 @@ data class StatisticsSummary(
     val employeeStats: List<EmployeeDisciplineStat>,
     val groupStats: List<GroupStatBreakdown>
 )
+
+enum class MemberApprovalStatus(val code: String, val titleRu: String) {
+    PENDING("PENDING", "Ожидает назначения роли"),
+    APPROVED("APPROVED", "Доступ открыт"),
+    REJECTED("REJECTED", "Доступ отклонён");
+
+    companion object {
+        fun fromCode(code: String): MemberApprovalStatus =
+            entries.firstOrNull { it.code.equals(code, ignoreCase = true) } ?: PENDING
+    }
+}
+
+@IgnoreExtraProperties
+data class SiteMemberDocument(
+    @DocumentId val id: String = "",
+    val memberId: String = "",
+    val email: String = "",
+    val fullName: String = "",
+    val position: String = "Специалист участка",
+    val role: String = "PENDING",
+    val approvalStatus: String = "PENDING",
+    val groupId: String = "grp_monolith",
+    val groupName: String = "Бригада №1 • Монолит и ЖБК",
+    val approvedByName: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    val parsedApprovalStatus: MemberApprovalStatus
+        get() = MemberApprovalStatus.fromCode(approvalStatus)
+
+    val isPendingRole: Boolean
+        get() = approvalStatus == MemberApprovalStatus.PENDING.code || role == "PENDING"
+
+    val isRejected: Boolean
+        get() = approvalStatus == MemberApprovalStatus.REJECTED.code
+
+    val parsedRoleOrNull: CorporateRole?
+        get() = if (role == "PENDING" || isPendingRole) null else CorporateRole.fromCode(role)
+
+    fun toCorporateEmployee(): CorporateEmployee {
+        val resolvedRole = parsedRoleOrNull ?: CorporateRole.WORKER
+        val parts = fullName.trim().split(" ").filter { it.isNotBlank() }
+        val shortName = when {
+            parts.size >= 3 -> "${parts[0]} ${parts[1].first()}.${parts[2].first()}."
+            parts.size == 2 -> "${parts[0]} ${parts[1].first()}."
+            parts.size == 1 -> parts[0]
+            else -> "Сотрудник"
+        }
+        return CorporateEmployee(
+            id = memberId.ifBlank { id },
+            fullName = fullName.ifBlank { "Сотрудник участка" },
+            shortName = shortName,
+            position = position.ifBlank { resolvedRole.titleRu },
+            role = resolvedRole,
+            groupId = groupId.ifBlank { "grp_monolith" },
+            groupName = groupName.ifBlank { "Бригада №1 • Монолит и ЖБК" },
+            siteId = "site_1",
+            siteName = "Участок №1 — ПГС и Инженерные сети",
+            supervisorId = if (resolvedRole == CorporateRole.HEAD) null else "emp_head_1",
+            phone = "+7 (916) 440-00-00",
+            email = email
+        )
+    }
+
+    companion object {
+        const val DEFAULT_HEAD_ACTIVATION_CODE = "1001"
+
+        private val rootHeadEmails = setOf(
+            "m241185m@gmail.com",
+            "kovalev.ds@glavstroy.ru"
+        )
+
+        fun isRootHeadEmail(email: String?): Boolean {
+            if (email.isNullOrBlank()) return false
+            return rootHeadEmails.contains(email.trim().lowercase())
+        }
+    }
+}
+

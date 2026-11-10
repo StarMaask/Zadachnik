@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,7 +35,7 @@ import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FactCheck
-import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.AssistChip
@@ -95,6 +96,8 @@ import com.example.data.model.TaskStatus
 import com.example.data.repository.EzhednevnikRepository
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.ui.auth.CorporateLoginSession
+import com.example.ui.auth.PendingRoleApprovalScreen
 import com.example.ui.auth.signOut
 import com.example.ui.components.CreateTaskDialog
 import com.example.ui.components.TaskDetailDialog
@@ -116,17 +119,33 @@ enum class MainNavDestination(
     ADMIN("admin", "Участок / Роль", Icons.Default.AdminPanelSettings)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainFeatureScreen(
     currentUserId: String
+) {
+    MainFeatureScreen(
+        session = CorporateLoginSession(
+            userId = currentUserId,
+            email = "",
+            fullName = "Ковалёв Дмитрий Сергеевич",
+            isHeadActivated = false
+        ),
+        onSignOutComplete = {}
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainFeatureScreen(
+    session: CorporateLoginSession,
+    onSignOutComplete: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
 
     val viewModel: EzhednevnikViewModel = viewModel(
-        key = currentUserId,
+        key = "${session.userId}_${session.email}_${session.isHeadActivated}",
         factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[APPLICATION_KEY]) {
@@ -134,12 +153,20 @@ fun MainFeatureScreen(
                 }
                 val databaseId = app.getString(R.string.firestore_database_id)
                 val db = FirebaseFirestore.getInstance(databaseId)
-                EzhednevnikViewModel(EzhednevnikRepository(db), currentUserId)
+                EzhednevnikViewModel(
+                    repository = EzhednevnikRepository(db),
+                    currentUserId = session.userId,
+                    currentUserEmail = session.email,
+                    currentUserName = session.fullName,
+                    initialHeadActivated = session.isHeadActivated
+                )
             }
         }
     )
 
     val activeEmployee by viewModel.activeEmployee.collectAsStateWithLifecycle()
+    val currentMemberRecord by viewModel.currentMemberRecord.collectAsStateWithLifecycle()
+    val allSiteMembers by viewModel.siteMembersState.collectAsStateWithLifecycle()
     val tasksState by viewModel.tasksState.collectAsStateWithLifecycle()
     val templatesState by viewModel.templatesState.collectAsStateWithLifecycle()
     val generatedReportsState by viewModel.generatedReportsState.collectAsStateWithLifecycle()
@@ -153,6 +180,22 @@ fun MainFeatureScreen(
     val autoPlanEvening by viewModel.autoSchedulePlanEvening.collectAsStateWithLifecycle()
     val autoReportNight by viewModel.autoScheduleReportNight.collectAsStateWithLifecycle()
 
+    // Экран ожидания назначения роли руководителем для новых сотрудников
+    val member = currentMemberRecord
+    if (member != null && (member.isPendingRole || member.isRejected)) {
+        PendingRoleApprovalScreen(
+            member = member,
+            bannerMessage = bannerMessage,
+            onUpdateRequestDetails = viewModel::updateMyPendingRequestDetails,
+            onRefreshStatus = viewModel::refreshMyRoleAssignmentStatus,
+            onActivateHeadWithCode = viewModel::activateHeadAccessWithCode,
+            onSignOut = {
+                signOut(context, credentialManager, scope, onSignOutComplete)
+            }
+        )
+        return
+    }
+
     var currentTab by remember { mutableStateOf(MainNavDestination.TODAY) }
     var showCreateTaskDialog by remember { mutableStateOf(false) }
     var selectedTaskId by remember { mutableStateOf<String?>(null) }
@@ -162,6 +205,9 @@ fun MainFeatureScreen(
     }
 
     val allTasksRaw = (tasksState as? UiState.Success)?.data ?: emptyList()
+    val pendingMembersCount = remember(allSiteMembers) {
+        allSiteMembers.count { it.isPendingRole }
+    }
 
     // Role-based task visibility filter
     val roleVisibleTasks = remember(allTasksRaw, activeEmployee) {
@@ -210,7 +256,15 @@ fun MainFeatureScreen(
                     actions = {
                         AssistChip(
                             onClick = { currentTab = MainNavDestination.ADMIN },
-                            label = { Text(activeEmployee.role.code) },
+                            label = {
+                                Text(
+                                    if (activeEmployee.role == CorporateRole.HEAD && pendingMembersCount > 0) {
+                                        "${activeEmployee.role.titleRu} (+$pendingMembersCount)"
+                                    } else {
+                                        activeEmployee.role.titleRu
+                                    }
+                                )
+                            },
                             modifier = Modifier
                                 .padding(end = 8.dp)
                                 .testTag("top_role_switcher_chip")
@@ -248,14 +302,24 @@ fun MainFeatureScreen(
                                 selected = currentTab == dest,
                                 onClick = { currentTab = dest },
                                 icon = {
-                                    if (dest == MainNavDestination.APPROVALS && reviewQueueCount > 0) {
-                                        BadgedBox(
-                                            badge = { Badge { Text(reviewQueueCount.toString()) } }
-                                        ) {
+                                    when {
+                                        dest == MainNavDestination.APPROVALS && reviewQueueCount > 0 -> {
+                                            BadgedBox(
+                                                badge = { Badge { Text(reviewQueueCount.toString()) } }
+                                            ) {
+                                                Icon(dest.icon, contentDescription = dest.titleRu)
+                                            }
+                                        }
+                                        dest == MainNavDestination.ADMIN && pendingMembersCount > 0 -> {
+                                            BadgedBox(
+                                                badge = { Badge { Text(pendingMembersCount.toString()) } }
+                                            ) {
+                                                Icon(dest.icon, contentDescription = dest.titleRu)
+                                            }
+                                        }
+                                        else -> {
                                             Icon(dest.icon, contentDescription = dest.titleRu)
                                         }
-                                    } else {
-                                        Icon(dest.icon, contentDescription = dest.titleRu)
                                     }
                                 },
                                 label = { Text(dest.titleRu) },
@@ -323,6 +387,7 @@ fun MainFeatureScreen(
                                 activeEmployee = activeEmployee,
                                 tasksState = tasksState,
                                 visibleTasks = roleVisibleTasks,
+                                pendingMembersCount = pendingMembersCount,
                                 selectedFilter = selectedFilter,
                                 searchQuery = searchQuery,
                                 currentEpochDay = currentEpochDay,
@@ -331,6 +396,7 @@ fun MainFeatureScreen(
                                 onSwitchPersona = viewModel::switchPersona,
                                 onTriggerCarryover = viewModel::triggerEndOfDayCarryover,
                                 onQuickOpenReporting = { currentTab = MainNavDestination.REPORTING },
+                                onOpenRoleAssignments = { currentTab = MainNavDestination.ADMIN },
                                 onTaskClick = { selectedTaskId = it.id }
                             )
                         }
@@ -343,7 +409,7 @@ fun MainFeatureScreen(
                         }
                         MainNavDestination.REPORTING -> {
                             val tpls = (templatesState as? UiState.Success)?.data
-                                ?: CorporateSeedData.buildInitialReportTemplates(currentUserId)
+                                ?: CorporateSeedData.buildInitialReportTemplates(session.userId)
                             val genReps = (generatedReportsState as? UiState.Success)?.data ?: emptyList()
                             ReportingCenterScreen(
                                 activeEmployee = activeEmployee,
@@ -385,10 +451,14 @@ fun MainFeatureScreen(
                             val logs = (auditLogsState as? UiState.Success)?.data ?: emptyList()
                             AdminAndAuditScreen(
                                 activeEmployee = activeEmployee,
+                                siteMembers = allSiteMembers,
                                 auditLogs = logs,
+                                onAssignRoleToMember = viewModel::assignRoleToMember,
+                                onRejectMemberAccess = viewModel::rejectMemberAccess,
+                                onPreRegisterEmployee = viewModel::preRegisterEmployeeByEmail,
                                 onSwitchPersona = viewModel::switchPersona,
                                 onSignOut = {
-                                    signOut(credentialManager, scope)
+                                    signOut(context, credentialManager, scope, onSignOutComplete)
                                 }
                             )
                         }
@@ -435,6 +505,7 @@ private fun TodayTasksContent(
     activeEmployee: CorporateEmployee,
     tasksState: UiState<List<TaskDocument>>,
     visibleTasks: List<TaskDocument>,
+    pendingMembersCount: Int,
     selectedFilter: TaskFilterTab,
     searchQuery: String,
     currentEpochDay: Long,
@@ -443,6 +514,7 @@ private fun TodayTasksContent(
     onSwitchPersona: (String) -> Unit,
     onTriggerCarryover: () -> Unit,
     onQuickOpenReporting: () -> Unit,
+    onOpenRoleAssignments: () -> Unit,
     onTaskClick: (TaskDocument) -> Unit
 ) {
     val filteredTasks = remember(visibleTasks, selectedFilter, searchQuery, currentEpochDay) {
@@ -474,6 +546,67 @@ private fun TodayTasksContent(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Уведомление для Руководителя о новых сотрудниках, ожидающих назначения роли
+        if (activeEmployee.role == CorporateRole.HEAD && pendingMembersCount > 0) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+                    border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenRoleAssignments() }
+                        .testTag("head_pending_roles_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.HourglassTop,
+                                contentDescription = "Ожидают роли",
+                                tint = Color(0xFFD97706)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Ожидают назначения роли: $pendingMembersCount чел.",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF92400E)
+                                )
+                                Text(
+                                    text = "Нажмите, чтобы назначить роль (Рабочий / ИТР / Руководитель) и бригаду",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF78350F)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            color = Color(0xFFD97706),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "Назначить",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Hero Banner & Quick Operations Card
         item {
             Card(

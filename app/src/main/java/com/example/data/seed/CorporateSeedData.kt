@@ -770,47 +770,27 @@ object CorporateSeedData {
         )
     )
 
-    fun buildInitialSiteMembers(): List<com.example.data.model.SiteMemberDocument> {
-        val activeFromRoster = employees.map { emp ->
-            com.example.data.model.SiteMemberDocument(
-                id = emp.id,
-                memberId = emp.id,
-                email = emp.email,
-                fullName = emp.fullName,
-                position = emp.position,
-                role = emp.role.code,
-                approvalStatus = com.example.data.model.MemberApprovalStatus.APPROVED.code,
-                groupId = emp.groupId,
-                groupName = emp.groupName,
-                approvedByName = "Ковалёв Дмитрий Сергеевич"
-            )
-        }
-        val pendingRequests = listOf(
-            com.example.data.model.SiteMemberDocument(
-                id = "pending_emp_1",
-                memberId = "pending_emp_1",
-                email = "samoilov.va@glavstroy.ru",
-                fullName = "Самойлов Виктор Андреевич",
-                position = "Электромонтажник 4 разряда",
-                role = "PENDING",
-                approvalStatus = com.example.data.model.MemberApprovalStatus.PENDING.code,
-                groupId = "grp_mep",
-                groupName = "Бригада №2 • Инженерные сети (ЭОМ и ОВиК)",
-                approvedByName = null
-            ),
-            com.example.data.model.SiteMemberDocument(
-                id = "pending_emp_2",
-                memberId = "pending_emp_2",
-                email = "tikhonov.dy@glavstroy.ru",
-                fullName = "Тихонов Денис Юрьевич",
-                position = "Мастер СМР / Геодезист",
-                role = "PENDING",
-                approvalStatus = com.example.data.model.MemberApprovalStatus.PENDING.code,
-                groupId = "grp_monolith",
-                groupName = "Бригада №1 • Монолит и ЖБК",
-                approvedByName = null
-            )
-        )
-        return pendingRequests + activeFromRoster
+    private val legacyFakeMemberIds = setOf(
+        "emp_head_1",
+        "emp_itr_1",
+        "emp_itr_2",
+        "emp_worker_1",
+        "emp_worker_2",
+        "emp_worker_3",
+        "emp_worker_4",
+        "pending_emp_1",
+        "pending_emp_2"
+    )
+
+    fun isLegacyFakeSeedMemberId(id: String): Boolean {
+        val clean = id.trim()
+        return clean in legacyFakeMemberIds || clean.startsWith("pending_emp_")
     }
+
+    fun isLegacyFakeSeedTaskId(id: String): Boolean {
+        val clean = id.trim()
+        return clean.startsWith("seed_task_") || clean.contains("_seed_task_")
+    }
+
+    fun buildInitialSiteMembers(): List<com.example.data.model.SiteMemberDocument> = emptyList()
 }

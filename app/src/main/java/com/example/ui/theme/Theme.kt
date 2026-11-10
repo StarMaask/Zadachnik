@@ -11,51 +11,55 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 private val DarkColorScheme = darkColorScheme(
-    primary = SafetyAmber,
-    onPrimary = Color(0xFF0F172A),
-    primaryContainer = BlueprintNavyLight,
-    onPrimaryContainer = Color.White,
-    secondary = Color(0xFF38BDF8),
-    onSecondary = Color(0xFF0F172A),
-    secondaryContainer = Color(0xFF1E3A5F),
-    onSecondaryContainer = Color(0xFFE0F2FE),
+    primary = AccentBlueDark,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF1E3A8A),
+    onPrimaryContainer = Color(0xFFDBEAFE),
+    secondary = TealAccent,
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFF134E4A),
+    onSecondaryContainer = Color(0xFFCCFBF1),
     tertiary = EmeraldVerified,
-    onTertiary = Color(0xFF052E16),
-    background = SlateSurfaceDark,
+    onTertiary = Color.White,
+    background = SurfaceDark,
     onBackground = TextPrimaryDark,
-    surface = SlateCardDark,
+    surface = CardDark,
     onSurface = TextPrimaryDark,
-    surfaceVariant = Color(0xFF1B2E44),
+    surfaceVariant = SurfaceVariantDark,
     onSurfaceVariant = TextSecondaryDark,
+    outline = OutlineDark,
+    outlineVariant = Color(0xFF1E293B),
     error = CrimsonAlert,
     onError = Color.White
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = BlueprintNavy,
+    primary = AccentBlue,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFDCE8F5),
-    onPrimaryContainer = BlueprintNavy,
-    secondary = SafetyAmberDark,
+    primaryContainer = Color(0xFFEFF6FF),
+    onPrimaryContainer = Color(0xFF1E3A8A),
+    secondary = SlatePrimaryLight,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFFEF3C7),
-    onSecondaryContainer = Color(0xFF78350F),
+    secondaryContainer = Color(0xFFF1F5F9),
+    onSecondaryContainer = Color(0xFF1E293B),
     tertiary = EmeraldVerified,
     onTertiary = Color.White,
-    background = SlateSurfaceLight,
+    background = SurfaceLight,
     onBackground = TextPrimaryLight,
-    surface = SlateCardLight,
+    surface = CardLight,
     onSurface = TextPrimaryLight,
-    surfaceVariant = Color(0xFFE2E8F0),
+    surfaceVariant = SurfaceVariantLight,
     onSurfaceVariant = TextSecondaryLight,
+    outline = OutlineLight,
+    outlineVariant = Color(0xFFE2E8F0),
     error = CrimsonAlert,
     onError = Color.White
 )
 
 val AppShapes = Shapes(
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(22.dp)
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp)
 )
 
 @Composable

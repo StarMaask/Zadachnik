@@ -1,9 +1,9 @@
 package com.example.ui.viewmodel
 
 import android.content.Context
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.local.LocalWorkspaceStore
 import com.example.data.model.AuditLogDocument
 import com.example.data.model.CorporateEmployee
 import com.example.data.model.CorporateRole
@@ -27,10 +27,10 @@ import com.example.data.repository.EzhednevnikRepository
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.GeneratedDocumentResult
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.ui.components.PhotoCaptureUtils
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.auth
-import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +46,7 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -54,14 +55,14 @@ sealed interface UiState<out T> {
 }
 
 enum class TaskFilterTab(val titleRu: String) {
-    TODAY("На сегодня"),
-    TOMORROW("План на завтра"),
-    ON_REVIEW("На проверке"),
-    OVERDUE("Просроченные"),
-    APPROVED("Выполненные"),
-    RECURRING("Повторяющиеся"),
-    ARCHIVE("Архив"),
-    ALL("Все задачи")
+    ALL("Все"),
+    TODAY("Сегодня"),
+    TOMORROW("Завтра"),
+    ON_REVIEW("Проверка"),
+    OVERDUE("Просрочено"),
+    APPROVED("Готово"),
+    RECURRING("Регулярные"),
+    ARCHIVE("Архив")
 }
 
 class EzhednevnikViewModel(
@@ -69,16 +70,20 @@ class EzhednevnikViewModel(
     private val currentUserId: String,
     private val currentUserEmail: String = "",
     private val currentUserName: String = "",
-    private val initialHeadActivated: Boolean = false
+    private val initialHeadActivated: Boolean = false,
+    private val appContext: Context? = null
 ) : ViewModel() {
 
     private val isCloudAuthenticated: Boolean
         get() = Firebase.auth.currentUser != null
 
+    private val effectiveUserId: String
+        get() = Firebase.auth.currentUser?.uid?.takeIf { it.isNotBlank() } ?: currentUserId
+
     private val _currentEpochDay = MutableStateFlow(CorporateSeedData.BASE_EPOCH_DAY)
     val currentEpochDay: StateFlow<Long> = _currentEpochDay.asStateFlow()
 
-    private val _selectedFilter = MutableStateFlow(TaskFilterTab.TODAY)
+    private val _selectedFilter = MutableStateFlow(TaskFilterTab.ALL)
     val selectedFilter: StateFlow<TaskFilterTab> = _selectedFilter.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
@@ -96,55 +101,54 @@ class EzhednevnikViewModel(
     private val _autoScheduleReportNight = MutableStateFlow(true)
     val autoScheduleReportNight: StateFlow<Boolean> = _autoScheduleReportNight.asStateFlow()
 
-    // Local state fallback & instant optimistic updates
-    private val _localPersonaId = MutableStateFlow("emp_head_1")
-    private val _localTasks = MutableStateFlow(CorporateSeedData.buildInitialTasks(currentUserId))
-    private val _localTemplates = MutableStateFlow(CorporateSeedData.buildInitialReportTemplates(currentUserId))
+    // Чистое локальное состояние без фейковых задач и фейковых сотрудников
+    private val _deletedTaskIds = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadDeletedTaskIds(it) } ?: emptySet()
+    )
+    private val _deletedMemberIds = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadDeletedMemberIds(it) } ?: emptySet()
+    )
+    private val _localTasks = MutableStateFlow(
+        appContext?.let { ctx ->
+            LocalWorkspaceStore.loadTasks(ctx).filterNot {
+                CorporateSeedData.isLegacyFakeSeedTaskId(it.id)
+            }
+        } ?: emptyList()
+    )
+    private val _localSiteMembers = MutableStateFlow(
+        appContext?.let { ctx ->
+            LocalWorkspaceStore.loadMembers(ctx).filterNot {
+                CorporateSeedData.isLegacyFakeSeedMemberId(it.memberId.ifBlank { it.id })
+            }
+        } ?: emptyList()
+    )
+    private val _localTemplates = MutableStateFlow(
+        CorporateSeedData.buildInitialReportTemplates(currentUserId)
+    )
     private val _localGeneratedReports = MutableStateFlow<List<GeneratedReportDocument>>(emptyList())
-    private val _localAuditLogs = MutableStateFlow(CorporateSeedData.buildInitialAuditLogs(currentUserId))
-    private val _localSiteMembers = MutableStateFlow(CorporateSeedData.buildInitialSiteMembers())
+    private val _localAuditLogs = MutableStateFlow<List<AuditLogDocument>>(emptyList())
+
     private val _currentMemberRecord = MutableStateFlow<SiteMemberDocument?>(null)
     val currentMemberRecord: StateFlow<SiteMemberDocument?> = _currentMemberRecord.asStateFlow()
 
     private val firestoreProfileFlow = repository.observeUserProfile(currentUserId)
         .map<UserProfile?, UiState<UserProfile?>> { UiState.Success(it) }
         .catch { error ->
-            val firestoreError = generateSequence(error) { it.cause }
-                .filterIsInstance<FirebaseFirestoreException>()
-                .firstOrNull()
-            if (firestoreError == null && error is CancellationException) throw error
+            if (error is CancellationException) throw error
             emit(
                 UiState.Success(
                     UserProfile(
                         id = currentUserId,
                         userId = currentUserId,
-                        displayName = currentUserName.ifBlank { "Ковалёв Д.С." },
+                        displayName = currentUserName.ifBlank { "Руководитель" },
                         siteName = CorporateSeedData.DEFAULT_SITE_NAME,
-                        activePersonaId = _localPersonaId.value
+                        activePersonaId = currentUserId
                     )
                 )
             )
         }
 
-    val userProfileState: StateFlow<UiState<UserProfile?>> = combine(
-        firestoreProfileFlow,
-        _localPersonaId
-    ) { fsState, localPersona ->
-        val fsProfile = (fsState as? UiState.Success)?.data
-        if (fsProfile != null) {
-            UiState.Success(fsProfile)
-        } else {
-            UiState.Success(
-                UserProfile(
-                    id = currentUserId,
-                    userId = currentUserId,
-                    displayName = currentUserName.ifBlank { "Ковалёв Д.С." },
-                    siteName = CorporateSeedData.DEFAULT_SITE_NAME,
-                    activePersonaId = localPersona
-                )
-            )
-        }
-    }.stateIn(
+    val userProfileState: StateFlow<UiState<UserProfile?>> = firestoreProfileFlow.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
         initialValue = UiState.Loading
@@ -156,13 +160,32 @@ class EzhednevnikViewModel(
             emit(emptyList())
         }
 
+    // Локальные изменения участников имеют приоритет над устаревшим кешем Firestore
     val siteMembersState: StateFlow<List<SiteMemberDocument>> = combine(
         firestoreSiteMembersFlow,
-        _localSiteMembers
-    ) { remoteList, localList ->
+        _localSiteMembers,
+        _deletedMemberIds
+    ) { remoteList, localList, deletedIds ->
         val mergedMap = LinkedHashMap<String, SiteMemberDocument>()
-        localList.forEach { m -> mergedMap[m.memberId.ifBlank { m.id }] = m }
-        remoteList.forEach { m -> mergedMap[m.memberId.ifBlank { m.id }] = m }
+        remoteList.forEach { m ->
+            val key = m.memberId.ifBlank { m.id }
+            if (key.isNotBlank() &&
+                !CorporateSeedData.isLegacyFakeSeedMemberId(key) &&
+                key !in deletedIds
+            ) {
+                mergedMap[key] = m
+            }
+        }
+        // Локальный список перезаписывает remoteList, чтобы утверждение роли работало мгновенно
+        localList.forEach { m ->
+            val key = m.memberId.ifBlank { m.id }
+            if (key.isNotBlank() &&
+                !CorporateSeedData.isLegacyFakeSeedMemberId(key) &&
+                key !in deletedIds
+            ) {
+                mergedMap[key] = m
+            }
+        }
         mergedMap.values.sortedWith(
             compareBy<SiteMemberDocument> { !it.isPendingRole }
                 .thenBy { it.fullName }
@@ -170,28 +193,76 @@ class EzhednevnikViewModel(
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-        initialValue = CorporateSeedData.buildInitialSiteMembers()
+        initialValue = _localSiteMembers.value
     )
 
     val activeEmployee: StateFlow<CorporateEmployee> = combine(
-        userProfileState,
         _currentMemberRecord,
-        _localPersonaId
-    ) { state, memberRecord, localPersona ->
-        val profilePersonaId = (state as? UiState.Success)?.data?.activePersonaId ?: localPersona
-        // Find in seed employees or in dynamically approved site members
-        val seedMatch = CorporateSeedData.employees.firstOrNull { it.id == profilePersonaId }
-        if (seedMatch != null) {
-            seedMatch
-        } else if (memberRecord != null && !memberRecord.isPendingRole) {
-            memberRecord.toCorporateEmployee()
+        siteMembersState
+    ) { memberRecord, allMembers ->
+        val matched = allMembers.firstOrNull {
+            it.memberId == currentUserId ||
+                (currentUserEmail.isNotBlank() && it.email.equals(currentUserEmail, ignoreCase = true))
+        } ?: memberRecord
+
+        if (matched != null) {
+            matched.toCorporateEmployee()
         } else {
-            CorporateSeedData.findEmployee(profilePersonaId)
+            val defaultName = currentUserName.ifBlank {
+                currentUserEmail.substringBefore("@").ifBlank { "Руководитель" }
+            }
+            CorporateEmployee(
+                id = currentUserId,
+                fullName = defaultName,
+                shortName = defaultName,
+                position = "Руководитель",
+                role = CorporateRole.HEAD,
+                groupId = "grp_control",
+                groupName = "Основное подразделение",
+                siteId = CorporateSeedData.DEFAULT_SITE_ID,
+                siteName = CorporateSeedData.DEFAULT_SITE_NAME,
+                supervisorId = null,
+                phone = "",
+                email = currentUserEmail
+            )
         }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-        initialValue = CorporateSeedData.findEmployee("emp_head_1")
+        initialValue = CorporateEmployee(
+            id = currentUserId,
+            fullName = currentUserName.ifBlank { "Руководитель" },
+            shortName = currentUserName.ifBlank { "Руководитель" },
+            position = "Руководитель",
+            role = CorporateRole.HEAD,
+            groupId = "grp_control",
+            groupName = "Основное подразделение",
+            siteId = CorporateSeedData.DEFAULT_SITE_ID,
+            siteName = CorporateSeedData.DEFAULT_SITE_NAME,
+            supervisorId = null,
+            phone = "",
+            email = currentUserEmail
+        )
+    )
+
+    // Список реальных сотрудников для назначения задач (без фейковых людей)
+    val availableEmployees: StateFlow<List<CorporateEmployee>> = combine(
+        activeEmployee,
+        siteMembersState
+    ) { currentEmp, members ->
+        val approvedEmployees = members
+            .filter { !it.isPendingRole && !it.isRejected }
+            .map { it.toCorporateEmployee() }
+        val map = LinkedHashMap<String, CorporateEmployee>()
+        map[currentEmp.id] = currentEmp
+        approvedEmployees.forEach { emp ->
+            map[emp.id] = emp
+        }
+        map.values.toList()
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+        initialValue = listOf(activeEmployee.value)
     )
 
     private val firestoreTasksFlow = repository.observeTasks(currentUserId)
@@ -200,13 +271,32 @@ class EzhednevnikViewModel(
             emit(emptyList())
         }
 
+    // Локальные задачи и изменения объединяются поверх Firestore и фильтруют удалённые/демо задачи
     val tasksState: StateFlow<UiState<List<TaskDocument>>> = combine(
         firestoreTasksFlow,
-        _localTasks
-    ) { remoteTasks, localTasks ->
-        val list = if (remoteTasks.isNotEmpty()) remoteTasks else localTasks
+        _localTasks,
+        _deletedTaskIds
+    ) { remoteTasks, localTasks, deletedIds ->
+        val mergedMap = LinkedHashMap<String, TaskDocument>()
+        remoteTasks.forEach { task ->
+            if (task.id.isNotBlank() &&
+                !CorporateSeedData.isLegacyFakeSeedTaskId(task.id) &&
+                task.id !in deletedIds
+            ) {
+                mergedMap[task.id] = task
+            }
+        }
+        // Локальные задачи и правки (чек-листы, фото, статусы) имеют приоритет
+        localTasks.forEach { task ->
+            if (task.id.isNotBlank() &&
+                !CorporateSeedData.isLegacyFakeSeedTaskId(task.id) &&
+                task.id !in deletedIds
+            ) {
+                mergedMap[task.id] = task
+            }
+        }
         UiState.Success(
-            list.sortedWith(
+            mergedMap.values.sortedWith(
                 compareBy<TaskDocument> { it.taskStatus.isTerminalOrDone }
                     .thenBy { it.dueDateEpochDay }
                     .thenByDescending { it.taskPriority.weight }
@@ -245,7 +335,8 @@ class EzhednevnikViewModel(
         firestoreGeneratedReportsFlow,
         _localGeneratedReports
     ) { remote, local ->
-        UiState.Success(if (remote.isNotEmpty()) remote else local)
+        val merged = (local + remote).distinctBy { it.id.ifBlank { it.filePath } }
+        UiState.Success(merged)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
@@ -262,7 +353,9 @@ class EzhednevnikViewModel(
         firestoreAuditLogsFlow,
         _localAuditLogs
     ) { remote, local ->
-        UiState.Success(if (remote.isNotEmpty()) remote else local)
+        val cleanRemote = remote.filterNot { it.id.contains("audit_seed_") }
+        val merged = (local + cleanRemote).distinctBy { it.id }
+        UiState.Success(merged)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
@@ -271,16 +364,18 @@ class EzhednevnikViewModel(
 
     val statisticsState: StateFlow<StatisticsSummary> = combine(
         activeEmployee,
-        tasksState
-    ) { employee, tState ->
+        tasksState,
+        availableEmployees
+    ) { employee, tState, employeesList ->
         val allTasks = (tState as? UiState.Success)?.data ?: emptyList()
-        repository.calculateRoleScopedStatistics(employee, allTasks)
+        repository.calculateRoleScopedStatistics(employee, allTasks, employeesList)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
         initialValue = repository.calculateRoleScopedStatistics(
-            CorporateSeedData.findEmployee("emp_head_1"),
-            _localTasks.value
+            activeEmployee.value,
+            _localTasks.value,
+            listOf(activeEmployee.value)
         )
     )
 
@@ -288,117 +383,142 @@ class EzhednevnikViewModel(
         initializeUserAndRoleStatus()
     }
 
+    private fun persistTasksLocally(tasks: List<TaskDocument>) {
+        _localTasks.value = tasks
+        appContext?.let { LocalWorkspaceStore.saveTasks(it, tasks) }
+    }
+
+    private fun persistMembersLocally(members: List<SiteMemberDocument>) {
+        _localSiteMembers.value = members
+        appContext?.let { LocalWorkspaceStore.saveMembers(it, members) }
+    }
+
     private fun initializeUserAndRoleStatus() {
         viewModelScope.launch {
+            val cleanName = currentUserName.ifBlank {
+                currentUserEmail.substringBefore("@").ifBlank { "Руководитель" }
+            }
             if (isCloudAuthenticated) {
-                repository.ensureWorkspaceSeeded(currentUserName.ifBlank { "Ковалёв Д.С." })
+                repository.ensureWorkspaceSeeded(cleanName)
             }
 
-            // Check if user matches a pre-registered or root Head email
             val normalizedEmail = currentUserEmail.trim().lowercase()
             val isRootHead = initialHeadActivated ||
                 SiteMemberDocument.isRootHeadEmail(normalizedEmail) ||
                 normalizedEmail.isBlank()
 
-            val existingMatch = _localSiteMembers.value.firstOrNull {
-                it.email.equals(normalizedEmail, ignoreCase = true) ||
-                    it.memberId == currentUserId
+            val existingLocal = _localSiteMembers.value.firstOrNull {
+                it.memberId == currentUserId ||
+                    (normalizedEmail.isNotBlank() && it.email.equals(normalizedEmail, ignoreCase = true))
             }
 
             val resolvedMember = if (isRootHead) {
-                repository.registerOrResolveSiteMember(
-                    rawMemberId = currentUserId,
-                    email = normalizedEmail.ifBlank { "m241185m@gmail.com" },
-                    fullName = currentUserName.ifBlank { "Ковалёв Дмитрий Сергеевич" },
-                    position = "Начальник строительного участка",
-                    requestedGroup = CorporateSeedData.workGroups.last(),
-                    forceHeadActivation = true
-                ).getOrNull() ?: SiteMemberDocument(
+                val headDoc = SiteMemberDocument(
                     id = currentUserId,
                     memberId = currentUserId,
                     email = normalizedEmail.ifBlank { "m241185m@gmail.com" },
-                    fullName = currentUserName.ifBlank { "Ковалёв Дмитрий Сергеевич" },
-                    position = "Начальник строительного участка",
+                    fullName = cleanName,
+                    position = "Руководитель",
                     role = CorporateRole.HEAD.code,
                     approvalStatus = MemberApprovalStatus.APPROVED.code,
                     groupId = "grp_control",
-                    groupName = "Служба ИТР и стройконтроля",
-                    approvedByName = "Система (Владелец / Руководитель)"
+                    groupName = "Основное подразделение",
+                    approvedByName = "Владелец"
                 )
-            } else if (existingMatch != null) {
-                existingMatch
+                upsertLocalMember(headDoc)
+                if (isCloudAuthenticated) {
+                    repository.registerOrResolveSiteMember(
+                        rawMemberId = currentUserId,
+                        email = headDoc.email,
+                        fullName = headDoc.fullName,
+                        position = headDoc.position,
+                        requestedGroup = CorporateSeedData.workGroups.last(),
+                        forceHeadActivation = true
+                    )
+                }
+                headDoc
+            } else if (existingLocal != null) {
+                existingLocal
             } else {
                 val created = repository.registerOrResolveSiteMember(
                     rawMemberId = currentUserId,
                     email = normalizedEmail,
-                    fullName = currentUserName.ifBlank { "Новый сотрудник" },
-                    position = "Специалист участка",
+                    fullName = cleanName,
+                    position = "Специалист",
                     requestedGroup = CorporateSeedData.workGroups.first(),
                     forceHeadActivation = false
                 ).getOrNull() ?: SiteMemberDocument(
                     id = currentUserId,
                     memberId = currentUserId,
                     email = normalizedEmail,
-                    fullName = currentUserName.ifBlank { "Новый сотрудник" },
-                    position = "Специалист участка",
+                    fullName = cleanName,
+                    position = "Специалист",
                     role = "PENDING",
                     approvalStatus = MemberApprovalStatus.PENDING.code,
                     groupId = "grp_monolith",
-                    groupName = "Бригада №1 • Монолит и ЖБК"
+                    groupName = CorporateSeedData.workGroups.first().name
                 )
-                _localSiteMembers.value = listOf(created) + _localSiteMembers.value.filterNot {
-                    it.memberId == created.memberId
-                }
+                upsertLocalMember(created)
                 created
             }
 
             _currentMemberRecord.value = resolvedMember
-            if (!resolvedMember.isPendingRole) {
-                val targetPersonaId = when (resolvedMember.parsedRoleOrNull) {
-                    CorporateRole.HEAD -> "emp_head_1"
-                    CorporateRole.ITR -> "emp_itr_1"
-                    CorporateRole.WORKER -> "emp_worker_1"
-                    null -> "emp_worker_1"
-                }
-                _localPersonaId.value = targetPersonaId
-            }
         }
+    }
+
+    private fun upsertLocalMember(member: SiteMemberDocument) {
+        val key = member.memberId.ifBlank { member.id }
+        val updated = listOf(member.copy(id = key, memberId = key)) +
+            _localSiteMembers.value.filterNot {
+                val itKey = it.memberId.ifBlank { it.id }
+                itKey == key || (member.email.isNotBlank() && it.email.equals(member.email, ignoreCase = true))
+            }
+        persistMembersLocally(updated)
+    }
+
+    private fun upsertLocalTask(task: TaskDocument) {
+        val updated = listOf(task) + _localTasks.value.filterNot { it.id == task.id }
+        persistTasksLocally(updated)
+    }
+
+    private fun findTaskById(taskId: String): TaskDocument? {
+        val fromState = (tasksState.value as? UiState.Success)?.data?.firstOrNull { it.id == taskId }
+        return fromState ?: _localTasks.value.firstOrNull { it.id == taskId }
     }
 
     fun activateHeadAccessWithCode(code: String): Boolean {
         if (code.trim() != SiteMemberDocument.DEFAULT_HEAD_ACTIVATION_CODE) {
-            _bannerMessage.value = "Неверный код активации руководителя (используйте код 1001)"
+            _bannerMessage.value = "Неверный код руководителя (используйте 1001)"
             return false
         }
         viewModelScope.launch {
             val email = currentUserEmail.ifBlank { "m241185m@gmail.com" }
-            val name = currentUserName.ifBlank { "Ковалёв Дмитрий Сергеевич" }
+            val name = currentUserName.ifBlank { "Руководитель" }
             val headMember = SiteMemberDocument(
                 id = currentUserId,
                 memberId = currentUserId,
                 email = email,
                 fullName = name,
-                position = "Начальник строительного участка",
+                position = "Руководитель",
                 role = CorporateRole.HEAD.code,
                 approvalStatus = MemberApprovalStatus.APPROVED.code,
                 groupId = "grp_control",
-                groupName = "Служба ИТР и стройконтроля",
-                approvedByName = "Активация по коду руководителя (1001)"
+                groupName = "Основное подразделение",
+                approvedByName = "Код руководителя (1001)"
             )
             _currentMemberRecord.value = headMember
-            _localPersonaId.value = "emp_head_1"
-            _localSiteMembers.value = listOf(headMember) + _localSiteMembers.value.filterNot {
-                it.memberId == headMember.memberId
+            upsertLocalMember(headMember)
+            if (isCloudAuthenticated) {
+                repository.registerOrResolveSiteMember(
+                    rawMemberId = currentUserId,
+                    email = email,
+                    fullName = name,
+                    position = "Руководитель",
+                    requestedGroup = CorporateSeedData.workGroups.last(),
+                    forceHeadActivation = true
+                )
             }
-            repository.registerOrResolveSiteMember(
-                rawMemberId = currentUserId,
-                email = email,
-                fullName = name,
-                position = "Начальник строительного участка",
-                requestedGroup = CorporateSeedData.workGroups.last(),
-                forceHeadActivation = true
-            )
-            _bannerMessage.value = "Подтверждён вход Руководителя участка. Полный доступ открыт."
+            _bannerMessage.value = "Статус Руководителя подтверждён"
         }
         return true
     }
@@ -406,24 +526,24 @@ class EzhednevnikViewModel(
     fun updateMyPendingRequestDetails(position: String, group: WorkGroup) {
         val current = _currentMemberRecord.value ?: return
         val updated = current.copy(
-            position = position.ifBlank { "Специалист участка" },
+            position = position.ifBlank { "Специалист" },
             groupId = group.id,
             groupName = group.name
         )
         _currentMemberRecord.value = updated
-        _localSiteMembers.value = _localSiteMembers.value.map {
-            if (it.memberId == updated.memberId) updated else it
-        }
+        upsertLocalMember(updated)
         viewModelScope.launch {
-            repository.registerOrResolveSiteMember(
-                rawMemberId = updated.memberId,
-                email = updated.email,
-                fullName = updated.fullName,
-                position = updated.position,
-                requestedGroup = group,
-                forceHeadActivation = false
-            )
-            _bannerMessage.value = "Заявка обновлена и отправлена Руководителю участка"
+            if (isCloudAuthenticated) {
+                repository.registerOrResolveSiteMember(
+                    rawMemberId = updated.memberId,
+                    email = updated.email,
+                    fullName = updated.fullName,
+                    position = updated.position,
+                    requestedGroup = group,
+                    forceHeadActivation = false
+                )
+            }
+            _bannerMessage.value = "Данные заявки обновлены"
         }
     }
 
@@ -436,16 +556,9 @@ class EzhednevnikViewModel(
         if (latestFromList != null) {
             _currentMemberRecord.value = latestFromList
             if (!latestFromList.isPendingRole) {
-                val targetPersonaId = when (latestFromList.parsedRoleOrNull) {
-                    CorporateRole.HEAD -> "emp_head_1"
-                    CorporateRole.ITR -> "emp_itr_1"
-                    CorporateRole.WORKER -> "emp_worker_1"
-                    null -> "emp_worker_1"
-                }
-                _localPersonaId.value = targetPersonaId
-                _bannerMessage.value = "Руководитель назначил вам роль: ${latestFromList.parsedRoleOrNull?.titleRu}"
+                _bannerMessage.value = "Назначена роль: ${latestFromList.parsedRoleOrNull?.titleRu}"
             } else {
-                _bannerMessage.value = "Статус заявки: ожидает назначения роли руководителем участка"
+                _bannerMessage.value = "Заявка ожидает подтверждения руководителем"
             }
         }
     }
@@ -456,59 +569,80 @@ class EzhednevnikViewModel(
         assignedGroup: WorkGroup,
         customPosition: String? = null
     ) {
+        val actor = activeEmployee.value
+        val key = targetMember.memberId.ifBlank { targetMember.id }
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .ifBlank { "usr_${System.currentTimeMillis()}" }
+        val newPosition = customPosition?.takeIf { it.isNotBlank() }
+            ?: targetMember.position.ifBlank { assignedRole.titleRu }
+
+        val approvedMember = targetMember.copy(
+            id = key,
+            memberId = key,
+            role = assignedRole.code,
+            approvalStatus = MemberApprovalStatus.APPROVED.code,
+            groupId = assignedGroup.id,
+            groupName = assignedGroup.name,
+            position = newPosition,
+            approvedByName = actor.fullName
+        )
+
+        // Мгновенно обновляем локальный список и сохраняем на устройство
+        upsertLocalMember(approvedMember)
+        if (_currentMemberRecord.value?.memberId == key) {
+            _currentMemberRecord.value = approvedMember
+        }
+        appendLocalAudit(
+            actor = actor,
+            actionType = "ASSIGN_USER_ROLE",
+            targetType = "USER",
+            targetId = key,
+            details = "Назначена роль «${assignedRole.titleRu}» пользователю ${approvedMember.fullName}"
+        )
+        _bannerMessage.value = "Пользователь ${approvedMember.fullName} утверждён (${assignedRole.titleRu})"
+
         viewModelScope.launch {
-            val actor = activeEmployee.value
-            val result = repository.assignRoleToSiteMember(
-                actor = actor,
-                targetMember = targetMember,
-                assignedRole = assignedRole,
-                assignedGroup = assignedGroup,
-                customPosition = customPosition
-            )
-            if (result.isSuccess) {
-                val updated = result.getOrThrow()
-                _localSiteMembers.value = _localSiteMembers.value.map {
-                    if (it.memberId == updated.memberId || it.id == updated.id) updated else it
-                }.let { list ->
-                    if (list.none { it.memberId == updated.memberId }) listOf(updated) + list else list
-                }
-                if (_currentMemberRecord.value?.memberId == updated.memberId) {
-                    _currentMemberRecord.value = updated
-                }
-                appendLocalAudit(
+            if (isCloudAuthenticated) {
+                repository.assignRoleToSiteMember(
                     actor = actor,
-                    actionType = "ASSIGN_USER_ROLE",
-                    targetType = "USER",
-                    targetId = updated.memberId,
-                    details = "Назначена роль «${assignedRole.titleRu}» (${assignedGroup.name}) пользователю ${updated.fullName}"
+                    targetMember = approvedMember,
+                    assignedRole = assignedRole,
+                    assignedGroup = assignedGroup,
+                    customPosition = newPosition
                 )
-                _bannerMessage.value = "Назначена роль «${assignedRole.titleRu}» для ${updated.fullName}"
-            } else {
-                _bannerMessage.value = result.exceptionOrNull()?.localizedMessage ?: "Ошибка назначения роли"
             }
         }
     }
 
     fun rejectMemberAccess(targetMember: SiteMemberDocument) {
+        val actor = activeEmployee.value
+        val key = targetMember.memberId.ifBlank { targetMember.id }
+        // Удаляем отклонённую заявку из очереди ожидания
+        deleteSiteMember(targetMember)
+        appendLocalAudit(
+            actor = actor,
+            actionType = "REJECT_USER_ACCESS",
+            targetType = "USER",
+            targetId = key,
+            details = "Отклонена заявка ${targetMember.fullName}"
+        )
+        _bannerMessage.value = "Заявка ${targetMember.fullName} отклонена"
+    }
+
+    fun deleteSiteMember(targetMember: SiteMemberDocument) {
+        val key = targetMember.memberId.ifBlank { targetMember.id }
+        _deletedMemberIds.value = _deletedMemberIds.value + key
+        appContext?.let { LocalWorkspaceStore.addDeletedMemberId(it, key) }
+        val remaining = _localSiteMembers.value.filterNot {
+            val itKey = it.memberId.ifBlank { it.id }
+            itKey == key
+        }
+        persistMembersLocally(remaining)
         viewModelScope.launch {
-            val actor = activeEmployee.value
-            val result = repository.rejectSiteMemberAccess(actor, targetMember)
-            if (result.isSuccess) {
-                val updated = result.getOrThrow()
-                _localSiteMembers.value = _localSiteMembers.value.map {
-                    if (it.memberId == updated.memberId || it.id == updated.id) updated else it
-                }
-                appendLocalAudit(
-                    actor = actor,
-                    actionType = "REJECT_USER_ACCESS",
-                    targetType = "USER",
-                    targetId = updated.memberId,
-                    details = "Отклонён доступ пользователю ${updated.fullName} (${updated.email})"
-                )
-                _bannerMessage.value = "Заявка пользователя ${updated.fullName} отклонена"
-            } else {
-                _bannerMessage.value = result.exceptionOrNull()?.localizedMessage ?: "Ошибка отклонения заявки"
+            if (isCloudAuthenticated) {
+                repository.deleteSiteMember(activeEmployee.value, key)
             }
+            _bannerMessage.value = "Запись пользователя ${targetMember.fullName} удалена"
         }
     }
 
@@ -519,31 +653,47 @@ class EzhednevnikViewModel(
         assignedRole: CorporateRole,
         assignedGroup: WorkGroup
     ) {
+        if (email.isBlank() || fullName.isBlank()) {
+            _bannerMessage.value = "Укажите ФИО и Email сотрудника"
+            return
+        }
+        val actor = activeEmployee.value
+        val normalizedEmail = email.trim().lowercase()
+        val safeId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+        val resolvedPosition = position.ifBlank { assignedRole.titleRu }
+
+        val created = SiteMemberDocument(
+            id = safeId,
+            memberId = safeId,
+            email = normalizedEmail,
+            fullName = fullName.trim(),
+            position = resolvedPosition,
+            role = assignedRole.code,
+            approvalStatus = MemberApprovalStatus.APPROVED.code,
+            groupId = assignedGroup.id,
+            groupName = assignedGroup.name,
+            approvedByName = actor.fullName
+        )
+        upsertLocalMember(created)
+        appendLocalAudit(
+            actor = actor,
+            actionType = "PRE_REGISTER_USER",
+            targetType = "USER",
+            targetId = created.memberId,
+            details = "Добавлен сотрудник ${created.fullName} (${created.email}) — ${assignedRole.titleRu}"
+        )
+        _bannerMessage.value = "Сотрудник ${created.fullName} добавлен (${assignedRole.titleRu})"
+
         viewModelScope.launch {
-            val actor = activeEmployee.value
-            val result = repository.preRegisterSiteMemberByEmail(
-                actor = actor,
-                email = email,
-                fullName = fullName,
-                position = position,
-                assignedRole = assignedRole,
-                assignedGroup = assignedGroup
-            )
-            if (result.isSuccess) {
-                val created = result.getOrThrow()
-                _localSiteMembers.value = listOf(created) + _localSiteMembers.value.filterNot {
-                    it.email.equals(created.email, ignoreCase = true)
-                }
-                appendLocalAudit(
+            if (isCloudAuthenticated) {
+                repository.preRegisterSiteMemberByEmail(
                     actor = actor,
-                    actionType = "PRE_REGISTER_USER",
-                    targetType = "USER",
-                    targetId = created.memberId,
-                    details = "Зарегистрирован сотрудник ${created.fullName} (${created.email}) с ролью «${assignedRole.titleRu}»"
+                    email = normalizedEmail,
+                    fullName = fullName.trim(),
+                    position = resolvedPosition,
+                    assignedRole = assignedRole,
+                    assignedGroup = assignedGroup
                 )
-                _bannerMessage.value = "Сотрудник ${created.fullName} добавлен с ролью «${assignedRole.titleRu}»"
-            } else {
-                _bannerMessage.value = result.exceptionOrNull()?.localizedMessage ?: "Ошибка регистрации сотрудника"
             }
         }
     }
@@ -567,258 +717,336 @@ class EzhednevnikViewModel(
     fun toggleAutoSchedulePlan(enabled: Boolean) {
         _autoSchedulePlanEvening.value = enabled
         _bannerMessage.value = if (enabled) {
-            "Автогенерация «План работ на завтра» включена (ежедневно в 19:00)"
+            "Автогенерация плана на завтра (19:00) включена"
         } else {
-            "Автогенерация вечернего плана отключена"
+            "Автогенерация плана отключена"
         }
     }
 
     fun toggleAutoScheduleReport(enabled: Boolean) {
         _autoScheduleReportNight.value = enabled
         _bannerMessage.value = if (enabled) {
-            "Автогенерация «Отчёт за текущий день» включена (ежедневно в 21:00)"
+            "Автогенерация суточного отчёта (21:00) включена"
         } else {
-            "Автогенерация вечернего отчёта отключена"
+            "Автогенерация суточного отчёта отключена"
         }
     }
 
     fun switchPersona(personaId: String) {
-        viewModelScope.launch {
-            val emp = CorporateSeedData.findEmployee(personaId)
-            _localPersonaId.value = personaId
-            if (isCloudAuthenticated) {
-                repository.switchActivePersona(personaId)
-            }
-            _bannerMessage.value = "Активный профиль: ${emp.fullName} (${emp.role.titleRu})"
-        }
+        val target = availableEmployees.value.firstOrNull { it.id == personaId } ?: return
+        _bannerMessage.value = "Профиль: ${target.fullName} (${target.role.titleRu})"
     }
 
     fun createNewTask(draft: TaskDraft) {
+        val cleanTitle = draft.title.trim()
+        if (cleanTitle.isBlank()) {
+            _bannerMessage.value = "Введите название задачи"
+            return
+        }
+
+        val actor = activeEmployee.value
+        val assignee = availableEmployees.value.firstOrNull { it.id == draft.assigneeId } ?: actor
+
+        val taskId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
+        val encodedSubtasks = draft.subtasks
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .mapIndexed { idx, s ->
+                SubtaskItem("sub_${System.currentTimeMillis()}_${idx + 1}", s, false).encode()
+            }
+
+        val newTask = TaskDocument(
+            id = taskId,
+            userId = effectiveUserId,
+            title = cleanTitle,
+            description = draft.description.trim(),
+            creatorId = actor.id,
+            creatorName = actor.fullName,
+            assigneeId = assignee.id,
+            assigneeName = assignee.fullName,
+            groupId = assignee.groupId,
+            groupName = assignee.groupName,
+            siteId = assignee.siteId,
+            priority = draft.priority.code,
+            status = TaskStatus.NEW.code,
+            dueDateEpochDay = draft.dueDateEpochDay,
+            originalDueDateEpochDay = draft.dueDateEpochDay,
+            deadlineTime = draft.deadlineTime.ifBlank { "18:00" },
+            carryoverCount = 0L,
+            requiresPhotoReport = draft.requiresPhotoReport,
+            minPhotoCount = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L,
+            requiresApproval = draft.requiresApproval,
+            recurrenceRule = draft.recurrenceRule.code,
+            tags = draft.tags,
+            subtaskItems = encodedSubtasks,
+            photoItems = emptyList(),
+            commentItems = emptyList(),
+            historyItems = listOf(
+                StatusHistoryEntry(
+                    nowText(),
+                    actor.shortName,
+                    TaskStatus.NEW.code,
+                    "Задача создана"
+                ).encode()
+            ),
+            geoLocation = draft.geoLocation.ifBlank { "Участок №1" }
+        )
+
+        // Мгновенно добавляем задачу в локальный список и сбрасываем фильтр, чтобы она сразу отобразилась
+        upsertLocalTask(newTask)
+        _searchQuery.value = ""
+        if (_selectedFilter.value != TaskFilterTab.ALL &&
+            _selectedFilter.value != TaskFilterTab.TODAY &&
+            _selectedFilter.value != TaskFilterTab.TOMORROW
+        ) {
+            _selectedFilter.value = TaskFilterTab.ALL
+        } else if (draft.dueDateEpochDay > _currentEpochDay.value && _selectedFilter.value == TaskFilterTab.TODAY) {
+            _selectedFilter.value = TaskFilterTab.TOMORROW
+        } else if (draft.dueDateEpochDay <= _currentEpochDay.value && _selectedFilter.value == TaskFilterTab.TOMORROW) {
+            _selectedFilter.value = TaskFilterTab.TODAY
+        }
+
+        _bannerMessage.value = "Задача «$cleanTitle» добавлена"
+
         viewModelScope.launch {
-            val actor = activeEmployee.value
-            val assignee = CorporateSeedData.findEmployee(draft.assigneeId)
-            if (!actor.role.canAssignTo(assignee.role) ||
-                (actor.role == CorporateRole.WORKER && assignee.id != actor.id)
-            ) {
-                _bannerMessage.value = "Недостаточно прав: роль «${actor.role.titleRu}» не может назначать задачи роли «${assignee.role.titleRu}»"
-                return@launch
-            }
-
             if (isCloudAuthenticated) {
-                val result = repository.createTask(actor, draft)
-                if (result.isSuccess) {
-                    _bannerMessage.value = "Задача «${draft.title}» успешно поставлена"
-                    return@launch
-                }
+                repository.createTask(
+                    actor = actor,
+                    draft = draft,
+                    resolvedAssignee = assignee,
+                    customTaskId = taskId
+                )
             }
+        }
+    }
 
-            // Local fallback update
-            val newTask = TaskDocument(
-                id = "local_task_${System.currentTimeMillis()}",
-                userId = currentUserId,
-                title = draft.title.trim(),
-                description = draft.description.trim(),
-                creatorId = actor.id,
-                creatorName = actor.fullName,
-                assigneeId = assignee.id,
-                assigneeName = assignee.fullName,
-                groupId = assignee.groupId,
-                groupName = assignee.groupName,
-                siteId = assignee.siteId,
-                priority = draft.priority.code,
-                status = TaskStatus.NEW.code,
-                dueDateEpochDay = draft.dueDateEpochDay,
-                originalDueDateEpochDay = draft.dueDateEpochDay,
-                deadlineTime = draft.deadlineTime,
-                carryoverCount = 0L,
-                requiresPhotoReport = draft.requiresPhotoReport,
-                minPhotoCount = draft.minPhotoCount.toLong(),
-                requiresApproval = draft.requiresApproval,
-                recurrenceRule = draft.recurrenceRule.code,
-                tags = draft.tags,
-                subtaskItems = draft.subtasks.mapIndexed { idx, s ->
-                    SubtaskItem("sub_${idx + 1}", s, false).encode()
-                },
-                historyItems = listOf(
-                    StatusHistoryEntry(nowText(), actor.shortName, "NEW", "Задача создана (${actor.role.titleRu})").encode()
-                ),
-                geoLocation = draft.geoLocation.ifBlank { "Участок №1" }
-            )
-            _localTasks.value = listOf(newTask) + _localTasks.value
-            _bannerMessage.value = "Задача «${draft.title}» успешно поставлена"
+    fun deleteTask(task: TaskDocument) {
+        val taskId = task.id
+        if (taskId.isBlank()) return
+        _deletedTaskIds.value = _deletedTaskIds.value + taskId
+        appContext?.let { LocalWorkspaceStore.addDeletedTaskId(it, taskId) }
+        val remaining = _localTasks.value.filterNot { it.id == taskId }
+        persistTasksLocally(remaining)
+        _bannerMessage.value = "Задача «${task.title}» удалена"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.deleteTask(activeEmployee.value, task)
+            }
         }
     }
 
     fun addPhotoToTask(task: TaskDocument, uriString: String, gpsCoords: String, comment: String) {
-        viewModelScope.launch {
-            val actor = activeEmployee.value
-            val newPhoto = PhotoReportItem(
-                id = "ph_${System.currentTimeMillis()}",
-                uriString = uriString,
-                authorId = actor.id,
-                authorName = actor.shortName,
-                capturedAtText = nowText(),
-                gpsCoords = gpsCoords.ifBlank { "55.7558° с.ш., 37.6173° в.д." },
-                comment = comment.ifBlank { "Фотофиксация выполнения на участке" }
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val newPhoto = PhotoReportItem(
+            id = "ph_${System.currentTimeMillis()}_${(100..999).random()}",
+            uriString = uriString,
+            authorId = actor.id,
+            authorName = actor.shortName,
+            capturedAtText = nowText(),
+            gpsCoords = gpsCoords.ifBlank { "Участок №1" },
+            comment = comment.ifBlank { "Фотофиксация выполнения" }
+        ).encode()
+
+        val updatedPhotos = currentTask.photoItems + newPhoto
+        val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW) {
+            TaskStatus.IN_PROGRESS.code
+        } else {
+            currentTask.status
+        }
+        val updatedTask = currentTask.copy(
+            photoItems = updatedPhotos,
+            status = nextStatus,
+            historyItems = currentTask.historyItems + StatusHistoryEntry(
+                nowText(),
+                actor.shortName,
+                nextStatus,
+                "Добавлено фото (${updatedPhotos.size} шт.)"
             ).encode()
+        )
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Фото добавлено (${updatedPhotos.size} шт.)"
 
-            val updatedTask = task.copy(
-                photoItems = task.photoItems + newPhoto,
-                status = if (task.taskStatus == TaskStatus.NEW) TaskStatus.IN_PROGRESS.code else task.status,
-                historyItems = task.historyItems + StatusHistoryEntry(
-                    nowText(),
-                    actor.shortName,
-                    TaskStatus.IN_PROGRESS.code,
-                    "Добавлено фото в отчёт (всего: ${task.photoItems.size + 1})"
-                ).encode()
-            )
-            _localTasks.value = _localTasks.value.map { if (it.id == task.id) updatedTask else it }
-
+        viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.addPhotoToTask(actor, task, uriString, gpsCoords, comment)
+                repository.addPhotoToTask(actor, currentTask, uriString, gpsCoords, comment)
             }
-            _bannerMessage.value = "Фото добавлено в фотоотчёт (${updatedTask.photoItems.size} шт.)"
+        }
+    }
+
+    fun deletePhotoFromTask(task: TaskDocument, photoId: String) {
+        val currentTask = findTaskById(task.id) ?: task
+        val decoded = currentTask.decodedPhotos()
+        val targetPhoto = decoded.firstOrNull { it.id == photoId }
+        if (targetPhoto != null) {
+            PhotoCaptureUtils.deletePhotoFileIfLocal(targetPhoto.uriString)
+        }
+        val remainingEncoded = decoded.filterNot { it.id == photoId }.map { it.encode() }
+        val updatedTask = currentTask.copy(photoItems = remainingEncoded)
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Фото удалено"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.deletePhotoFromTask(activeEmployee.value, currentTask, photoId)
+            }
         }
     }
 
     fun toggleSubtask(task: TaskDocument, subtaskId: String) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val decoded = currentTask.decodedSubtasks()
+        val updatedSubtasks = decoded.map { item ->
+            if (item.id == subtaskId) item.copy(isDone = !item.isDone) else item
+        }.map { it.encode() }
+
+        val updatedTask = currentTask.copy(subtaskItems = updatedSubtasks)
+        upsertLocalTask(updatedTask)
+
         viewModelScope.launch {
-            val actor = activeEmployee.value
-            val updatedSubtasks = task.decodedSubtasks().map {
-                if (it.id == subtaskId) it.copy(isDone = !it.isDone) else it
-            }.map { it.encode() }
-            _localTasks.value = _localTasks.value.map {
-                if (it.id == task.id) it.copy(subtaskItems = updatedSubtasks) else it
-            }
             if (isCloudAuthenticated) {
-                repository.toggleSubtask(actor, task, subtaskId)
+                repository.toggleSubtask(actor, currentTask, subtaskId)
             }
         }
     }
 
+    fun addSubtaskToTask(task: TaskDocument, title: String) {
+        val clean = title.trim()
+        if (clean.isBlank()) return
+        val currentTask = findTaskById(task.id) ?: task
+        val newItem = SubtaskItem(
+            id = "sub_${System.currentTimeMillis()}",
+            title = clean,
+            isDone = false
+        ).encode()
+        val updatedTask = currentTask.copy(
+            subtaskItems = currentTask.subtaskItems + newItem
+        )
+        upsertLocalTask(updatedTask)
+    }
+
     fun addComment(task: TaskDocument, text: String, mentionedUser: String) {
+        if (text.isBlank()) return
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val newComment = TaskCommentItem(
+            id = "cmt_${System.currentTimeMillis()}",
+            authorId = actor.id,
+            authorName = actor.shortName,
+            authorRole = actor.role.code,
+            text = text.trim(),
+            mentionedUser = mentionedUser.trim(),
+            createdAtText = nowText(),
+            isRead = false
+        ).encode()
+        val updatedTask = currentTask.copy(
+            commentItems = currentTask.commentItems + newComment
+        )
+        upsertLocalTask(updatedTask)
+
         viewModelScope.launch {
-            val actor = activeEmployee.value
-            if (text.isBlank()) return@launch
-            val newComment = TaskCommentItem(
-                id = "cmt_${System.currentTimeMillis()}",
-                authorId = actor.id,
-                authorName = actor.shortName,
-                authorRole = actor.role.code,
-                text = text.trim(),
-                mentionedUser = mentionedUser.trim(),
-                createdAtText = nowText(),
-                isRead = false
-            ).encode()
-            _localTasks.value = _localTasks.value.map {
-                if (it.id == task.id) it.copy(commentItems = it.commentItems + newComment) else it
-            }
             if (isCloudAuthenticated) {
-                repository.addComment(actor, task, text, mentionedUser)
+                repository.addComment(actor, currentTask, text, mentionedUser)
             }
         }
     }
 
     fun submitCompletion(task: TaskDocument, note: String) {
-        viewModelScope.launch {
-            val actor = activeEmployee.value
-            if (task.requiresPhotoReport && task.photoItems.size < task.minPhotoCount) {
-                _bannerMessage.value = "Обязателен фотоотчёт: прикреплено ${task.photoItems.size} из ${task.minPhotoCount} фото"
-                return@launch
-            }
-            val nextStatus = if (task.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
-            val updatedTask = task.copy(
-                status = nextStatus.code,
-                rejectionReason = null,
-                historyItems = task.historyItems + StatusHistoryEntry(
-                    nowText(),
-                    actor.shortName,
-                    nextStatus.code,
-                    note.ifBlank { "Отправлено на проверку руководителю/ИТР" }
-                ).encode()
-            )
-            _localTasks.value = _localTasks.value.map { if (it.id == task.id) updatedTask else it }
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        if (currentTask.requiresPhotoReport && currentTask.photoItems.size < currentTask.minPhotoCount) {
+            _bannerMessage.value = "Прикрепите минимум ${currentTask.minPhotoCount} фото (сейчас: ${currentTask.photoItems.size})"
+            return
+        }
+        val nextStatus = if (currentTask.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
+        val updatedTask = currentTask.copy(
+            status = nextStatus.code,
+            rejectionReason = null,
+            historyItems = currentTask.historyItems + StatusHistoryEntry(
+                nowText(),
+                actor.shortName,
+                nextStatus.code,
+                note.ifBlank { "Отправлено на проверку" }
+            ).encode()
+        )
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = if (nextStatus == TaskStatus.ON_REVIEW) {
+            "Задача отправлена на проверку"
+        } else {
+            "Задача выполнена"
+        }
 
+        viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.submitTaskCompletion(actor, task, note)
-            }
-            _bannerMessage.value = if (nextStatus == TaskStatus.ON_REVIEW) {
-                "Задача отправлена на проверку ИТР / Руководителю"
-            } else {
-                "Задача отмечена выполненной"
+                repository.submitTaskCompletion(actor, currentTask, note)
             }
         }
     }
 
     fun approveReport(task: TaskDocument, comment: String) {
-        viewModelScope.launch {
-            val supervisor = activeEmployee.value
-            val assigneeRole = CorporateSeedData.findEmployee(task.assigneeId).role
-            if (!supervisor.role.canApproveReportOf(assigneeRole)) {
-                _bannerMessage.value = "Недостаточно прав: роль «${supervisor.role.titleRu}» не может подтверждать отчёт роли «${assigneeRole.titleRu}»"
-                return@launch
-            }
-            val updatedTask = task.copy(
-                status = TaskStatus.APPROVED.code,
-                approvedByName = supervisor.fullName,
-                rejectionReason = null,
-                historyItems = task.historyItems + StatusHistoryEntry(
-                    nowText(),
-                    supervisor.shortName,
-                    TaskStatus.APPROVED.code,
-                    comment.ifBlank { "Фотоотчёт проверен и подтверждён" }
-                ).encode()
-            )
-            _localTasks.value = _localTasks.value.map { if (it.id == task.id) updatedTask else it }
+        val currentTask = findTaskById(task.id) ?: task
+        val supervisor = activeEmployee.value
+        val updatedTask = currentTask.copy(
+            status = TaskStatus.APPROVED.code,
+            approvedByName = supervisor.fullName,
+            rejectionReason = null,
+            historyItems = currentTask.historyItems + StatusHistoryEntry(
+                nowText(),
+                supervisor.shortName,
+                TaskStatus.APPROVED.code,
+                comment.ifBlank { "Отчёт подтверждён" }
+            ).encode()
+        )
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Выполнение задачи подтверждено"
 
+        viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.approveTaskReport(supervisor, task, comment)
+                repository.approveTaskReport(supervisor, currentTask, comment)
             }
-            _bannerMessage.value = "Отчёт подтверждён. Задача зачёркнута и зафиксирована в аудите"
         }
     }
 
     fun rejectReport(task: TaskDocument, reason: String) {
-        viewModelScope.launch {
-            val supervisor = activeEmployee.value
-            if (reason.isBlank()) {
-                _bannerMessage.value = "Укажите обязательную причину отклонения отчёта"
-                return@launch
-            }
-            val assigneeRole = CorporateSeedData.findEmployee(task.assigneeId).role
-            if (!supervisor.role.canApproveReportOf(assigneeRole)) {
-                _bannerMessage.value = "Недостаточно прав для отклонения этого отчёта"
-                return@launch
-            }
-            val updatedTask = task.copy(
-                status = TaskStatus.REJECTED.code,
-                rejectionReason = reason.trim(),
-                historyItems = task.historyItems + StatusHistoryEntry(
-                    nowText(),
-                    supervisor.shortName,
-                    TaskStatus.REJECTED.code,
-                    "Отклонено: ${reason.trim()}"
-                ).encode()
-            )
-            _localTasks.value = _localTasks.value.map { if (it.id == task.id) updatedTask else it }
+        if (reason.isBlank()) {
+            _bannerMessage.value = "Укажите причину возврата задачи"
+            return
+        }
+        val currentTask = findTaskById(task.id) ?: task
+        val supervisor = activeEmployee.value
+        val updatedTask = currentTask.copy(
+            status = TaskStatus.REJECTED.code,
+            rejectionReason = reason.trim(),
+            historyItems = currentTask.historyItems + StatusHistoryEntry(
+                nowText(),
+                supervisor.shortName,
+                TaskStatus.REJECTED.code,
+                "Отклонено: ${reason.trim()}"
+            ).encode()
+        )
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Отчёт отклонён и возвращён на доработку"
 
+        viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.rejectTaskReport(supervisor, task, reason)
+                repository.rejectTaskReport(supervisor, currentTask, reason)
             }
-            _bannerMessage.value = "Отчёт отклонён и возвращён исполнителю с указанием причины"
         }
     }
 
     fun archiveTask(task: TaskDocument) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val updatedTask = currentTask.copy(status = TaskStatus.ARCHIVED.code)
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Задача перемещена в архив"
+
         viewModelScope.launch {
-            val actor = activeEmployee.value
-            _localTasks.value = _localTasks.value.map {
-                if (it.id == task.id) it.copy(status = TaskStatus.ARCHIVED.code) else it
-            }
             if (isCloudAuthenticated) {
-                repository.archiveTask(actor, task)
+                repository.archiveTask(actor, currentTask)
             }
-            _bannerMessage.value = "Задача перемещена в архив"
         }
     }
 
@@ -837,7 +1065,7 @@ class EzhednevnikViewModel(
                         carryoverCount = t.carryoverCount + 1L,
                         historyItems = t.historyItems + StatusHistoryEntry(
                             nowText(),
-                            "Автоперенос смены",
+                            "Автоперенос",
                             t.status,
                             "Перенесено на следующий день (перенос №${t.carryoverCount + 1L})"
                         ).encode()
@@ -846,14 +1074,14 @@ class EzhednevnikViewModel(
                     t
                 }
             }
-            _localTasks.value = updatedList
+            persistTasksLocally(updatedList)
             if (isCloudAuthenticated) {
                 repository.runEndOfDayCarryover(actor, allTasks, day)
             }
             _bannerMessage.value = if (movedCount > 0) {
-                "Закрытие смены: автоматически перенесено $movedCount невыполненных задач на следующий день"
+                "Перенесено на завтра невыполненных задач: $movedCount"
             } else {
-                "Все активные задачи на сегодня уже закрыты или находятся на проверке"
+                "Нет активных невыполненных задач для переноса"
             }
         }
     }
@@ -889,7 +1117,7 @@ class EzhednevnikViewModel(
                     val rowCount = generated.sheets.sumOf { it.rows.size }.toLong()
                     val record = GeneratedReportDocument(
                         id = "rep_${System.currentTimeMillis()}",
-                        userId = currentUserId,
+                        userId = effectiveUserId,
                         templateId = template.id.ifBlank { "tpl_custom" },
                         templateName = template.name,
                         reportType = template.reportType,
@@ -899,7 +1127,7 @@ class EzhednevnikViewModel(
                         exportFormat = exportFormat.code,
                         filePath = generated.file.absolutePath,
                         summaryText = generated.summaryText,
-                        recipients = listOf("ПТО участка", "Руководитель СМР"),
+                        recipients = listOf("Руководитель"),
                         filterSummary = generated.roleScopeLabel,
                         rowCount = rowCount,
                         createdAt = Timestamp.now()
@@ -908,7 +1136,7 @@ class EzhednevnikViewModel(
                     if (isCloudAuthenticated) {
                         repository.recordGeneratedReport(actor, record)
                     }
-                    _bannerMessage.value = "Сформирован документ: ${generated.file.name} (${exportFormat.code})"
+                    _bannerMessage.value = "Сформирован файл: ${generated.file.name}"
                 }
             } else {
                 _bannerMessage.value = result.exceptionOrNull()?.localizedMessage ?: "Ошибка формирования отчёта"
@@ -923,7 +1151,7 @@ class EzhednevnikViewModel(
             if (isCloudAuthenticated) {
                 repository.saveReportTemplate(actor, template)
             }
-            _bannerMessage.value = "Шаблон отчёта «${template.name}» сохранён"
+            _bannerMessage.value = "Шаблон «${template.name}» сохранён"
         }
     }
 
@@ -936,7 +1164,7 @@ class EzhednevnikViewModel(
     ) {
         val log = AuditLogDocument(
             id = "audit_${System.currentTimeMillis()}",
-            userId = currentUserId,
+            userId = effectiveUserId,
             actorId = actor.id,
             actorName = actor.fullName,
             actorRole = actor.role.code,
@@ -953,7 +1181,6 @@ class EzhednevnikViewModel(
         SimpleDateFormat("dd.MM HH:mm", Locale.forLanguageTag("ru")).format(Date())
 
     companion object {
-        private const val TAG = "EzhednevnikVM"
         private const val STOP_TIMEOUT_MILLIS = 5000L
     }
 }

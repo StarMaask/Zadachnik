@@ -3,8 +3,6 @@ package com.example.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -28,26 +26,30 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.FactCheck
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Update
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,7 +57,6 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -70,13 +71,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
@@ -112,11 +110,11 @@ enum class MainNavDestination(
     val titleRu: String,
     val icon: ImageVector
 ) {
-    TODAY("today", "Сегодня", Icons.Default.CalendarToday),
-    APPROVALS("approvals", "Проверка", Icons.Default.FactCheck),
-    REPORTING("reporting", "Отчётность", Icons.Default.Description),
-    STATS("stats", "Статистика", Icons.Default.Analytics),
-    ADMIN("admin", "Участок / Роль", Icons.Default.AdminPanelSettings)
+    TODAY("today", "Задачи", Icons.Default.CalendarToday),
+    APPROVALS("approvals", "Приёмка", Icons.AutoMirrored.Filled.FactCheck),
+    REPORTING("reporting", "Отчёты", Icons.Default.Description),
+    STATS("stats", "Сводка", Icons.Default.Analytics),
+    ADMIN("admin", "Персонал", Icons.Default.AdminPanelSettings)
 }
 
 @Composable
@@ -126,9 +124,9 @@ fun MainFeatureScreen(
     MainFeatureScreen(
         session = CorporateLoginSession(
             userId = currentUserId,
-            email = "",
-            fullName = "Ковалёв Дмитрий Сергеевич",
-            isHeadActivated = false
+            email = "m241185m@gmail.com",
+            fullName = "Руководитель",
+            isHeadActivated = true
         ),
         onSignOutComplete = {}
     )
@@ -158,13 +156,15 @@ fun MainFeatureScreen(
                     currentUserId = session.userId,
                     currentUserEmail = session.email,
                     currentUserName = session.fullName,
-                    initialHeadActivated = session.isHeadActivated
+                    initialHeadActivated = session.isHeadActivated,
+                    appContext = app.applicationContext
                 )
             }
         }
     )
 
     val activeEmployee by viewModel.activeEmployee.collectAsStateWithLifecycle()
+    val availableEmployees by viewModel.availableEmployees.collectAsStateWithLifecycle()
     val currentMemberRecord by viewModel.currentMemberRecord.collectAsStateWithLifecycle()
     val allSiteMembers by viewModel.siteMembersState.collectAsStateWithLifecycle()
     val tasksState by viewModel.tasksState.collectAsStateWithLifecycle()
@@ -180,7 +180,7 @@ fun MainFeatureScreen(
     val autoPlanEvening by viewModel.autoSchedulePlanEvening.collectAsStateWithLifecycle()
     val autoReportNight by viewModel.autoScheduleReportNight.collectAsStateWithLifecycle()
 
-    // Экран ожидания назначения роли руководителем для новых сотрудников
+    // Экран ожидания назначения роли для новых сотрудников
     val member = currentMemberRecord
     if (member != null && (member.isPendingRole || member.isRejected)) {
         PendingRoleApprovalScreen(
@@ -199,6 +199,8 @@ fun MainFeatureScreen(
     var currentTab by remember { mutableStateOf(MainNavDestination.TODAY) }
     var showCreateTaskDialog by remember { mutableStateOf(false) }
     var selectedTaskId by remember { mutableStateOf<String?>(null) }
+    var showSearchBar by remember { mutableStateOf(false) }
+    var showTopOverflowMenu by remember { mutableStateOf(false) }
 
     BackHandler(enabled = currentTab != MainNavDestination.TODAY) {
         currentTab = MainNavDestination.TODAY
@@ -206,7 +208,7 @@ fun MainFeatureScreen(
 
     val allTasksRaw = (tasksState as? UiState.Success)?.data ?: emptyList()
     val pendingMembersCount = remember(allSiteMembers) {
-        allSiteMembers.count { it.isPendingRole }
+        allSiteMembers.count { it.isPendingRole && !it.isRejected }
     }
 
     // Role-based task visibility filter
@@ -242,33 +244,75 @@ fun MainFeatureScreen(
                     title = {
                         Column {
                             Text(
-                                text = "Ежедневник • ${activeEmployee.shortName}",
+                                text = "Ежедневник",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "${activeEmployee.role.titleRu} • ${activeEmployee.groupName}",
-                                style = MaterialTheme.typography.labelMedium,
+                                text = "${activeEmployee.shortName} • ${activeEmployee.role.titleRu}",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     },
                     actions = {
-                        AssistChip(
-                            onClick = { currentTab = MainNavDestination.ADMIN },
-                            label = {
-                                Text(
-                                    if (activeEmployee.role == CorporateRole.HEAD && pendingMembersCount > 0) {
-                                        "${activeEmployee.role.titleRu} (+$pendingMembersCount)"
-                                    } else {
-                                        activeEmployee.role.titleRu
+                        if (currentTab == MainNavDestination.TODAY) {
+                            IconButton(
+                                onClick = {
+                                    showSearchBar = !showSearchBar
+                                    if (!showSearchBar) viewModel.updateSearchQuery("")
+                                }
+                            ) {
+                                Icon(Icons.Default.Search, contentDescription = "Поиск")
+                            }
+                        }
+
+                        Box {
+                            IconButton(
+                                onClick = { showTopOverflowMenu = true },
+                                modifier = Modifier.testTag("top_role_switcher_chip")
+                            ) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Меню")
+                            }
+                            DropdownMenu(
+                                expanded = showTopOverflowMenu,
+                                onDismissRequest = { showTopOverflowMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Перенести невыполненные на завтра") },
+                                    leadingIcon = { Icon(Icons.Default.Update, contentDescription = null) },
+                                    onClick = {
+                                        showTopOverflowMenu = false
+                                        viewModel.triggerEndOfDayCarryover()
                                     }
                                 )
-                            },
-                            modifier = Modifier
-                                .padding(end = 8.dp)
-                                .testTag("top_role_switcher_chip")
-                        )
+                                DropdownMenuItem(
+                                    text = { Text("Сформировать план / отчёт") },
+                                    leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
+                                    onClick = {
+                                        showTopOverflowMenu = false
+                                        currentTab = MainNavDestination.REPORTING
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Персонал и роли") },
+                                    leadingIcon = { Icon(Icons.Default.AdminPanelSettings, contentDescription = null) },
+                                    onClick = {
+                                        showTopOverflowMenu = false
+                                        currentTab = MainNavDestination.ADMIN
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Выйти из учётной записи") },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null) },
+                                    onClick = {
+                                        showTopOverflowMenu = false
+                                        signOut(context, credentialManager, scope, onSignOutComplete)
+                                    }
+                                )
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface
@@ -281,22 +325,26 @@ fun MainFeatureScreen(
                         onClick = { showCreateTaskDialog = true },
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
+                        shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.testTag("fab_create_task")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 16.dp),
+                            modifier = Modifier.padding(horizontal = 14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "Поставить задачу")
+                            Icon(Icons.Default.Add, contentDescription = "Новая задача")
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Поставить задачу", fontWeight = FontWeight.Bold)
+                            Text("Новая задача", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
             },
             bottomBar = {
                 if (!isWideScreen) {
-                    NavigationBar {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 0.dp
+                    ) {
                         MainNavDestination.entries.forEach { dest ->
                             NavigationBarItem(
                                 selected = currentTab == dest,
@@ -353,27 +401,31 @@ fun MainFeatureScreen(
                     AnimatedVisibility(visible = bannerMessage != null) {
                         bannerMessage?.let { msg ->
                             Surface(
-                                color = Color(0xFF0F2942),
+                                color = MaterialTheme.colorScheme.primaryContainer,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                                shape = RoundedCornerShape(12.dp)
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(10.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
                                         text = msg,
-                                        color = Color.White,
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        style = MaterialTheme.typography.bodySmall,
                                         modifier = Modifier.weight(1f)
                                     )
-                                    IconButton(onClick = { viewModel.clearBanner() }) {
+                                    IconButton(
+                                        onClick = { viewModel.clearBanner() },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
                                         Icon(
                                             imageVector = Icons.Default.Close,
-                                            contentDescription = "Скрыть уведомление",
-                                            tint = Color.White
+                                            contentDescription = "Скрыть",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(16.dp)
                                         )
                                     }
                                 }
@@ -389,15 +441,16 @@ fun MainFeatureScreen(
                                 visibleTasks = roleVisibleTasks,
                                 pendingMembersCount = pendingMembersCount,
                                 selectedFilter = selectedFilter,
+                                showSearchBar = showSearchBar,
                                 searchQuery = searchQuery,
                                 currentEpochDay = currentEpochDay,
                                 onSelectFilter = viewModel::selectFilter,
                                 onSearchChange = viewModel::updateSearchQuery,
-                                onSwitchPersona = viewModel::switchPersona,
-                                onTriggerCarryover = viewModel::triggerEndOfDayCarryover,
-                                onQuickOpenReporting = { currentTab = MainNavDestination.REPORTING },
                                 onOpenRoleAssignments = { currentTab = MainNavDestination.ADMIN },
-                                onTaskClick = { selectedTaskId = it.id }
+                                onOpenCreateDialog = { showCreateTaskDialog = true },
+                                onTaskClick = { selectedTaskId = it.id },
+                                onDeleteTask = viewModel::deleteTask,
+                                onToggleSubtask = viewModel::toggleSubtask
                             )
                         }
                         MainNavDestination.APPROVALS -> {
@@ -432,7 +485,7 @@ fun MainFeatureScreen(
                                 onExportStats = { fmt ->
                                     val statTpl = ReportTemplateDocument(
                                         id = "tpl_stats_export",
-                                        name = "Статистическая сводка участка",
+                                        name = "Статистическая сводка",
                                         reportType = ReportType.GROUP_SITE_SUMMARY.code,
                                         sheetLayout = SheetLayout.SINGLE_SHEET.code,
                                         exportFormat = fmt.code
@@ -455,6 +508,7 @@ fun MainFeatureScreen(
                                 auditLogs = logs,
                                 onAssignRoleToMember = viewModel::assignRoleToMember,
                                 onRejectMemberAccess = viewModel::rejectMemberAccess,
+                                onDeleteSiteMember = viewModel::deleteSiteMember,
                                 onPreRegisterEmployee = viewModel::preRegisterEmployeeByEmail,
                                 onSwitchPersona = viewModel::switchPersona,
                                 onSignOut = {
@@ -471,6 +525,7 @@ fun MainFeatureScreen(
     if (showCreateTaskDialog) {
         CreateTaskDialog(
             activeEmployee = activeEmployee,
+            availableEmployees = availableEmployees,
             currentEpochDay = currentEpochDay,
             onDismiss = { showCreateTaskDialog = false },
             onCreate = viewModel::createNewTask
@@ -483,12 +538,15 @@ fun MainFeatureScreen(
             activeEmployee = activeEmployee,
             onDismiss = { selectedTaskId = null },
             onAddPhoto = { uri, gps, cmt -> viewModel.addPhotoToTask(task, uri, gps, cmt) },
+            onDeletePhoto = { photoId -> viewModel.deletePhotoFromTask(task, photoId) },
             onToggleSubtask = { subId -> viewModel.toggleSubtask(task, subId) },
+            onAddSubtask = { title -> viewModel.addSubtaskToTask(task, title) },
             onAddComment = { txt, mention -> viewModel.addComment(task, txt, mention) },
             onSubmitCompletion = { note -> viewModel.submitCompletion(task, note) },
             onApproveReport = { note -> viewModel.approveReport(task, note) },
             onRejectReport = { reason -> viewModel.rejectReport(task, reason) },
-            onArchiveTask = { viewModel.archiveTask(task) }
+            onArchiveTask = { viewModel.archiveTask(task) },
+            onDeleteTask = { viewModel.deleteTask(task) }
         )
     }
 
@@ -507,23 +565,23 @@ private fun TodayTasksContent(
     visibleTasks: List<TaskDocument>,
     pendingMembersCount: Int,
     selectedFilter: TaskFilterTab,
+    showSearchBar: Boolean,
     searchQuery: String,
     currentEpochDay: Long,
     onSelectFilter: (TaskFilterTab) -> Unit,
     onSearchChange: (String) -> Unit,
-    onSwitchPersona: (String) -> Unit,
-    onTriggerCarryover: () -> Unit,
-    onQuickOpenReporting: () -> Unit,
     onOpenRoleAssignments: () -> Unit,
-    onTaskClick: (TaskDocument) -> Unit
+    onOpenCreateDialog: () -> Unit,
+    onTaskClick: (TaskDocument) -> Unit,
+    onDeleteTask: (TaskDocument) -> Unit,
+    onToggleSubtask: (TaskDocument, String) -> Unit
 ) {
     val filteredTasks = remember(visibleTasks, selectedFilter, searchQuery, currentEpochDay) {
         visibleTasks.filter { task ->
             val matchesQuery = searchQuery.isBlank() ||
                 task.title.contains(searchQuery, ignoreCase = true) ||
                 task.assigneeName.contains(searchQuery, ignoreCase = true) ||
-                task.groupName.contains(searchQuery, ignoreCase = true) ||
-                task.tags.any { it.contains(searchQuery, ignoreCase = true) }
+                task.description.contains(searchQuery, ignoreCase = true)
 
             val matchesTab = when (selectedFilter) {
                 TaskFilterTab.TODAY -> task.dueDateEpochDay <= currentEpochDay && task.taskStatus != TaskStatus.ARCHIVED
@@ -543,15 +601,15 @@ private fun TodayTasksContent(
         modifier = Modifier
             .fillMaxSize()
             .testTag("today_tasks_list"),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 88.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Уведомление для Руководителя о новых сотрудниках, ожидающих назначения роли
+        // Компактное уведомление для Руководителя при наличии новых заявок
         if (activeEmployee.role == CorporateRole.HEAD && pendingMembersCount > 0) {
             item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFFFEF3C7),
                     border = BorderStroke(1.dp, Color(0xFFF59E0B)),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -559,9 +617,7 @@ private fun TodayTasksContent(
                         .testTag("head_pending_roles_banner")
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -571,204 +627,85 @@ private fun TodayTasksContent(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.HourglassTop,
-                                contentDescription = "Ожидают роли",
-                                tint = Color(0xFFD97706)
+                                contentDescription = null,
+                                tint = Color(0xFFD97706),
+                                modifier = Modifier.size(18.dp)
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = "Ожидают назначения роли: $pendingMembersCount чел.",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF92400E)
-                                )
-                                Text(
-                                    text = "Нажмите, чтобы назначить роль (Рабочий / ИТР / Руководитель) и бригаду",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color(0xFF78350F)
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
-                            color = Color(0xFFD97706),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Назначить",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                text = "Новые пользователи ожидают роли: $pendingMembersCount чел.",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF92400E)
                             )
                         }
-                    }
-                }
-            }
-        }
-
-        // Hero Banner & Quick Operations Card
-        item {
-            Card(
-                shape = RoundedCornerShape(22.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    Image(
-                        painter = painterResource(id = R.drawable.img_hero_site_banner_1794330702001),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(175.dp),
-                        contentScale = ContentScale.Crop
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(175.dp)
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(0x990A1D30),
-                                        Color(0xF20A1D30)
-                                    )
-                                )
-                            )
-                    )
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Surface(
-                                color = Color(0xFFF59E0B),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = "Смена: ${ReportDocumentGenerator.formatEpochDay(currentEpochDay)}",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF0F172A),
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                            Text(
-                                text = "Задач: ${visibleTasks.size} • На проверке: ${visibleTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = activeEmployee.siteName,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
+                            text = "Открыть →",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFB45309)
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = onTriggerCarryover,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("carryover_shift_button")
-                            ) {
-                                Icon(Icons.Default.Update, contentDescription = "Автоперенос", modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Автоперенос на завтра", style = MaterialTheme.typography.labelMedium)
-                            }
-                            OutlinedButton(
-                                onClick = onQuickOpenReporting,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("quick_open_reporting_button")
-                            ) {
-                                Icon(
-                                    Icons.Default.Description,
-                                    contentDescription = "План и отчёт",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    "План / Отчёт дня",
-                                    color = Color.White,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                            }
-                        }
                     }
                 }
             }
         }
 
-        // Quick 1-Tap Role Switcher Bar (Руководитель / ИТР / Рабочий)
+        // Collapsible Search Bar
+        if (showSearchBar || searchQuery.isNotBlank()) {
+            item {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onSearchChange,
+                    placeholder = { Text("Поиск по названию задачи или исполнителю...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotBlank()) {
+                            IconButton(onClick = { onSearchChange("") }) {
+                                Icon(Icons.Default.Close, contentDescription = "Очистить")
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("task_search_input")
+                )
+            }
+        }
+
+        // Compact Filter Tabs Row + Date Summary
         item {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Роль:",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
+                    text = "Дата: ${ReportDocumentGenerator.formatEpochDay(currentEpochDay)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                listOf(
-                    "emp_head_1" to "Руководитель (Ковалёв)",
-                    "emp_itr_1" to "ИТР (Соколов)",
-                    "emp_worker_1" to "Рабочий (Морозов)",
-                    "emp_worker_3" to "Рабочий (Кузнецов)"
-                ).forEach { (empId, label) ->
-                    FilterChip(
-                        selected = activeEmployee.id == empId,
-                        onClick = { onSwitchPersona(empId) },
-                        label = { Text(label) },
-                        modifier = Modifier.testTag("quick_role_$empId")
-                    )
-                }
+                Text(
+                    text = "Всего: ${filteredTasks.size} из ${visibleTasks.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-        }
-
-        // Search and Filter Chips
-        item {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchChange,
-                placeholder = { Text("Поиск по задаче, ФИО исполнителя, бригаде или #тегу...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Поиск") },
-                trailingIcon = {
-                    if (searchQuery.isNotBlank()) {
-                        IconButton(onClick = { onSearchChange("") }) {
-                            Icon(Icons.Default.Close, contentDescription = "Очистить поиск")
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("task_search_input")
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                TaskFilterTab.entries.forEach { tab ->
+                listOf(
+                    TaskFilterTab.TODAY,
+                    TaskFilterTab.TOMORROW,
+                    TaskFilterTab.ON_REVIEW,
+                    TaskFilterTab.APPROVED,
+                    TaskFilterTab.ALL
+                ).forEach { tab ->
                     FilterChip(
                         selected = selectedFilter == tab,
                         onClick = { onSelectFilter(tab) },
@@ -810,8 +747,9 @@ private fun TodayTasksContent(
                 if (filteredTasks.isEmpty()) {
                     item {
                         Card(
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
@@ -821,16 +759,22 @@ private fun TodayTasksContent(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = "В разделе «${selectedFilter.titleRu}» задач не найдено",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
+                                    text = "Список задач пуст",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "Переключите вкладку фильтра или нажмите «+ Поставить задачу»",
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    text = "Нажмите кнопку «Новая задача», чтобы добавить первую задачу.",
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(onClick = onOpenCreateDialog) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Создать задачу")
+                                }
                             }
                         }
                     }
@@ -838,7 +782,8 @@ private fun TodayTasksContent(
                     items(filteredTasks, key = { it.id }) { task ->
                         TaskItemCard(
                             task = task,
-                            onClick = { onTaskClick(task) }
+                            onClick = { onTaskClick(task) },
+                            onDelete = { onDeleteTask(task) }
                         )
                     }
                 }

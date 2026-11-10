@@ -1,13 +1,10 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,21 +22,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesomeMotion
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Preview
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -52,6 +42,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -60,11 +51,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -78,7 +69,6 @@ import com.example.data.model.TaskStatus
 import com.example.domain.reporting.GeneratedDocumentResult
 import com.example.domain.reporting.ReportDocumentGenerator
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ReportingCenterScreen(
     activeEmployee: CorporateEmployee,
@@ -98,6 +88,7 @@ fun ReportingCenterScreen(
 ) {
     var selectedLayout by remember { mutableStateOf(SheetLayout.SPLIT_SHEETS) }
     var selectedFormat by remember { mutableStateOf(ExportFormat.PDF) }
+    var showSettingsSubmenu by remember { mutableStateOf(false) }
     var showCustomTemplateDialog by remember { mutableStateOf(false) }
 
     val allReportCatalog = remember(templates) {
@@ -121,15 +112,17 @@ fun ReportingCenterScreen(
             .fillMaxSize()
             .testTag("reporting_center_list"),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // Компактная панель выбора формата и подменю настроек
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                shape = RoundedCornerShape(20.dp),
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -137,228 +130,138 @@ fun ReportingCenterScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Центр отчётной документации",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                text = "Формирование отчётов",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = if (activeEmployee.role.canExportConsolidatedPersonnelReport()) {
-                                    "Доступна сводная выгрузка по персоналу с ФИО исполнителей (${activeEmployee.role.titleRu})"
-                                } else {
-                                    "Режим Рабочего: выгрузка только личной отчётности (${activeEmployee.shortName})"
-                                },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                                text = "Формат: ${selectedFormat.code} • ${selectedLayout.shortRu}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
-                        OutlinedButton(
-                            onClick = { showCustomTemplateDialog = true },
-                            modifier = Modifier.testTag("open_template_constructor_button")
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Конструктор")
+                        TextButton(onClick = { showSettingsSubmenu = !showSettingsSubmenu }) {
+                            Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Шаблон")
+                            Text(if (showSettingsSubmenu) "Скрыть" else "Параметры")
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    AnimatedVisibility(visible = showSettingsSubmenu) {
+                        Column(
+                            modifier = Modifier.padding(top = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            Text("Компоновка листов:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                SheetLayout.entries.forEach { layout ->
+                                    FilterChip(
+                                        selected = selectedLayout == layout,
+                                        onClick = { selectedLayout = layout },
+                                        label = { Text(layout.shortRu) },
+                                        modifier = Modifier.testTag("sheet_layout_${layout.code}")
+                                    )
+                                }
+                            }
 
-                    Text(
-                        text = "1. Компоновка листов документа (запоминается шаблоном):",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SheetLayout.entries.forEach { layout ->
-                            FilterChip(
-                                selected = selectedLayout == layout,
-                                onClick = { selectedLayout = layout },
-                                label = { Text(layout.titleRu) },
-                                modifier = Modifier.testTag("sheet_layout_${layout.code}")
-                            )
-                        }
-                    }
+                            Text("Формат файла:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ExportFormat.entries.forEach { fmt ->
+                                    FilterChip(
+                                        selected = selectedFormat == fmt,
+                                        onClick = { selectedFormat = fmt },
+                                        label = { Text(fmt.code) },
+                                        modifier = Modifier.testTag("export_format_${fmt.code}")
+                                    )
+                                }
+                            }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Автовыгрузка плана (19:00)", style = MaterialTheme.typography.bodySmall)
+                                Switch(checked = autoPlanEvening, onCheckedChange = onToggleAutoPlan)
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Автовыгрузка отчёта (21:00)", style = MaterialTheme.typography.bodySmall)
+                                Switch(checked = autoReportNight, onCheckedChange = onToggleAutoReport)
+                            }
 
-                    Text(
-                        text = "2. Формат выгрузки файла:",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        ExportFormat.entries.forEach { fmt ->
-                            FilterChip(
-                                selected = selectedFormat == fmt,
-                                onClick = { selectedFormat = fmt },
-                                label = { Text(fmt.code) },
-                                modifier = Modifier.testTag("export_format_${fmt.code}")
-                            )
+                            OutlinedButton(
+                                onClick = { showCustomTemplateDialog = true },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("open_template_constructor_button")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Создать свой шаблон")
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Schedule Auto-generation card
-        item {
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Schedule,
-                            contentDescription = "Расписание",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Автогенерация по расписанию (WorkManager)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("План работ на завтра — вечером (19:00)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Text("Рассылка руководителю участка и ИТР", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = autoPlanEvening, onCheckedChange = onToggleAutoPlan)
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Отчёт за текущий день — закрытие смены (21:00)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Text("Сводка выполнения, фотоотчётов и автопереносов", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(checked = autoReportNight, onCheckedChange = onToggleAutoReport)
-                    }
-                }
-            }
-        }
-
-        item {
-            Text(
-                text = "Шаблоны отчётов (Базовые и Дополнительные — ${allReportCatalog.size})",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
+        // Лаконичный табличный список видов отчётов
         items(allReportCatalog, key = { it.id.ifBlank { it.name } }) { tpl ->
             val rType = tpl.parsedReportType
             val isLockedForWorker = rType.isConsolidatedOnly && !activeEmployee.role.canExportConsolidatedPersonnelReport()
 
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isLockedForWorker) {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    } else {
-                        MaterialTheme.colorScheme.surface
-                    }
-                ),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = tpl.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Surface(
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "${selectedFormat.code} • ${selectedLayout.shortRu}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = tpl.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = rType.subtitleRu,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        tpl.columns.take(5).forEach { col ->
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text(
-                                    text = col,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-
                     Spacer(modifier = Modifier.height(10.dp))
 
                     if (isLockedForWorker) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.Lock,
-                                contentDescription = "Доступ ограничен",
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(16.dp)
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Сводный отчёт по персоналу доступен только ИТР и Руководителю",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.error,
-                                fontWeight = FontWeight.SemiBold
+                                text = "Доступно для ИТР и Руководителя",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     } else {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             OutlinedButton(
                                 onClick = {
@@ -366,11 +269,12 @@ fun ReportingCenterScreen(
                                 },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .testTag("preview_report_${rType.code}")
+                                    .testTag("preview_report_${rType.code}"),
+                                contentPadding = PaddingValues(vertical = 8.dp)
                             ) {
-                                Icon(Icons.Default.Preview, contentDescription = "Предпросмотр", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Preview, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Предпросмотр")
+                                Text("Просмотр", style = MaterialTheme.typography.labelMedium)
                             }
                             Button(
                                 onClick = {
@@ -378,11 +282,12 @@ fun ReportingCenterScreen(
                                 },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .testTag("generate_report_${rType.code}")
+                                    .testTag("generate_report_${rType.code}"),
+                                contentPadding = PaddingValues(vertical = 8.dp)
                             ) {
-                                Icon(Icons.Default.Download, contentDescription = "Выгрузить", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Сформировать ${selectedFormat.code}")
+                                Text("Скачать ${selectedFormat.code}", style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -390,68 +295,46 @@ fun ReportingCenterScreen(
             }
         }
 
-        // Generated Reports History
-        item {
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.History, contentDescription = "История", tint = MaterialTheme.colorScheme.primary)
-                Spacer(modifier = Modifier.width(8.dp))
+        if (generatedReports.isNotEmpty()) {
+            item {
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "История сгенерированных отчётов (${generatedReports.size})",
-                    style = MaterialTheme.typography.titleMedium,
+                    text = "Сформированные файлы (${generatedReports.size})",
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
             }
-        }
-
-        if (generatedReports.isEmpty()) {
-            item {
-                Card(
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "История выгрузок пока пуста. Нажмите «Сформировать» на любом шаблоне выше.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
-                }
-            }
-        } else {
             items(generatedReports, key = { it.id.ifBlank { it.filePath } }) { rep ->
-                Card(
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = rep.templateName,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.weight(1f)
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "${rep.exportFormat} • ${if (rep.sheetLayout == "SPLIT_SHEETS") "2 листа" else "1 лист"}",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
+                                text = "${rep.periodLabel} • ${rep.filePath.substringAfterLast('/')}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Text(
-                            text = "Автор: ${rep.authorName} • Период: ${rep.periodLabel} • Строк: ${rep.rowCount ?: 0}",
+                            text = rep.exportFormat,
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Файл: ${rep.filePath.substringAfterLast('/')}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -486,13 +369,13 @@ fun ReportPreviewDialog(
             modifier = Modifier
                 .fillMaxWidth(0.96f)
                 .padding(vertical = 14.dp),
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surface
         ) {
             Column(
                 modifier = Modifier
                     .verticalScroll(rememberScrollState())
-                    .padding(18.dp)
+                    .padding(16.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -501,153 +384,94 @@ fun ReportPreviewDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Предпросмотр отчётного документа",
-                            style = MaterialTheme.typography.titleLarge,
+                            text = result.reportTitle,
+                            style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "${result.exportFormat.code} • ${result.sheetLayout.titleRu} • ${result.file.name}",
-                            style = MaterialTheme.typography.labelMedium,
+                            text = "${result.exportFormat.code} • ${result.periodLabel}",
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Закрыть предпросмотр")
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
                     }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Document Official Header
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(result.orgHeader, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                        Text("Отчёт: ${result.reportTitle}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                        Text("Период: ${result.periodLabel} • Сформирован: ${result.generatedAtLabel}", style = MaterialTheme.typography.labelMedium)
-                        Text("Подготовил: ${result.preparedByLabel}", style = MaterialTheme.typography.labelMedium)
-                        Text("Охват: ${result.roleScopeLabel}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Sheet Tabs (shows 2 tabs when SPLIT_SHEETS is selected, 1 tab when SINGLE_SHEET)
                 if (result.sheets.size > 1) {
                     TabRow(selectedTabIndex = activeSheetTab) {
-                        result.sheets.forEachIndexed { index, sheet ->
+                        result.sheets.forEachIndexed { index, _ ->
                             Tab(
                                 selected = activeSheetTab == index,
                                 onClick = { activeSheetTab = index },
                                 text = {
                                     Text(
-                                        text = if (index == 0) "Лист 1: План работ" else "Лист 2: Факт отчёт",
-                                        fontWeight = FontWeight.Bold
+                                        text = if (index == 0) "Лист 1: План" else "Лист 2: Отчёт",
+                                        fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
 
                 val currentSheet = result.sheets.getOrElse(activeSheetTab) { result.sheets.first() }
-                Text(
-                    text = currentSheet.sheetTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = currentSheet.subtitle,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
 
                 if (currentSheet.rows.isEmpty()) {
                     Text(
-                        text = "Нет записей для данного листа по текущему фильтру.",
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "Нет задач за выбранный период.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 12.dp)
                     )
                 } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        currentSheet.rows.forEach { row ->
-                            val isApproved = row.statusLabel == TaskStatus.APPROVED.titleRu
-                            val deco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                                ),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column {
+                            currentSheet.rows.forEachIndexed { idx, row ->
+                                val isApproved = row.statusLabel == TaskStatus.APPROVED.titleRu
+                                val deco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
                                 Column(modifier = Modifier.padding(10.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Text(
-                                            text = "${row.index}. ${row.assigneeFio} (${row.groupName})",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold
+                                            text = "${row.index}. ${row.taskTitle}",
+                                            style = MaterialTheme.typography.bodySmall.copy(textDecoration = deco),
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.weight(1f)
                                         )
                                         Text(
                                             text = row.statusLabel,
-                                            style = MaterialTheme.typography.labelMedium,
+                                            style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold
+                                            fontWeight = FontWeight.SemiBold
                                         )
                                     }
                                     Text(
-                                        text = row.taskTitle,
-                                        style = MaterialTheme.typography.bodyMedium.copy(textDecoration = deco),
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    Text(
-                                        text = "Срок: ${row.deadlineLabel} • Фото: ${row.photoInfo} • ${row.carryoverInfo}",
-                                        style = MaterialTheme.typography.labelMedium,
+                                        text = "${row.assigneeFio} • Срок: ${row.deadlineLabel} • Фото: ${row.photoInfo}",
+                                        style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                    if (row.commentSummary.isNotBlank()) {
-                                        Text(
-                                            text = "Контроль: ${row.commentSummary}",
-                                            style = MaterialTheme.typography.labelMedium
-                                        )
-                                    }
+                                }
+                                if (idx < currentSheet.rows.lastIndex) {
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                                 }
                             }
                         }
                     }
                 }
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // Official Signature Block
-                Text(
-                    text = "Подвал документа (блок согласования и подписей):",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                result.signatureBlock.forEach { sig ->
-                    Text(
-                        text = sig,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Share / Email / Messenger Actions
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -660,9 +484,9 @@ fun ReportPreviewDialog(
                             .weight(1f)
                             .testTag("share_report_button")
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = "Поделиться", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Share / Облако")
+                        Text("Поделиться")
                     }
                     OutlinedButton(
                         onClick = {
@@ -670,9 +494,9 @@ fun ReportPreviewDialog(
                         },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Email, contentDescription = "Email", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Email")
+                        Text("Почта")
                     }
                     OutlinedButton(
                         onClick = {
@@ -680,7 +504,7 @@ fun ReportPreviewDialog(
                         },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Мессенджер", modifier = Modifier.size(18.dp))
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Чат")
                     }
@@ -695,42 +519,43 @@ fun CustomTemplateConstructorDialog(
     onDismiss: () -> Unit,
     onSave: (ReportTemplateDocument) -> Unit
 ) {
-    var name by remember { mutableStateOf("Пользовательская ведомость СМР") }
-    var orgHeader by remember { mutableStateOf("ООО «ГлавСтройИнжиниринг» • Участок №1") }
+    var name by remember { mutableStateOf("") }
+    var orgHeader by remember { mutableStateOf("Ежедневник • Отчёт по участку") }
     var selectedLayout by remember { mutableStateOf(SheetLayout.SPLIT_SHEETS) }
     var selectedFormat by remember { mutableStateOf(ExportFormat.XLSX) }
     var groupBy by remember { mutableStateOf("ASSIGNEE") }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
+            Column(modifier = Modifier.padding(18.dp)) {
                 Text(
-                    text = "Конструктор шаблона отчёта",
-                    style = MaterialTheme.typography.titleLarge,
+                    text = "Новый шаблон отчёта",
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Название шаблона") },
+                    label = { Text("Название шаблона *") },
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(
                     value = orgHeader,
                     onValueChange = { orgHeader = it },
-                    label = { Text("Шапка организации / участка") },
+                    label = { Text("Заголовок документа") },
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("Группировка строк:", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("ASSIGNEE" to "По ФИО", "GROUP" to "По бригаде", "STATUS" to "По статусу").forEach { (code, label) ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("ASSIGNEE" to "По ФИО", "GROUP" to "По группе", "STATUS" to "По статусу").forEach { (code, label) ->
                         FilterChip(
                             selected = groupBy == code,
                             onClick = { groupBy = code },
@@ -739,26 +564,35 @@ fun CustomTemplateConstructorDialog(
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        if (name.isNotBlank()) {
-                            onSave(
-                                ReportTemplateDocument(
-                                    name = name.trim(),
-                                    reportType = ReportType.CUSTOM.code,
-                                    sheetLayout = selectedLayout.code,
-                                    exportFormat = selectedFormat.code,
-                                    orgHeader = orgHeader.trim(),
-                                    defaultPeriodDays = 7L,
-                                    groupByField = groupBy,
-                                    includeSignatures = true
-                                )
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Сохранить шаблон в Firestore")
+                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                        Text("Отмена")
+                    }
+                    Button(
+                        onClick = {
+                            if (name.isNotBlank()) {
+                                onSave(
+                                    ReportTemplateDocument(
+                                        name = name.trim(),
+                                        reportType = ReportType.CUSTOM.code,
+                                        sheetLayout = selectedLayout.code,
+                                        exportFormat = selectedFormat.code,
+                                        orgHeader = orgHeader.trim(),
+                                        defaultPeriodDays = 7L,
+                                        groupByField = groupBy,
+                                        includeSignatures = true
+                                    )
+                                )
+                            }
+                        },
+                        enabled = name.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Сохранить")
+                    }
                 }
             }
         }

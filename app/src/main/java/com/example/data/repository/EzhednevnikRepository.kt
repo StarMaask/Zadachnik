@@ -212,7 +212,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
     // --- SEEDING & WORKSPACE INITIALIZATION ---
 
-    suspend fun ensureWorkspaceSeeded(displayName: String = "Руководитель участка"): Result<Unit> = runCatching {
+    suspend fun ensureWorkspaceSeeded(displayName: String = "Руководитель"): Result<Unit> = runCatching {
         val uid = requireUserId()
         val userRef = db.collection("users").document(uid)
         val userSnap = try {
@@ -227,9 +227,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         if (!userSnap.exists()) {
             val profilePayload = mapOf(
                 "userId" to uid,
-                "displayName" to displayName.ifBlank { "Ковалёв Д.С." }.take(100),
+                "displayName" to displayName.ifBlank { "Руководитель" }.take(100),
                 "siteName" to CorporateSeedData.DEFAULT_SITE_NAME,
-                "activePersonaId" to "emp_head_1",
+                "activePersonaId" to uid,
                 "biometricEnabled" to true,
                 "notificationsEnabled" to true,
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -245,70 +245,36 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             }
         }
 
-        val existingTasks = try {
-            db.collection("tasks").whereEqualTo("userId", uid).limit(1).get().await()
+        // Purge any legacy fake seed tasks and fake accounts from previous versions
+        purgeLegacyFakeSeedData(uid)
+    }
+
+    suspend fun purgeLegacyFakeSeedData(uid: String = auth.currentUser?.uid ?: "") {
+        if (uid.isBlank()) return
+        try {
+            val batch = db.batch()
+            for (i in 1..8) {
+                batch.delete(db.collection("tasks").document("${uid}_seed_task_$i"))
+                batch.delete(db.collection("tasks").document("seed_task_$i"))
+            }
+            listOf(
+                "emp_head_1",
+                "emp_itr_1",
+                "emp_itr_2",
+                "emp_worker_1",
+                "emp_worker_2",
+                "emp_worker_3",
+                "emp_worker_4",
+                "pending_emp_1",
+                "pending_emp_2"
+            ).forEach { fakeId ->
+                batch.delete(db.collection("site_members").document(fakeId))
+            }
+            batch.commit().await()
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.LIST, "tasks")
-            throw e
-        }
-
-        if (existingTasks.isEmpty) {
-            val batch = db.batch()
-            CorporateSeedData.buildInitialTasks(uid).forEach { seedTask ->
-                val docRef = db.collection("tasks").document("${uid}_${seedTask.id}")
-                batch.set(docRef, taskToCreatePayload(uid, seedTask))
-            }
-            CorporateSeedData.buildInitialReportTemplates(uid).forEach { tpl ->
-                val docRef = db.collection("report_templates").document("${uid}_${tpl.id}")
-                batch.set(docRef, templateToCreatePayload(uid, tpl))
-            }
-            CorporateSeedData.buildInitialAuditLogs(uid).forEach { log ->
-                val docRef = db.collection("audit_logs").document("${uid}_${log.id}")
-                batch.set(
-                    docRef,
-                    mapOf(
-                        "userId" to uid,
-                        "actorId" to log.actorId,
-                        "actorName" to log.actorName,
-                        "actorRole" to log.actorRole,
-                        "actionType" to log.actionType,
-                        "targetType" to log.targetType,
-                        "targetId" to log.targetId,
-                        "details" to log.details,
-                        "createdAt" to FieldValue.serverTimestamp()
-                    )
-                )
-            }
-            CorporateSeedData.buildInitialSiteMembers().forEach { member ->
-                val safeId = member.memberId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
-                val docRef = db.collection("site_members").document(safeId)
-                val memberPayload = mutableMapOf<String, Any>(
-                    "memberId" to safeId,
-                    "email" to member.email.take(160),
-                    "fullName" to member.fullName.take(120),
-                    "position" to member.position.take(120),
-                    "role" to member.role,
-                    "approvalStatus" to member.approvalStatus,
-                    "groupId" to member.groupId.take(64),
-                    "groupName" to member.groupName.take(120),
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-                if (member.approvedByName != null) {
-                    memberPayload["approvedByName"] = member.approvedByName.take(120)
-                }
-                batch.set(docRef, memberPayload)
-            }
-            try {
-                batch.commit().await()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                handleFirestoreError(e, OperationType.WRITE, "batch_seed")
-                throw e
-            }
+        } catch (_: Exception) {
+            // Ignore if already purged or offline
         }
     }
 
@@ -638,14 +604,34 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun deleteSiteMember(
+        actor: CorporateEmployee,
+        memberId: String
+    ): Result<Unit> = runCatching {
+        if (actor.role != CorporateRole.HEAD) {
+            throw IllegalAccessException("Удалять учётные записи сотрудников может только Руководитель")
+        }
+        val safeId = memberId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+        if (auth.currentUser != null && safeId.isNotBlank()) {
+            try {
+                db.collection("site_members").document(safeId).delete().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     // --- TASK CRUD & RBAC OPERATIONS ---
 
     suspend fun createTask(
         actor: CorporateEmployee,
-        draft: TaskDraft
+        draft: TaskDraft,
+        resolvedAssignee: CorporateEmployee? = null,
+        customTaskId: String? = null
     ): Result<String> = runCatching {
         val uid = requireUserId()
-        val assignee = CorporateSeedData.findEmployee(draft.assigneeId)
+        val assignee = resolvedAssignee ?: CorporateSeedData.findEmployee(draft.assigneeId)
 
         // RBAC Enforcement: Check hierarchy rights
         if (actor.id != assignee.id && !actor.role.canAssignTo(assignee.role)) {
@@ -657,7 +643,10 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             throw IllegalArgumentException("Рабочий может создавать только личные задачи для себя")
         }
 
-        val docRef = db.collection("tasks").document("task_${UUID.randomUUID().toString().replace("-", "").take(16)}")
+        val docId = customTaskId?.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")?.take(64)
+            ?.takeIf { it.isNotBlank() }
+            ?: "task_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        val docRef = db.collection("tasks").document(docId)
         val encodedSubtasks = draft.subtasks.mapIndexed { idx, title ->
             SubtaskItem("sub_${idx + 1}", title, false).encode()
         }
@@ -671,6 +660,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         )
 
         val taskModel = TaskDocument(
+            id = docId,
             userId = uid,
             title = draft.title.trim().take(200),
             description = draft.description.trim().take(2000),
@@ -719,6 +709,77 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             )
         }
         docRef.id
+    }
+
+    suspend fun deleteTask(
+        actor: CorporateEmployee,
+        task: TaskDocument
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(task.id.isNotBlank()) { "Task ID must not be blank" }
+        val docRef = db.collection("tasks").document(task.id)
+        try {
+            docRef.delete().await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docRef.path)
+            throw e
+        }
+        appendAuditLog(
+            uid = uid,
+            actor = actor,
+            actionType = "DELETE_TASK",
+            targetType = "TASK",
+            targetId = task.id,
+            details = "Удалена задача «${task.title}»"
+        )
+    }
+
+    suspend fun deletePhotoFromTask(
+        actor: CorporateEmployee,
+        task: TaskDocument,
+        photoId: String
+    ): Result<Unit> = runCatching {
+        require(task.id.isNotBlank()) { "Task ID must not be blank" }
+        val updatedPhotos = task.decodedPhotos()
+            .filterNot { it.id == photoId }
+            .map { it.encode() }
+        val docRef = db.collection("tasks").document(task.id)
+        try {
+            docRef.update(
+                mapOf(
+                    "photoItems" to updatedPhotos,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun updateSubtasksList(
+        task: TaskDocument,
+        encodedSubtasks: List<String>
+    ): Result<Unit> = runCatching {
+        require(task.id.isNotBlank()) { "Task ID must not be blank" }
+        val docRef = db.collection("tasks").document(task.id)
+        try {
+            docRef.update(
+                mapOf(
+                    "subtaskItems" to encodedSubtasks.take(25),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
     }
 
     suspend fun getTaskById(taskId: String): Result<TaskDocument> = runCatching {
@@ -978,11 +1039,12 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     ): Result<Unit> = runCatching {
         val uid = requireUserId()
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
-        val assignee = CorporateSeedData.findEmployee(task.assigneeId)
+        val seedAssignee = CorporateSeedData.employees.firstOrNull { it.id == task.assigneeId }
+        val assigneeRole = seedAssignee?.role ?: CorporateRole.WORKER
 
-        if (!supervisor.role.canApproveReportOf(assignee.role)) {
+        if (!supervisor.role.canApproveReportOf(assigneeRole)) {
             throw IllegalAccessException(
-                "Недостаточно прав: роль «${supervisor.role.titleRu}» не может подтверждать отчёт сотрудника «${assignee.shortName}» (${assignee.role.titleRu})"
+                "Недостаточно прав: роль «${supervisor.role.titleRu}» не может подтверждать отчёт сотрудника «${task.assigneeName}»"
             )
         }
 
@@ -1000,7 +1062,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 authorName = supervisor.shortName,
                 authorRole = supervisor.role.code,
                 text = "Подтверждено: ${comment.trim().take(240)}",
-                mentionedUser = assignee.shortName,
+                mentionedUser = task.assigneeName,
                 createdAtText = nowTimeText(),
                 isRead = false
             ).encode()).takeLast(50)
@@ -1048,10 +1110,11 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             throw IllegalArgumentException("При отклонении фотоотчёта необходимо указать обязательную причину возврата")
         }
 
-        val assignee = CorporateSeedData.findEmployee(task.assigneeId)
-        if (!supervisor.role.canApproveReportOf(assignee.role)) {
+        val seedAssignee = CorporateSeedData.employees.firstOrNull { it.id == task.assigneeId }
+        val assigneeRole = seedAssignee?.role ?: CorporateRole.WORKER
+        if (!supervisor.role.canApproveReportOf(assigneeRole)) {
             throw IllegalAccessException(
-                "Недостаточно прав: роль «${supervisor.role.titleRu}» не может отклонять отчёт сотрудника «${assignee.shortName}»"
+                "Недостаточно прав: роль «${supervisor.role.titleRu}» не может отклонять отчёт сотрудника «${task.assigneeName}»"
             )
         }
 
@@ -1067,8 +1130,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             authorId = supervisor.id,
             authorName = supervisor.shortName,
             authorRole = supervisor.role.code,
-            text = "@${assignee.shortName} Возврат на доработку: ${cleanReason.take(220)}",
-            mentionedUser = assignee.shortName,
+            text = "@${task.assigneeName} Возврат на доработку: ${cleanReason.take(220)}",
+            mentionedUser = task.assigneeName,
             createdAtText = nowTimeText(),
             isRead = false
         ).encode()).takeLast(50)
@@ -1282,7 +1345,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
     fun calculateRoleScopedStatistics(
         actor: CorporateEmployee,
-        allTasks: List<TaskDocument>
+        allTasks: List<TaskDocument>,
+        customEmployees: List<CorporateEmployee>? = null
     ): StatisticsSummary {
         // Access control rules:
         // - HEAD: all tasks across the site
@@ -1297,9 +1361,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         }
 
         val scopeLabel = when (actor.role) {
-            CorporateRole.HEAD -> "Весь участок: ${actor.siteName} (полный доступ)"
+            CorporateRole.HEAD -> "Весь участок (${actor.shortName})"
             CorporateRole.ITR -> "Подчинённые и ${actor.groupName}"
-            CorporateRole.WORKER -> "Личная статистика (${actor.shortName}) + агрегат бригады"
+            CorporateRole.WORKER -> "Личная статистика (${actor.shortName})"
         }
 
         val total = scopedTasks.size
@@ -1314,7 +1378,19 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val withPhotos = scopedTasks.count { it.photoItems.isNotEmpty() }
         val photoCompliance = if (total > 0) ((withPhotos * 100.0) / total).toInt() else 100
 
-        val visibleEmployees = CorporateSeedData.getVisibleEmployeesForStats(actor)
+        val basePool = if (!customEmployees.isNullOrEmpty()) {
+            when (actor.role) {
+                CorporateRole.HEAD -> customEmployees
+                CorporateRole.ITR -> customEmployees.filter {
+                    it.groupId == actor.groupId || it.id == actor.id
+                }
+                CorporateRole.WORKER -> customEmployees.filter { it.id == actor.id }
+            }.ifEmpty { listOf(actor) }
+        } else {
+            CorporateSeedData.getVisibleEmployeesForStats(actor)
+        }
+
+        val visibleEmployees = basePool
         val employeeStats = visibleEmployees.map { emp ->
             val empTasks = allTasks.filter { it.assigneeId == emp.id }
             val empTotal = empTasks.size

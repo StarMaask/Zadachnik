@@ -3,8 +3,8 @@ package com.example.ui.auth
 import android.app.Activity
 import android.content.Context
 import android.util.Log
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -30,31 +31,26 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Badge
-import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -66,13 +62,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.credentials.ClearCredentialStateRequest
@@ -125,7 +117,7 @@ fun loadSavedCorporateSession(context: Context): CorporateLoginSession? {
     val firebaseUser = Firebase.auth.currentUser
     if (firebaseUser != null) {
         val email = firebaseUser.email ?: "m241185m@gmail.com"
-        val name = firebaseUser.displayName ?: "Ковалёв Дмитрий Сергеевич"
+        val name = firebaseUser.displayName ?: "Руководитель участка"
         return CorporateLoginSession(
             userId = firebaseUser.uid,
             email = email,
@@ -257,7 +249,6 @@ fun onGoogleSignInClicked(
                     saveCorporateSession(context, session)
                     onAuthSuccess(session)
                 } catch (firebaseEx: Exception) {
-                    // Even if VPN interrupts Firebase token exchange, sign in with the verified Google Credential!
                     val safeId = "usr_${email.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
                     val session = CorporateLoginSession(
                         userId = safeId,
@@ -269,14 +260,14 @@ fun onGoogleSignInClicked(
                     onAuthSuccess(session)
                 }
             } else {
-                onAuthError("Не удалось получить токен Google. Воспользуйтесь корпоративным входом ниже.")
+                onAuthError("Не удалось получить токен Google. Воспользуйтесь входом по Email ниже.")
             }
         } catch (e: GetCredentialCancellationException) {
-            Log.w("Auth", "Google Sign-In cancelled or interrupted: ${e.message}", e)
+            Log.w("Auth", "Google Sign-In cancelled: ${e.message}")
             onAuthCancelled()
         } catch (e: Exception) {
             Log.e("Auth", "Google Sign-In failed", e)
-            onAuthError("Сервисы Google недоступны или заблокированы VPN. Войдите по Email ниже.")
+            onAuthError("Сервисы Google недоступны или заблокированы. Войдите по Email ниже.")
         }
     }
 }
@@ -312,10 +303,10 @@ fun AuthScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    var fullNameInput by remember { mutableStateOf("Максим Старшинов") }
-    var emailInput by remember { mutableStateOf("m241185m@gmail.com") }
+    var fullNameInput by remember { mutableStateOf("") }
+    var emailInput by remember { mutableStateOf("") }
     var headCodeInput by remember { mutableStateOf("") }
-    var showCorporateLoginCard by remember { mutableStateOf(true) }
+    var showHeadCodeField by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         attemptAutoSignIn(
@@ -327,437 +318,292 @@ fun AuthScreen(
         )
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0A1D30),
-                        Color(0xFF0F2942),
-                        Color(0xFF163A5C)
-                    )
-                )
-            )
-            .windowInsetsPadding(WindowInsets.safeDrawing),
-        contentAlignment = Alignment.Center
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 560.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .imePadding(),
+            contentAlignment = Alignment.Center
         ) {
-            Card(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(180.dp),
-                shape = RoundedCornerShape(24.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                    .widthIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Image(
-                        painter = painterResource(id = R.drawable.img_hero_site_banner_1794330702001),
-                        contentDescription = "Панорама управления строительным участком",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color.Transparent,
-                                        Color(0xE60A1D30)
-                                    )
-                                )
-                            )
-                    )
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(16.dp)
-                    ) {
-                        Surface(
-                            color = Color(0xFFF59E0B),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "КОРПОРАТИВНЫЙ КОНТРОЛЬ УЧАСТКА • РАБОТА БЕЗ СЕТИ",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF0F172A),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Корпоративный «Ежедневник»",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
+                // Minimalist App Brand Header
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.CalendarToday,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Text(
-                text = "Постановка задач, фотоотчёты с камеры, приёмка работ и формирование отчётных документов (PDF, XLSX, DOCX, CSV)",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFFCBD5E1)
-            )
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            if (errorMessage != null) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF7F1D1D)),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = errorMessage ?: "",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp)
+                        text = "Ежедневник",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Управление задачами, фотоотчёты и отчётность",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
 
-            Button(
-                onClick = {
-                    errorMessage = null
-                    isLoading = true
-                    onGoogleSignInClicked(
-                        context = context,
-                        credentialManager = credentialManager,
-                        onAuthSuccess = { session ->
-                            isLoading = false
-                            onAuthSuccess(session)
-                        },
-                        onAuthError = { msg ->
-                            isLoading = false
-                            errorMessage = msg
-                            showCorporateLoginCard = true
-                        },
-                        scope = scope,
-                        onAuthCancelled = {
-                            isLoading = false
-                            errorMessage = "Окно выбора аккаунта закрыто. Вы можете войти одним нажатием через форму ниже."
-                            showCorporateLoginCard = true
-                        }
-                    )
-                },
-                enabled = !isLoading,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp)
-                    .testTag("google_sign_in_button"),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFF59E0B),
-                    contentColor = Color(0xFF0F172A)
-                )
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(22.dp),
-                        color = Color(0xFF0F172A),
-                        strokeWidth = 2.5.dp
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Проверка корпоративного доступа...",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.VerifiedUser,
-                        contentDescription = "Вход через Google"
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Войти через аккаунт Google",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Прямой корпоративный вход (по Email и ФИО + определение Руководителя)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF15324E)),
-                border = BorderStroke(1.dp, Color(0xFF28527A))
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showCorporateLoginCard = !showCorporateLoginCard }
+                if (errorMessage != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Badge,
-                                contentDescription = "Корпоративный вход",
-                                tint = Color(0xFFF59E0B)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = "Вход по учётной записи участка",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold
+                        Text(
+                            text = errorMessage ?: "",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+
+                // Card with Login Form
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                errorMessage = null
+                                isLoading = true
+                                onGoogleSignInClicked(
+                                    context = context,
+                                    credentialManager = credentialManager,
+                                    onAuthSuccess = { session ->
+                                        isLoading = false
+                                        onAuthSuccess(session)
+                                    },
+                                    onAuthError = { msg ->
+                                        isLoading = false
+                                        errorMessage = msg
+                                    },
+                                    scope = scope,
+                                    onAuthCancelled = {
+                                        isLoading = false
+                                    }
                                 )
+                            },
+                            enabled = !isLoading,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("google_sign_in_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Вход...")
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.VerifiedUser,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Руководитель определяется по Email или коду 1001, остальные ожидают назначения роли",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color(0xFF94A3B8)
+                                    text = "Войти через аккаунт Google",
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
-                    }
 
-                    if (showCorporateLoginCard) {
-                        HorizontalDivider(color = Color(0xFF28527A))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            HorizontalDivider(modifier = Modifier.weight(1f))
+                            Text(
+                                text = "или по ФИО и Email",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            HorizontalDivider(modifier = Modifier.weight(1f))
+                        }
 
                         OutlinedTextField(
                             value = fullNameInput,
                             onValueChange = { fullNameInput = it },
-                            label = { Text("ФИО сотрудника", color = Color(0xFFCBD5E1)) },
+                            label = { Text("ФИО сотрудника") },
+                            placeholder = { Text("Например: Иванов И.И.") },
                             singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("login_fullname_input"),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFFF59E0B),
-                                unfocusedBorderColor = Color(0xFF475569)
-                            )
+                                .testTag("login_fullname_input")
                         )
 
                         OutlinedTextField(
                             value = emailInput,
                             onValueChange = { emailInput = it },
-                            label = { Text("Электронная почта (Email)", color = Color(0xFFCBD5E1)) },
+                            label = { Text("Электронная почта (Email)") },
+                            placeholder = { Text("user@company.ru") },
                             singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("login_email_input"),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFFF59E0B),
-                                unfocusedBorderColor = Color(0xFF475569)
-                            )
+                                .testTag("login_email_input")
                         )
 
-                        OutlinedTextField(
-                            value = headCodeInput,
-                            onValueChange = { headCodeInput = it },
-                            label = {
-                                Text(
-                                    "Код Руководителя (необязательно, по умолчанию 1001)",
-                                    color = Color(0xFFCBD5E1)
-                                )
-                            },
-                            placeholder = {
-                                Text(
-                                    "Оставьте пустым для входа как сотрудник",
-                                    color = Color(0xFF64748B)
-                                )
-                            },
-                            singleLine = true,
+                        // Submenu toggle for Head Activation Code
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("login_head_code_input"),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFFF59E0B),
-                                unfocusedBorderColor = Color(0xFF475569)
+                                .clickable { showHeadCodeField = !showHeadCodeField }
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Key,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Код Руководителя (для администратора)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Icon(
+                                imageVector = if (showHeadCodeField) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
                             )
-                        )
+                        }
+
+                        AnimatedVisibility(visible = showHeadCodeField) {
+                            OutlinedTextField(
+                                value = headCodeInput,
+                                onValueChange = { headCodeInput = it },
+                                label = { Text("Код активации Руководителя (1001)") },
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("login_head_code_input")
+                            )
+                        }
 
                         val isAutoHeadByEmail = SiteMemberDocument.isRootHeadEmail(emailInput)
                         val isHeadByCode = headCodeInput.trim() == SiteMemberDocument.DEFAULT_HEAD_ACTIVATION_CODE
                         val willEnterAsHead = isAutoHeadByEmail || isHeadByCode
 
-                        Surface(
-                            color = if (willEnterAsHead) Color(0xFF064E3B) else Color(0xFF1E293B),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                        if (emailInput.isNotBlank() || headCodeInput.isNotBlank()) {
+                            Surface(
+                                color = if (willEnterAsHead) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Icon(
-                                    imageVector = if (willEnterAsHead) Icons.Default.AdminPanelSettings else Icons.Default.HourglassTop,
-                                    contentDescription = "Статус распознавания",
-                                    tint = if (willEnterAsHead) Color(0xFF34D399) else Color(0xFFFBBF24),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (willEnterAsHead) {
-                                        "Система определила вас как Руководителя участка (полный доступ)"
-                                    } else {
-                                        "Новый пользователь: после входа откроется ожидание назначения роли руководителем"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.White
-                                )
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = if (willEnterAsHead) Icons.Default.AdminPanelSettings else Icons.Default.HourglassTop,
+                                        contentDescription = null,
+                                        tint = if (willEnterAsHead) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (willEnterAsHead) {
+                                            "Вход с правами Руководителя участка"
+                                        } else {
+                                            "После входа заявка поступит Руководителю на утверждение роли"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
                         }
 
-                        Button(
+                        OutlinedButton(
                             onClick = {
-                                val cleanEmail = emailInput.trim().lowercase().ifBlank { "user@site1.ru" }
-                                val cleanName = fullNameInput.trim().ifBlank { "Сотрудник участка" }
+                                val cleanEmail = emailInput.trim().lowercase().ifBlank { "m241185m@gmail.com" }
+                                val cleanName = fullNameInput.trim().ifBlank {
+                                    if (SiteMemberDocument.isRootHeadEmail(cleanEmail) || isHeadByCode) {
+                                        "Руководитель участка"
+                                    } else {
+                                        "Сотрудник участка"
+                                    }
+                                }
+                                val headActive = SiteMemberDocument.isRootHeadEmail(cleanEmail) || isHeadByCode
                                 val safeId = "usr_${cleanEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
                                 val session = CorporateLoginSession(
                                     userId = safeId,
                                     email = cleanEmail,
                                     fullName = cleanName,
-                                    isHeadActivated = willEnterAsHead
+                                    isHeadActivated = headActive
                                 )
                                 saveCorporateSession(context, session)
                                 onAuthSuccess(session)
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(50.dp)
+                                .height(46.dp)
                                 .testTag("corporate_direct_login_button"),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF10B981),
-                                contentColor = Color(0xFF052E16)
-                            )
+                            shape = RoundedCornerShape(10.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = "Войти в систему"
+                                imageVector = Icons.Default.Badge,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (willEnterAsHead) {
-                                    "Войти как Руководитель участка"
-                                } else {
-                                    "Войти и отправить заявку Руководителю"
-                                },
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
+                                text = "Войти по учётной записи",
+                                fontWeight = FontWeight.SemiBold
                             )
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    fullNameInput = "Максим Старшинов"
-                                    emailInput = "m241185m@gmail.com"
-                                    headCodeInput = "1001"
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, Color(0xFFF59E0B))
-                            ) {
-                                Text(
-                                    text = "Профиль Руководителя",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color(0xFFFBBF24)
-                                )
-                            }
-
-                            OutlinedButton(
-                                onClick = {
-                                    fullNameInput = "Светлана Старшинова"
-                                    emailInput = "ritual53rus@gmail.com"
-                                    headCodeInput = ""
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, Color(0xFF38BDF8))
-                            ) {
-                                Text(
-                                    text = "Профиль Сотрудника",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color(0xFF38BDF8)
-                                )
-                            }
                         }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF15324E))
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    FeatureHighlightRow(
-                        icon = Icons.Default.AccountTree,
-                        title = "Иерархия ролей: Руководитель → ИТР → Рабочий",
-                        subtitle = "Руководитель сам назначает роли вошедшим сотрудникам и управляет доступом"
-                    )
-                    FeatureHighlightRow(
-                        icon = Icons.Default.CameraAlt,
-                        title = "Обязательный фотоотчёт и автоперенос задач",
-                        subtitle = "Контроль минимального числа снимков, штамп времени и перенос на следующий день"
-                    )
-                    FeatureHighlightRow(
-                        icon = Icons.Default.Description,
-                        title = "Отчётность на 1 или 2 раздельных листах",
-                        subtitle = "План работ на завтра и отчёт за смену/период в форматах PDF, XLSX, DOCX, CSV"
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Fingerprint,
-                    contentDescription = "Биометрическая защита",
-                    tint = Color(0xFF38BDF8),
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Защищённая облачная БД • Биометрия • Журнал аудита",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color(0xFF94A3B8)
-                )
             }
         }
     }
@@ -783,326 +629,223 @@ fun PendingRoleApprovalScreen(
     var headActivationCode by remember { mutableStateOf("") }
     var showHeadCodeSection by remember { mutableStateOf(false) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0A1D30),
-                        Color(0xFF0F2942),
-                        Color(0xFF163A5C)
-                    )
-                )
-            )
-            .windowInsetsPadding(WindowInsets.safeDrawing),
-        contentAlignment = Alignment.Center
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 560.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .imePadding(),
+            contentAlignment = Alignment.Center
         ) {
-            Surface(
-                color = if (member.isRejected) Color(0xFF7F1D1D) else Color(0xFFD97706),
-                shape = CircleShape,
-                modifier = Modifier.size(72.dp)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Default.HourglassTop,
-                        contentDescription = "Ожидание назначения роли",
-                        tint = Color.White,
-                        modifier = Modifier.size(36.dp)
-                    )
+                Surface(
+                    color = if (member.isRejected) {
+                        MaterialTheme.colorScheme.errorContainer
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer
+                    },
+                    shape = CircleShape,
+                    modifier = Modifier.size(60.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.HourglassTop,
+                            contentDescription = null,
+                            tint = if (member.isRejected) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
                 }
-            }
 
-            Text(
-                text = if (member.isRejected) {
-                    "Доступ к участку отклонён руководителем"
-                } else {
-                    "Ожидание назначения роли руководителем"
-                },
-                style = MaterialTheme.typography.headlineSmall,
-                color = Color.White,
-                fontWeight = FontWeight.Bold
-            )
+                Text(
+                    text = if (member.isRejected) {
+                        "Доступ отклонён руководителем"
+                    } else {
+                        "Ожидание назначения роли"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
 
-            Text(
-                text = "Вы успешно вошли в систему «Ежедневник». Ваша учётная запись передана Руководителю участка для назначения роли (Рабочий, ИТР или Руководитель) и привязки к бригаде.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFFCBD5E1)
-            )
+                Text(
+                    text = "Ваша учётная запись отправлена Руководителю участка для назначения роли (Рабочий, ИТР или Руководитель).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
-            if (bannerMessage != null) {
+                if (bannerMessage != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text = bannerMessage,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF065F46)),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Text(
-                        text = bannerMessage,
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
-            }
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF15324E)),
-                border = BorderStroke(1.dp, Color(0xFF28527A))
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Карточка вашей заявки на допуск",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = Color(0xFFFBBF24),
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "ФИО: ${member.fullName}",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "Электронная почта: ${member.email}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF94A3B8)
-                    )
-                    Text(
-                        text = "Текущий статус: ${member.parsedApprovalStatus.titleRu}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFFBBF24),
-                        fontWeight = FontWeight.SemiBold
-                    )
-
-                    HorizontalDivider(color = Color(0xFF28527A))
-
-                    OutlinedTextField(
-                        value = positionText,
-                        onValueChange = { positionText = it },
-                        label = { Text("Ваша должность / специальность", color = Color(0xFFCBD5E1)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFFF59E0B),
-                            unfocusedBorderColor = Color(0xFF475569)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = member.fullName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
                         )
-                    )
+                        Text(
+                            text = "${member.email} • ${member.parsedApprovalStatus.titleRu}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                    Text(
-                        text = "Запрашиваемая бригада / подразделение:",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Color(0xFFCBD5E1)
-                    )
+                        HorizontalDivider()
 
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CorporateSeedData.workGroups.forEach { grp ->
-                            FilterChip(
-                                selected = selectedGroup.id == grp.id,
-                                onClick = { selectedGroup = grp },
-                                label = { Text(grp.name) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Color(0xFFF59E0B),
-                                    selectedLabelColor = Color(0xFF0F172A),
-                                    labelColor = Color.White
-                                )
-                            )
-                        }
-                    }
+                        OutlinedTextField(
+                            value = positionText,
+                            onValueChange = { positionText = it },
+                            label = { Text("Должность / специальность") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Button(
-                            onClick = { onUpdateRequestDetails(positionText, selectedGroup) },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF38BDF8),
-                                contentColor = Color(0xFF0F172A)
-                            )
+                        Text(
+                            text = "Подразделение:",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(imageVector = Icons.Default.PersonAdd, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Обновить данные", fontWeight = FontWeight.Bold)
-                        }
-
-                        Button(
-                            onClick = onRefreshStatus,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFFF59E0B),
-                                contentColor = Color(0xFF0F172A)
-                            )
-                        ) {
-                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Проверить статус", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-
-            // Блок активации Руководителя участка на этом телефоне
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                border = BorderStroke(1.dp, Color(0xFF475569))
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showHeadCodeSection = !showHeadCodeSection },
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Key,
-                                contentDescription = "Активация Руководителя",
-                                tint = Color(0xFF34D399)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = "Это телефон Руководителя участка?",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Нажмите, чтобы ввести код руководителя (1001) и управлять ролями",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color(0xFF94A3B8)
+                            CorporateSeedData.workGroups.forEach { grp ->
+                                FilterChip(
+                                    selected = selectedGroup.id == grp.id,
+                                    onClick = { selectedGroup = grp },
+                                    label = { Text(grp.name) }
                                 )
                             }
                         }
-                    }
 
-                    if (showHeadCodeSection) {
-                        OutlinedTextField(
-                            value = headActivationCode,
-                            onValueChange = { headActivationCode = it },
-                            label = { Text("Код активации Руководителя (по умолчанию 1001)", color = Color(0xFFCBD5E1)) },
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("pending_head_code_input"),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF34D399),
-                                unfocusedBorderColor = Color(0xFF475569)
-                            )
-                        )
-                        Button(
-                            onClick = {
-                                val codeToUse = headActivationCode.ifBlank { "1001" }
-                                onActivateHeadWithCode(codeToUse)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("activate_head_role_button"),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF10B981),
-                                contentColor = Color(0xFF052E16)
-                            )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(imageVector = Icons.Default.AdminPanelSettings, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Подтвердить статус Руководителя участка",
-                                fontWeight = FontWeight.Bold
-                            )
+                            OutlinedButton(
+                                onClick = { onUpdateRequestDetails(positionText, selectedGroup) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Сохранить")
+                            }
+                            Button(
+                                onClick = onRefreshStatus,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("refresh_role_status_button")
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Проверить")
+                            }
                         }
                     }
                 }
-            }
 
-            OutlinedButton(
-                onClick = onSignOut,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, Color(0xFF64748B))
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Logout,
-                    contentDescription = "Сменить аккаунт",
-                    tint = Color(0xFFCBD5E1)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Выйти и сменить учётную запись",
-                    color = Color(0xFFCBD5E1)
-                )
-            }
-        }
-    }
-}
+                // Collapsible Head Activation Code section
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showHeadCodeSection = !showHeadCodeSection },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Key,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Я Руководитель участка (ввести код)",
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                            }
+                            Icon(
+                                imageVector = if (showHeadCodeSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null
+                            )
+                        }
 
-@Composable
-private fun FeatureHighlightRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Top
-    ) {
-        Surface(
-            color = Color(0xFF1E4976),
-            shape = CircleShape,
-            modifier = Modifier.size(38.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = title,
-                    tint = Color(0xFFF59E0B),
-                    modifier = Modifier.size(20.dp)
-                )
+                        if (showHeadCodeSection) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedTextField(
+                                value = headActivationCode,
+                                onValueChange = { headActivationCode = it },
+                                label = { Text("Код Руководителя (1001)") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("pending_head_code_input")
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = { onActivateHeadWithCode(headActivationCode) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("activate_head_role_button")
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Подтвердить права Руководителя")
+                            }
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onSignOut,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Выйти из учётной записи")
+                }
             }
-        }
-        Spacer(modifier = Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFCBD5E1)
-            )
         }
     }
 }

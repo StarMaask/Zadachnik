@@ -81,6 +81,22 @@ object ReportDocumentGenerator {
         return String.format(Locale.US, "%02d.11.2026", dayOfMonth)
     }
 
+    fun resolveTemplateDisplayName(template: ReportTemplateDocument, currentEpochDay: Long): String {
+        val dateStr = formatEpochDay(currentEpochDay)
+        val rType = template.parsedReportType
+        val rawName = template.name.trim()
+        return if (
+            rType == ReportType.DAILY_REPORT ||
+            rawName.contains("Суточный рапорт", ignoreCase = true) ||
+            rawName.contains("Отчёт за текущий", ignoreCase = true) ||
+            rawName.contains("Отчет за текущий", ignoreCase = true)
+        ) {
+            "Отчет за текущий день ($dateStr)"
+        } else {
+            rawName
+        }
+    }
+
     fun buildPreview(
         actor: CorporateEmployee,
         template: ReportTemplateDocument,
@@ -93,6 +109,7 @@ object ReportDocumentGenerator {
         val reportType = template.parsedReportType
         val layout = overrideLayout ?: template.parsedSheetLayout
         val format = overrideFormat ?: template.parsedExportFormat
+        val resolvedReportTitle = resolveTemplateDisplayName(template, currentEpochDay)
 
         // Enforce RBAC for consolidated reports
         if (reportType.isConsolidatedOnly && !actor.role.canExportConsolidatedPersonnelReport()) {
@@ -175,7 +192,7 @@ object ReportDocumentGenerator {
                 ),
                 ReportSheetPreview(
                     sheetIndex = 2,
-                    sheetTitle = "Лист 2. ${reportType.titleRu} (${formatEpochDay(currentEpochDay)})",
+                    sheetTitle = "Лист 2. ${reportType.formatTitleWithDate(formatEpochDay(currentEpochDay))}",
                     subtitle = "Фактическое выполнение, объём выполненных работ (в т.ч. незавершённых), подтверждения и переносы",
                     headers = headers,
                     rows = factRows
@@ -191,7 +208,7 @@ object ReportDocumentGenerator {
             listOf(
                 ReportSheetPreview(
                     sheetIndex = 1,
-                    sheetTitle = "Единый лист: ${reportType.titleRu} + План работ",
+                    sheetTitle = "Единый лист: $resolvedReportTitle + План работ",
                     subtitle = "Совмещённая ведомость выполнения объёмов и плана на одном листе",
                     headers = headers,
                     rows = combinedRows
@@ -216,7 +233,7 @@ object ReportDocumentGenerator {
         val nowLabel = SimpleDateFormat("dd.MM.2026 HH:mm", Locale.forLanguageTag("ru")).format(Date())
         val periodLabel = when (reportType) {
             ReportType.NEXT_DAY_PLAN -> "На смену ${formatEpochDay(currentEpochDay + 1L)}"
-            ReportType.DAILY_REPORT -> "За смену ${formatEpochDay(currentEpochDay)}"
+            ReportType.DAILY_REPORT -> "За текущий день (${formatEpochDay(currentEpochDay)})"
             else -> "${formatEpochDay(currentEpochDay - template.defaultPeriodDays.coerceAtLeast(1L) + 1L)} — ${formatEpochDay(currentEpochDay)}"
         }
 
@@ -229,7 +246,7 @@ object ReportDocumentGenerator {
         val photoModeLabel = if (includePhotos) "С фотоотчётом (${attachedPhotos.size} фото)" else "Без фотографий (только таблица)"
         val summaryText = buildString {
             appendLine(template.orgHeader)
-            appendLine("Документ: ${template.name} (${format.code}, ${layout.shortRu}, $photoModeLabel)")
+            appendLine("Документ: $resolvedReportTitle (${format.code}, ${layout.shortRu}, $photoModeLabel)")
             appendLine("Период: $periodLabel • Охват: $roleScopeLabel")
             appendLine("Листов: ${sheets.size} • Всего записей: $totalRows")
             sheets.forEach { sheet ->
@@ -245,7 +262,7 @@ object ReportDocumentGenerator {
         return GeneratedDocumentResult(
             file = dummyFile,
             orgHeader = template.orgHeader,
-            reportTitle = template.name,
+            reportTitle = resolvedReportTitle,
             periodLabel = periodLabel,
             generatedAtLabel = nowLabel,
             preparedByLabel = "${actor.fullName} (${actor.position})",

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
@@ -76,6 +77,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -179,6 +181,8 @@ fun MainFeatureScreen(
     val activeReportPreview by viewModel.activeReportPreview.collectAsStateWithLifecycle()
     val autoPlanEvening by viewModel.autoSchedulePlanEvening.collectAsStateWithLifecycle()
     val autoReportNight by viewModel.autoScheduleReportNight.collectAsStateWithLifecycle()
+    val organizationName by viewModel.organizationName.collectAsStateWithLifecycle()
+    val siteName by viewModel.siteName.collectAsStateWithLifecycle()
 
     // Экран ожидания назначения роли для новых сотрудников
     val member = currentMemberRecord
@@ -201,6 +205,7 @@ fun MainFeatureScreen(
     var selectedTaskId by remember { mutableStateOf<String?>(null) }
     var showSearchBar by remember { mutableStateOf(false) }
     var showTopOverflowMenu by remember { mutableStateOf(false) }
+    var showOrgSettingsDialog by remember { mutableStateOf(false) }
 
     BackHandler(enabled = currentTab != MainNavDestination.TODAY) {
         currentTab = MainNavDestination.TODAY
@@ -242,16 +247,22 @@ fun MainFeatureScreen(
             topBar = {
                 TopAppBar(
                     title = {
-                        Column {
+                        Column(
+                            modifier = Modifier.clickable { showOrgSettingsDialog = true }
+                        ) {
                             Text(
-                                text = "Ежедневник",
+                                text = "Ежедневник • $siteName",
                                 style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "${activeEmployee.shortName} • ${activeEmployee.role.titleRu}",
+                                text = "${activeEmployee.shortName} (${activeEmployee.role.titleRu}) • $organizationName",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     },
@@ -278,6 +289,15 @@ fun MainFeatureScreen(
                                 expanded = showTopOverflowMenu,
                                 onDismissRequest = { showTopOverflowMenu = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Настройки организации и участка") },
+                                    leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
+                                    onClick = {
+                                        showTopOverflowMenu = false
+                                        showOrgSettingsDialog = true
+                                    },
+                                    modifier = Modifier.testTag("menu_org_settings")
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Перенести невыполненные на завтра") },
                                     leadingIcon = { Icon(Icons.Default.Update, contentDescription = null) },
@@ -462,16 +482,25 @@ fun MainFeatureScreen(
                         }
                         MainNavDestination.REPORTING -> {
                             val tpls = (templatesState as? UiState.Success)?.data
-                                ?: CorporateSeedData.buildInitialReportTemplates(session.userId)
+                                ?: CorporateSeedData.buildInitialReportTemplates(
+                                    userId = session.userId,
+                                    dateLabel = ReportDocumentGenerator.formatEpochDay(currentEpochDay),
+                                    orgName = organizationName,
+                                    siteName = siteName
+                                )
                             val genReps = (generatedReportsState as? UiState.Success)?.data ?: emptyList()
                             ReportingCenterScreen(
                                 activeEmployee = activeEmployee,
                                 templates = tpls,
                                 generatedReports = genReps,
+                                currentEpochDay = currentEpochDay,
+                                organizationName = organizationName,
+                                siteName = siteName,
                                 autoPlanEvening = autoPlanEvening,
                                 autoReportNight = autoReportNight,
                                 onToggleAutoPlan = viewModel::toggleAutoSchedulePlan,
                                 onToggleAutoReport = viewModel::toggleAutoScheduleReport,
+                                onOpenOrganizationSettings = { showOrgSettingsDialog = true },
                                 onGenerateReport = { tpl, layout, fmt, save, includePhotos ->
                                     viewModel.previewOrGenerateReport(
                                         context = context,
@@ -514,7 +543,11 @@ fun MainFeatureScreen(
                                 activeEmployee = activeEmployee,
                                 siteMembers = allSiteMembers,
                                 auditLogs = logs,
+                                organizationName = organizationName,
+                                siteName = siteName,
+                                onOpenOrganizationSettings = { showOrgSettingsDialog = true },
                                 onAssignRoleToMember = viewModel::assignRoleToMember,
+                                onEditEmployeeDetails = viewModel::updateEmployeeDetails,
                                 onRejectMemberAccess = viewModel::rejectMemberAccess,
                                 onDeleteSiteMember = viewModel::deleteSiteMember,
                                 onPreRegisterEmployee = viewModel::preRegisterEmployeeByEmail,
@@ -528,6 +561,18 @@ fun MainFeatureScreen(
                 }
             }
         }
+    }
+
+    if (showOrgSettingsDialog) {
+        OrganizationSettingsDialog(
+            currentOrganizationName = organizationName,
+            currentSiteName = siteName,
+            onDismiss = { showOrgSettingsDialog = false },
+            onSave = { newOrg, newSite ->
+                viewModel.updateOrganizationAndSite(newOrg, newSite)
+                showOrgSettingsDialog = false
+            }
+        )
     }
 
     if (showCreateTaskDialog) {

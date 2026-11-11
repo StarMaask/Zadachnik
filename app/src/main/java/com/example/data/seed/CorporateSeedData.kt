@@ -31,6 +31,7 @@ data class QuickTaskTemplate(
 
 object CorporateSeedData {
 
+    const val DEFAULT_ORG_NAME = "ООО «ГлавСтройИнжиниринг»"
     const val DEFAULT_SITE_ID = "site_1"
     const val DEFAULT_SITE_NAME = "Участок №1 — ПГС и Инженерные сети"
     const val BASE_EPOCH_DAY = 20768L // 2026-11-10
@@ -653,15 +654,20 @@ object CorporateSeedData {
         )
     )
 
-    fun buildInitialReportTemplates(userId: String): List<ReportTemplateDocument> = listOf(
+    fun buildInitialReportTemplates(
+        userId: String,
+        dateLabel: String = "10.11.2026",
+        orgName: String = DEFAULT_ORG_NAME,
+        siteName: String = DEFAULT_SITE_NAME
+    ): List<ReportTemplateDocument> = listOf(
         ReportTemplateDocument(
             id = "tpl_rep_daily_split",
             userId = userId,
-            name = "Суточный рапорт + План на завтра (2 листа)",
+            name = "Отчет за текущий день ($dateLabel)",
             reportType = ReportType.DAILY_REPORT.code,
             sheetLayout = SheetLayout.SPLIT_SHEETS.code,
             exportFormat = ExportFormat.PDF.code,
-            orgHeader = "ООО «ГлавСтройИнжиниринг» • Участок №1 (СМР и Инженерия)",
+            orgHeader = "$orgName • $siteName",
             defaultPeriodDays = 1L,
             columns = listOf("ФИО исполнителя", "Бригада", "Задача", "Статус", "Срок", "Фото", "Переносы"),
             groupByField = "ASSIGNEE",

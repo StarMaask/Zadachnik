@@ -515,19 +515,23 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         fullName: String,
         position: String,
         assignedRole: CorporateRole,
-        assignedGroup: WorkGroup
+        assignedGroup: WorkGroup,
+        personnelNumber: String = "",
+        siteName: String = "",
+        phone: String = ""
     ): Result<SiteMemberDocument> = runCatching {
         if (actor.role != CorporateRole.HEAD) {
             throw IllegalAccessException("Регистрировать сотрудников и назначать роли может только Руководитель")
         }
-        require(email.isNotBlank()) { "Укажите Email сотрудника" }
         require(fullName.isNotBlank()) { "Укажите ФИО сотрудника" }
 
-        val normalizedEmail = email.trim().lowercase()
+        val normalizedEmail = email.trim().lowercase().ifBlank {
+            "emp_${System.currentTimeMillis()}@site1.ru"
+        }
         val safeId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
         val resolvedPosition = position.ifBlank { assignedRole.titleRu }
 
-        val newMember = SiteMemberDocument(
+        val baseMember = SiteMemberDocument(
             id = safeId,
             memberId = safeId,
             email = normalizedEmail,
@@ -537,8 +541,13 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             approvalStatus = MemberApprovalStatus.APPROVED.code,
             groupId = assignedGroup.id,
             groupName = assignedGroup.name,
-            approvedByName = actor.fullName
+            approvedByName = actor.fullName,
+            personnelNumber = personnelNumber.trim(),
+            siteName = siteName.trim().ifBlank { actor.siteName },
+            phone = phone.trim()
         )
+        val encodedApprovedBy = baseMember.encodeApprovedByForFirestore(actor.fullName)
+        val newMember = baseMember.copy(approvedByName = encodedApprovedBy)
 
         val currentUid = auth.currentUser?.uid
         if (currentUid != null) {
@@ -553,7 +562,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     "approvalStatus" to MemberApprovalStatus.APPROVED.code,
                     "groupId" to assignedGroup.id.take(64),
                     "groupName" to assignedGroup.name.take(120),
-                    "approvedByName" to actor.fullName.take(120),
+                    "approvedByName" to encodedApprovedBy,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -565,10 +574,110 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 actionType = "PRE_REGISTER_USER",
                 targetType = "USER",
                 targetId = safeId,
-                details = "Предварительно зарегистрирован сотрудник ${newMember.fullName} ($normalizedEmail) с ролью «${assignedRole.titleRu}»"
+                details = "Зарегистрирован сотрудник ${newMember.fullName} (таб. № ${personnelNumber.ifBlank { "—" }}, участок: ${newMember.effectiveSiteName}) с ролью «${assignedRole.titleRu}»"
             )
         }
         newMember
+    }
+
+    suspend fun updateSiteMemberDetails(
+        actor: CorporateEmployee,
+        updatedMember: SiteMemberDocument
+    ): Result<SiteMemberDocument> = runCatching {
+        val safeId = updatedMember.memberId.ifBlank { updatedMember.id }
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .take(120)
+        val encodedApprovedBy = updatedMember.encodeApprovedByForFirestore(actor.fullName)
+        val normalizedMember = updatedMember.copy(
+            id = safeId,
+            memberId = safeId,
+            approvedByName = encodedApprovedBy
+        )
+
+        val currentUid = auth.currentUser?.uid
+        if (currentUid != null && safeId.isNotBlank()) {
+            val docRef = db.collection("site_members").document(safeId)
+            val snap = try {
+                docRef.get().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            val safeEmail = normalizedMember.email.ifBlank { "$safeId@site1.ru" }.take(160)
+            val safeRole = normalizedMember.role.takeIf {
+                it in listOf("PENDING", "WORKER", "ITR", "HEAD")
+            } ?: CorporateRole.WORKER.code
+            val safeStatus = normalizedMember.approvalStatus.takeIf {
+                it in listOf("PENDING", "APPROVED", "REJECTED")
+            } ?: MemberApprovalStatus.APPROVED.code
+
+            if (snap != null && snap.exists()) {
+                docRef.update(
+                    mapOf(
+                        "email" to safeEmail,
+                        "fullName" to normalizedMember.fullName.ifBlank { "Сотрудник" }.take(120),
+                        "position" to normalizedMember.position.take(120),
+                        "role" to safeRole,
+                        "approvalStatus" to safeStatus,
+                        "groupId" to normalizedMember.groupId.ifBlank { "grp_monolith" }.take(64),
+                        "groupName" to normalizedMember.groupName.ifBlank { "Основное подразделение" }.take(120),
+                        "approvedByName" to encodedApprovedBy,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                docRef.set(
+                    mapOf(
+                        "memberId" to safeId,
+                        "email" to safeEmail,
+                        "fullName" to normalizedMember.fullName.ifBlank { "Сотрудник" }.take(120),
+                        "position" to normalizedMember.position.take(120),
+                        "role" to safeRole,
+                        "approvalStatus" to safeStatus,
+                        "groupId" to normalizedMember.groupId.ifBlank { "grp_monolith" }.take(64),
+                        "groupName" to normalizedMember.groupName.ifBlank { "Основное подразделение" }.take(120),
+                        "approvedByName" to encodedApprovedBy,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+
+            appendAuditLog(
+                uid = currentUid,
+                actor = actor,
+                actionType = "UPDATE_EMPLOYEE",
+                targetType = "USER",
+                targetId = safeId,
+                details = "Обновлены данные сотрудника: ${normalizedMember.fullName}, должн.: ${normalizedMember.position}, таб. №: ${normalizedMember.effectivePersonnelNumber.ifBlank { "—" }}, участок: ${normalizedMember.effectiveSiteName}"
+            )
+        }
+        normalizedMember
+    }
+
+    suspend fun updateOrganizationAndSiteProfile(
+        orgName: String,
+        siteName: String
+    ): Result<Unit> = runCatching {
+        val currentUid = auth.currentUser?.uid ?: return@runCatching
+        val combinedSiteLabel = "${orgName.trim()} • ${siteName.trim()}".take(160)
+        val docRef = db.collection("users").document(currentUid)
+        val snap = try {
+            docRef.get().await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (snap != null && snap.exists()) {
+            docRef.update(
+                mapOf(
+                    "siteName" to combinedSiteLabel.ifBlank { CorporateSeedData.DEFAULT_SITE_NAME },
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
     }
 
     suspend fun switchActivePersona(

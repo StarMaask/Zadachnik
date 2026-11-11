@@ -101,6 +101,16 @@ class EzhednevnikViewModel(
     private val _autoScheduleReportNight = MutableStateFlow(true)
     val autoScheduleReportNight: StateFlow<Boolean> = _autoScheduleReportNight.asStateFlow()
 
+    private val _organizationName = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadOrganizationName(it) } ?: CorporateSeedData.DEFAULT_ORG_NAME
+    )
+    val organizationName: StateFlow<String> = _organizationName.asStateFlow()
+
+    private val _siteName = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadSiteName(it) } ?: CorporateSeedData.DEFAULT_SITE_NAME
+    )
+    val siteName: StateFlow<String> = _siteName.asStateFlow()
+
     // Чистое локальное состояние без фейковых задач и фейковых сотрудников
     private val _deletedTaskIds = MutableStateFlow(
         appContext?.let { LocalWorkspaceStore.loadDeletedTaskIds(it) } ?: emptySet()
@@ -123,7 +133,12 @@ class EzhednevnikViewModel(
         } ?: emptyList()
     )
     private val _localTemplates = MutableStateFlow(
-        CorporateSeedData.buildInitialReportTemplates(currentUserId)
+        CorporateSeedData.buildInitialReportTemplates(
+            userId = currentUserId,
+            dateLabel = ReportDocumentGenerator.formatEpochDay(_currentEpochDay.value),
+            orgName = _organizationName.value,
+            siteName = _siteName.value
+        )
     )
     private val _localGeneratedReports = MutableStateFlow<List<GeneratedReportDocument>>(emptyList())
     private val _localAuditLogs = MutableStateFlow<List<AuditLogDocument>>(emptyList())
@@ -198,15 +213,16 @@ class EzhednevnikViewModel(
 
     val activeEmployee: StateFlow<CorporateEmployee> = combine(
         _currentMemberRecord,
-        siteMembersState
-    ) { memberRecord, allMembers ->
+        siteMembersState,
+        _siteName
+    ) { memberRecord, allMembers, currentSiteName ->
         val matched = allMembers.firstOrNull {
             it.memberId == currentUserId ||
                 (currentUserEmail.isNotBlank() && it.email.equals(currentUserEmail, ignoreCase = true))
         } ?: memberRecord
 
         if (matched != null) {
-            matched.toCorporateEmployee()
+            matched.toCorporateEmployee(defaultSiteName = currentSiteName)
         } else {
             val defaultName = currentUserName.ifBlank {
                 currentUserEmail.substringBefore("@").ifBlank { "Руководитель" }
@@ -220,7 +236,7 @@ class EzhednevnikViewModel(
                 groupId = "grp_control",
                 groupName = "Основное подразделение",
                 siteId = CorporateSeedData.DEFAULT_SITE_ID,
-                siteName = CorporateSeedData.DEFAULT_SITE_NAME,
+                siteName = currentSiteName,
                 supervisorId = null,
                 phone = "",
                 email = currentUserEmail
@@ -238,7 +254,7 @@ class EzhednevnikViewModel(
             groupId = "grp_control",
             groupName = "Основное подразделение",
             siteId = CorporateSeedData.DEFAULT_SITE_ID,
-            siteName = CorporateSeedData.DEFAULT_SITE_NAME,
+            siteName = _siteName.value,
             supervisorId = null,
             phone = "",
             email = currentUserEmail
@@ -248,11 +264,12 @@ class EzhednevnikViewModel(
     // Список реальных сотрудников для назначения задач (без фейковых людей)
     val availableEmployees: StateFlow<List<CorporateEmployee>> = combine(
         activeEmployee,
-        siteMembersState
-    ) { currentEmp, members ->
+        siteMembersState,
+        _siteName
+    ) { currentEmp, members, currentSiteName ->
         val approvedEmployees = members
             .filter { !it.isPendingRole && !it.isRejected }
-            .map { it.toCorporateEmployee() }
+            .map { it.toCorporateEmployee(defaultSiteName = currentSiteName) }
         val map = LinkedHashMap<String, CorporateEmployee>()
         map[currentEmp.id] = currentEmp
         approvedEmployees.forEach { emp ->
@@ -316,9 +333,21 @@ class EzhednevnikViewModel(
 
     val templatesState: StateFlow<UiState<List<ReportTemplateDocument>>> = combine(
         firestoreTemplatesFlow,
-        _localTemplates
-    ) { remote, local ->
-        UiState.Success(if (remote.isNotEmpty()) remote else local)
+        _localTemplates,
+        _currentEpochDay,
+        _organizationName,
+        _siteName
+    ) { remote, local, epochDay, org, site ->
+        val baseList = if (remote.isNotEmpty()) remote else local
+        val normalized = baseList.map { tpl ->
+            val resolvedName = ReportDocumentGenerator.resolveTemplateDisplayName(tpl, epochDay)
+            val resolvedHeader = "$org • $site"
+            tpl.copy(
+                name = resolvedName,
+                orgHeader = resolvedHeader
+            )
+        }
+        UiState.Success(normalized)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
@@ -651,18 +680,24 @@ class EzhednevnikViewModel(
         fullName: String,
         position: String,
         assignedRole: CorporateRole,
-        assignedGroup: WorkGroup
+        assignedGroup: WorkGroup,
+        personnelNumber: String = "",
+        siteName: String = "",
+        phone: String = ""
     ) {
-        if (email.isBlank() || fullName.isBlank()) {
-            _bannerMessage.value = "Укажите ФИО и Email сотрудника"
+        if (fullName.isBlank()) {
+            _bannerMessage.value = "Укажите ФИО сотрудника"
             return
         }
         val actor = activeEmployee.value
-        val normalizedEmail = email.trim().lowercase()
+        val normalizedEmail = email.trim().lowercase().ifBlank {
+            "emp_${System.currentTimeMillis()}@site1.ru"
+        }
         val safeId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
         val resolvedPosition = position.ifBlank { assignedRole.titleRu }
+        val resolvedSite = siteName.trim().ifBlank { _siteName.value }
 
-        val created = SiteMemberDocument(
+        val baseCreated = SiteMemberDocument(
             id = safeId,
             memberId = safeId,
             email = normalizedEmail,
@@ -672,7 +707,13 @@ class EzhednevnikViewModel(
             approvalStatus = MemberApprovalStatus.APPROVED.code,
             groupId = assignedGroup.id,
             groupName = assignedGroup.name,
-            approvedByName = actor.fullName
+            approvedByName = actor.fullName,
+            personnelNumber = personnelNumber.trim(),
+            siteName = resolvedSite,
+            phone = phone.trim()
+        )
+        val created = baseCreated.copy(
+            approvedByName = baseCreated.encodeApprovedByForFirestore(actor.fullName)
         )
         upsertLocalMember(created)
         appendLocalAudit(
@@ -680,7 +721,7 @@ class EzhednevnikViewModel(
             actionType = "PRE_REGISTER_USER",
             targetType = "USER",
             targetId = created.memberId,
-            details = "Добавлен сотрудник ${created.fullName} (${created.email}) — ${assignedRole.titleRu}"
+            details = "Добавлен сотрудник ${created.fullName} (таб. № ${personnelNumber.ifBlank { "—" }}, участок: $resolvedSite) — ${assignedRole.titleRu}"
         )
         _bannerMessage.value = "Сотрудник ${created.fullName} добавлен (${assignedRole.titleRu})"
 
@@ -692,8 +733,125 @@ class EzhednevnikViewModel(
                     fullName = fullName.trim(),
                     position = resolvedPosition,
                     assignedRole = assignedRole,
-                    assignedGroup = assignedGroup
+                    assignedGroup = assignedGroup,
+                    personnelNumber = personnelNumber.trim(),
+                    siteName = resolvedSite,
+                    phone = phone.trim()
                 )
+            }
+        }
+    }
+
+    fun updateEmployeeDetails(
+        targetMember: SiteMemberDocument,
+        fullName: String,
+        position: String,
+        personnelNumber: String,
+        siteName: String,
+        groupName: String,
+        phone: String,
+        email: String,
+        role: CorporateRole
+    ) {
+        val cleanName = fullName.trim()
+        if (cleanName.isBlank()) {
+            _bannerMessage.value = "ФИО сотрудника не может быть пустым"
+            return
+        }
+        val actor = activeEmployee.value
+        val key = targetMember.memberId.ifBlank { targetMember.id }
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .ifBlank { "emp_${System.currentTimeMillis()}" }
+        val resolvedPosition = position.trim().ifBlank { role.titleRu }
+        val resolvedSite = siteName.trim().ifBlank { _siteName.value }
+        val resolvedGroupName = groupName.trim().ifBlank { targetMember.groupName.ifBlank { "Основное подразделение" } }
+        val matchedGroup = CorporateSeedData.workGroups.firstOrNull {
+            it.name.equals(resolvedGroupName, ignoreCase = true) || it.id == targetMember.groupId
+        }
+        val resolvedGroupId = matchedGroup?.id ?: targetMember.groupId.ifBlank { "grp_monolith" }
+
+        val draftUpdated = targetMember.copy(
+            id = key,
+            memberId = key,
+            fullName = cleanName,
+            position = resolvedPosition,
+            role = role.code,
+            approvalStatus = MemberApprovalStatus.APPROVED.code,
+            groupId = resolvedGroupId,
+            groupName = resolvedGroupName,
+            email = email.trim().ifBlank { targetMember.email.ifBlank { "$key@site1.ru" } },
+            personnelNumber = personnelNumber.trim(),
+            siteName = resolvedSite,
+            phone = phone.trim()
+        )
+        val updatedMember = draftUpdated.copy(
+            approvedByName = draftUpdated.encodeApprovedByForFirestore(actor.fullName)
+        )
+
+        upsertLocalMember(updatedMember)
+        if (_currentMemberRecord.value?.memberId == key || _currentMemberRecord.value?.id == key) {
+            _currentMemberRecord.value = updatedMember
+        }
+
+        // Обновляем ФИО и подразделение в текущих задачах этого сотрудника
+        val updatedTasks = _localTasks.value.map { t ->
+            if (t.assigneeId == key) {
+                t.copy(
+                    assigneeName = cleanName,
+                    groupName = resolvedGroupName
+                )
+            } else {
+                t
+            }
+        }
+        persistTasksLocally(updatedTasks)
+
+        appendLocalAudit(
+            actor = actor,
+            actionType = "UPDATE_EMPLOYEE",
+            targetType = "USER",
+            targetId = key,
+            details = "Изменены данные сотрудника: $cleanName, должн.: $resolvedPosition, таб. №: ${personnelNumber.ifBlank { "—" }}, участок: $resolvedSite"
+        )
+        _bannerMessage.value = "Данные сотрудника $cleanName сохранены"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateSiteMemberDetails(actor, updatedMember)
+            }
+        }
+    }
+
+    fun updateOrganizationAndSite(newOrgName: String, newSiteName: String) {
+        val cleanOrg = newOrgName.trim().ifBlank { CorporateSeedData.DEFAULT_ORG_NAME }
+        val cleanSite = newSiteName.trim().ifBlank { CorporateSeedData.DEFAULT_SITE_NAME }
+        _organizationName.value = cleanOrg
+        _siteName.value = cleanSite
+        appContext?.let { LocalWorkspaceStore.saveOrganizationAndSite(it, cleanOrg, cleanSite) }
+
+        // Обновляем заголовок организации в шаблонах отчётов
+        val newHeader = "$cleanOrg • $cleanSite"
+        _localTemplates.value = _localTemplates.value.map { it.copy(orgHeader = newHeader) }
+
+        // Обновляем принадлежность к участку у текущего пользователя, если не задан индивидуальный участок
+        _currentMemberRecord.value?.let { cur ->
+            val updatedCur = cur.copy(siteName = cleanSite)
+            _currentMemberRecord.value = updatedCur
+            upsertLocalMember(updatedCur)
+        }
+
+        appendLocalAudit(
+            actor = activeEmployee.value,
+            actionType = "UPDATE_ORG_SETTINGS",
+            targetType = "SITE",
+            targetId = "site_1",
+            details = "Обновлены реквизиты: организация «$cleanOrg», участок «$cleanSite»"
+        )
+        _bannerMessage.value = "Сохранено: $cleanOrg • $cleanSite"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateOrganizationAndSiteProfile(cleanOrg, cleanSite)
             }
         }
     }
@@ -725,10 +883,11 @@ class EzhednevnikViewModel(
 
     fun toggleAutoScheduleReport(enabled: Boolean) {
         _autoScheduleReportNight.value = enabled
+        val dateStr = ReportDocumentGenerator.formatEpochDay(_currentEpochDay.value)
         _bannerMessage.value = if (enabled) {
-            "Автогенерация суточного отчёта (21:00) включена"
+            "Автогенерация отчета за текущий день ($dateStr) в 21:00 включена"
         } else {
-            "Автогенерация суточного отчёта отключена"
+            "Автогенерация отчета за текущий день отключена"
         }
     }
 
@@ -1340,12 +1499,16 @@ class EzhednevnikViewModel(
             val actor = activeEmployee.value
             val allTasks = (tasksState.value as? UiState.Success)?.data ?: emptyList()
             val day = _currentEpochDay.value
+            val normalizedTemplate = template.copy(
+                name = ReportDocumentGenerator.resolveTemplateDisplayName(template, day),
+                orgHeader = "${_organizationName.value} • ${_siteName.value}"
+            )
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     ReportDocumentGenerator.generateAndSaveDocument(
                         context = context,
                         actor = actor,
-                        template = template,
+                        template = normalizedTemplate,
                         allTasks = allTasks,
                         currentEpochDay = day,
                         overrideLayout = sheetLayout,

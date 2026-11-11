@@ -4,19 +4,18 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Email
@@ -73,6 +73,7 @@ import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
 import com.example.data.model.TaskStatus
+import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.GeneratedDocumentResult
 import com.example.domain.reporting.ReportDocumentGenerator
 
@@ -81,10 +82,14 @@ fun ReportingCenterScreen(
     activeEmployee: CorporateEmployee,
     templates: List<ReportTemplateDocument>,
     generatedReports: List<GeneratedReportDocument>,
+    currentEpochDay: Long = CorporateSeedData.BASE_EPOCH_DAY,
+    organizationName: String = CorporateSeedData.DEFAULT_ORG_NAME,
+    siteName: String = CorporateSeedData.DEFAULT_SITE_NAME,
     autoPlanEvening: Boolean,
     autoReportNight: Boolean,
     onToggleAutoPlan: (Boolean) -> Unit,
     onToggleAutoReport: (Boolean) -> Unit,
+    onOpenOrganizationSettings: () -> Unit = {},
     onGenerateReport: (
         template: ReportTemplateDocument,
         layout: SheetLayout,
@@ -100,20 +105,32 @@ fun ReportingCenterScreen(
     var showSettingsSubmenu by remember { mutableStateOf(false) }
     var showCustomTemplateDialog by remember { mutableStateOf(false) }
 
-    val allReportCatalog = remember(templates) {
-        val existingTypes = templates.map { it.parsedReportType }.toSet()
+    val todayFormatted = remember(currentEpochDay) {
+        ReportDocumentGenerator.formatEpochDay(currentEpochDay)
+    }
+
+    val allReportCatalog = remember(templates, todayFormatted, organizationName, siteName) {
+        val headerText = "$organizationName • $siteName"
+        val normalizedTemplates = templates.map { tpl ->
+            tpl.copy(
+                name = ReportDocumentGenerator.resolveTemplateDisplayName(tpl, currentEpochDay),
+                orgHeader = headerText
+            )
+        }
+        val existingTypes = normalizedTemplates.map { it.parsedReportType }.toSet()
         val extraTemplates = ReportType.entries
             .filter { it !in existingTypes }
             .map { rType ->
                 ReportTemplateDocument(
                     id = "catalog_${rType.code.lowercase()}",
-                    name = rType.titleRu,
+                    name = rType.formatTitleWithDate(todayFormatted),
                     reportType = rType.code,
                     sheetLayout = SheetLayout.SPLIT_SHEETS.code,
-                    exportFormat = ExportFormat.PDF.code
+                    exportFormat = ExportFormat.PDF.code,
+                    orgHeader = headerText
                 )
             }
-        templates + extraTemplates
+        normalizedTemplates + extraTemplates
     }
 
     LazyColumn(
@@ -142,6 +159,13 @@ fun ReportingCenterScreen(
                                 text = "Формирование отчётов",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "$organizationName • $siteName",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = "Формат: ${selectedFormat.code} • ${if (includePhotosInReport) "С фото" else "Без фото"} • ${selectedLayout.shortRu}",
@@ -245,19 +269,34 @@ fun ReportingCenterScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Автовыгрузка отчёта (21:00)", style = MaterialTheme.typography.bodySmall)
+                                Text("Автовыгрузка отчета за текущий день ($todayFormatted) в 21:00", style = MaterialTheme.typography.bodySmall)
                                 Switch(checked = autoReportNight, onCheckedChange = onToggleAutoReport)
                             }
 
-                            OutlinedButton(
-                                onClick = { showCustomTemplateDialog = true },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("open_template_constructor_button")
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Создать свой шаблон")
+                                OutlinedButton(
+                                    onClick = onOpenOrganizationSettings,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("open_org_settings_from_reports")
+                                ) {
+                                    Icon(Icons.Default.Business, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Организация и участок", style = MaterialTheme.typography.labelMedium)
+                                }
+                                OutlinedButton(
+                                    onClick = { showCustomTemplateDialog = true },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("open_template_constructor_button")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Свой шаблон", style = MaterialTheme.typography.labelMedium)
+                                }
                             }
                         }
                     }
@@ -268,6 +307,7 @@ fun ReportingCenterScreen(
         // Лаконичный табличный список видов отчётов
         items(allReportCatalog, key = { it.id.ifBlank { it.name } }) { tpl ->
             val rType = tpl.parsedReportType
+            val displayName = ReportDocumentGenerator.resolveTemplateDisplayName(tpl, currentEpochDay)
             val isLockedForWorker = rType.isConsolidatedOnly && !activeEmployee.role.canExportConsolidatedPersonnelReport()
 
             Surface(
@@ -278,7 +318,7 @@ fun ReportingCenterScreen(
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
-                        text = tpl.name,
+                        text = displayName,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -314,7 +354,13 @@ fun ReportingCenterScreen(
                         ) {
                             OutlinedButton(
                                 onClick = {
-                                    onGenerateReport(tpl, selectedLayout, selectedFormat, false, includePhotosInReport)
+                                    onGenerateReport(
+                                        tpl.copy(name = displayName),
+                                        selectedLayout,
+                                        selectedFormat,
+                                        false,
+                                        includePhotosInReport
+                                    )
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -332,7 +378,13 @@ fun ReportingCenterScreen(
                             }
                             Button(
                                 onClick = {
-                                    onGenerateReport(tpl, selectedLayout, selectedFormat, true, includePhotosInReport)
+                                    onGenerateReport(
+                                        tpl.copy(name = displayName),
+                                        selectedLayout,
+                                        selectedFormat,
+                                        true,
+                                        includePhotosInReport
+                                    )
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -403,6 +455,7 @@ fun ReportingCenterScreen(
 
     if (showCustomTemplateDialog) {
         CustomTemplateConstructorDialog(
+            defaultOrgHeader = "$organizationName • $siteName",
             onDismiss = { showCustomTemplateDialog = false },
             onSave = { newTpl ->
                 onSaveCustomTemplate(newTpl)
@@ -422,28 +475,24 @@ fun ReportPreviewDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .systemBarsPadding()
                 .imePadding()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 10.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = maxHeight),
+                    .fillMaxHeight(0.92f),
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 4.dp
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxSize()) {
                     // Закрепленная верхняя шапка
                     Row(
                         modifier = Modifier
@@ -457,6 +506,13 @@ fun ReportPreviewDialog(
                                 text = result.reportTitle,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = result.orgHeader,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -497,7 +553,7 @@ fun ReportPreviewDialog(
                     // Прокручиваемая средняя область таблицы
                     Column(
                         modifier = Modifier
-                            .weight(1f, fill = false)
+                            .weight(1f)
                             .verticalScroll(rememberScrollState())
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -645,11 +701,12 @@ fun ReportPreviewDialog(
 
 @Composable
 fun CustomTemplateConstructorDialog(
+    defaultOrgHeader: String = "${CorporateSeedData.DEFAULT_ORG_NAME} • ${CorporateSeedData.DEFAULT_SITE_NAME}",
     onDismiss: () -> Unit,
     onSave: (ReportTemplateDocument) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
-    var orgHeader by remember { mutableStateOf("Ежедневник • Отчёт по участку") }
+    var orgHeader by remember(defaultOrgHeader) { mutableStateOf(defaultOrgHeader) }
     var selectedLayout by remember { mutableStateOf(SheetLayout.SPLIT_SHEETS) }
     var selectedFormat by remember { mutableStateOf(ExportFormat.XLSX) }
     var groupBy by remember { mutableStateOf("ASSIGNEE") }
@@ -678,7 +735,7 @@ fun CustomTemplateConstructorDialog(
                 OutlinedTextField(
                     value = orgHeader,
                     onValueChange = { orgHeader = it },
-                    label = { Text("Заголовок документа") },
+                    label = { Text("Заголовок документа (Организация и участок)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )

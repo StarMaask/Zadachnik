@@ -65,7 +65,10 @@ class ExampleUnitTest {
 
         assertEquals(2, preview.sheets.size)
         assertTrue(preview.sheets[0].sheetTitle.contains("План"))
-        assertTrue(preview.sheets[1].sheetTitle.contains("Отчёт"))
+        assertTrue(
+            preview.sheets[1].sheetTitle.contains("Отчет", ignoreCase = true) ||
+                preview.sheets[1].sheetTitle.contains("Отчёт", ignoreCase = true)
+        )
     }
 
     @Test
@@ -147,5 +150,48 @@ class ExampleUnitTest {
         )
         assertFalse(previewWithoutPhotos.includePhotos)
         assertTrue(previewWithoutPhotos.attachedPhotos.isEmpty())
+    }
+
+    @Test
+    fun `daily report uses current date title and employee metadata encodes cleanly`() {
+        val today = CorporateSeedData.BASE_EPOCH_DAY
+        val dateText = ReportDocumentGenerator.formatEpochDay(today)
+        val templates = CorporateSeedData.buildInitialReportTemplates(userId = "test_user_1", dateLabel = dateText)
+        val firstTemplate = templates.first()
+
+        assertEquals("Отчет за текущий день ($dateText)", firstTemplate.name)
+        assertFalse(firstTemplate.name.contains("Суточный рапорт", ignoreCase = true))
+
+        // Legacy template name normalization
+        val legacyTemplate = firstTemplate.copy(name = "Суточный рапорт + План на завтра (2 листа)")
+        val normalizedTitle = ReportDocumentGenerator.resolveTemplateDisplayName(legacyTemplate, today)
+        assertEquals("Отчет за текущий день ($dateText)", normalizedTitle)
+
+        // Employee metadata encoding within 100 chars for Firestore security rules
+        val draftMember = com.example.data.model.SiteMemberDocument(
+            id = "emp_test_1",
+            memberId = "emp_test_1",
+            email = "worker@site.ru",
+            fullName = "Петров Пётр Петрович",
+            role = "WORKER",
+            position = "Электромонтажник 5 разряда",
+            groupId = "grp_1",
+            groupName = "Бригада №1",
+            personnelNumber = "ТН-0452",
+            siteName = "Участок №1",
+            phone = "+79991234567"
+        )
+        val encodedApprovedBy = draftMember.encodeApprovedByForFirestore(approverName = "Ковалёв Д.С.")
+        assertTrue(encodedApprovedBy.length <= 100)
+
+        val decodedMember = draftMember.copy(
+            personnelNumber = "",
+            siteName = "",
+            phone = "",
+            approvedByName = encodedApprovedBy
+        )
+        assertEquals("ТН-0452", decodedMember.effectivePersonnelNumber)
+        assertEquals("Участок №1", decodedMember.effectiveSiteName)
+        assertEquals("+79991234567", decodedMember.effectivePhone)
     }
 }

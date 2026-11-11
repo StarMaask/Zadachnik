@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import android.Manifest
 import android.content.pm.PackageManager
+import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -488,28 +489,24 @@ fun TaskDetailDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .systemBarsPadding()
                 .imePadding()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 10.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = maxHeight),
+                    .fillMaxHeight(0.92f),
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxSize()) {
                     // 1. ЗАКРЕПЛЁННАЯ ВЕРХНЯЯ ПАНЕЛЬ (всегда видна на любом экране телефона)
                     Row(
                         modifier = Modifier
@@ -557,7 +554,7 @@ fun TaskDetailDialog(
                     // 2. ПРОКРУЧИВАЕМАЯ ЦЕНТРАЛЬНАЯ ОБЛАСТЬ
                     Column(
                         modifier = Modifier
-                            .weight(1f, fill = false)
+                            .weight(1f)
                             .verticalScroll(rememberScrollState())
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
@@ -1595,48 +1592,116 @@ fun CreateTaskDialog(
     var showAdvancedOptions by remember { mutableStateOf(false) }
     var titleError by remember { mutableStateOf(false) }
 
+    val formScrollState = rememberScrollState()
+    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+
+    val saveTaskAction: () -> Unit = saveBlock@{
+        val fallbackTitle = subtasksRaw.lines().map { it.trim() }.firstOrNull { it.isNotBlank() }
+            ?: description.lines().map { it.trim() }.firstOrNull { it.isNotBlank() }
+            ?: ""
+        val effectiveTitle = title.trim().ifBlank { fallbackTitle }
+        if (effectiveTitle.isBlank()) {
+            titleError = true
+            coroutineScope.launch { formScrollState.animateScrollTo(0) }
+            return@saveBlock
+        }
+        val dueDay = if (isTomorrow) currentEpochDay + 1L else currentEpochDay
+        val subtasks = subtasksRaw.lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        val tags = tagsRaw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        val resolvedMinPhotos = (minPhotoCountText.toIntOrNull() ?: 1).coerceAtLeast(1)
+        val resolvedTargetVol = if (hasVolumeRequirement) {
+            (targetVolumeText.replace(",", ".").toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
+        } else {
+            0.0
+        }
+        val resolvedUnit = if (hasVolumeRequirement) {
+            if (isCustomUnitSelected) customUnitText.trim().ifBlank { "ед." } else selectedUnit
+        } else {
+            ""
+        }
+
+        onCreate(
+            TaskDraft(
+                title = effectiveTitle,
+                description = description.trim(),
+                assigneeId = selectedAssignee.id,
+                customAssigneeName = if (useCustomAssigneeName) customAssigneeName.trim() else "",
+                priority = selectedPriority,
+                dueDateEpochDay = dueDay,
+                deadlineTime = deadlineTime.ifBlank { "18:00" },
+                requiresPhotoReport = requiresPhoto,
+                minPhotoCount = if (requiresPhoto) resolvedMinPhotos else 0,
+                requiresApproval = requiresApproval,
+                recurrenceRule = selectedRecurrence,
+                targetVolume = resolvedTargetVol,
+                volumeUnit = resolvedUnit,
+                tags = tags,
+                subtasks = subtasks,
+                geoLocation = geoLocation.trim()
+            )
+        )
+        onDismiss()
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .systemBarsPadding()
                 .imePadding()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 10.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = maxHeight),
+                    .fillMaxHeight(0.92f),
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    // 1. ЗАКРЕПЛЁННАЯ ВЕРХНЯЯ ПАНЕЛЬ
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // 1. ЗАКРЕПЛЁННАЯ ВЕРХНЯЯ ПАНЕЛЬ С КНОПКОЙ СОХРАНЕНИЯ ЗАДАНИЯ
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 6.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = "Постановка задачи",
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
                         )
-                        IconButton(
-                            onClick = onDismiss,
-                            modifier = Modifier.size(36.dp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                            Button(
+                                onClick = saveTaskAction,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .height(36.dp)
+                                    .testTag("top_save_task_button")
+                            ) {
+                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Сохранить", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            }
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                            }
                         }
                     }
 
@@ -1645,8 +1710,8 @@ fun CreateTaskDialog(
                     // 2. ПРОКРУЧИВАЕМАЯ ФОРМА
                     Column(
                         modifier = Modifier
-                            .weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState())
+                            .weight(1f)
+                            .verticalScroll(formScrollState)
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -1659,7 +1724,7 @@ fun CreateTaskDialog(
                             label = { Text("Наименование задачи *") },
                             isError = titleError,
                             supportingText = if (titleError) {
-                                { Text("Введите наименование задачи") }
+                                { Text("Введите наименование задачи или заполните пункты чек-листа") }
                             } else null,
                             singleLine = true,
                             modifier = Modifier
@@ -1735,7 +1800,7 @@ fun CreateTaskDialog(
                             }
                         }
 
-                        // БЛОК ОБЪЁМА ВЫПОЛНЕНИЯ ЗАДАЧИ С ВЫБОРОМ ЕДИНИЦ ИЗМЕРЕНИЯ (шт, кг и другое)
+                        // БЛОК ОБЪЁМА ВЫПОЛНЕНИЯ ЗАДАЧИ С ВЫБОРЫМ ЕДИНИЦ ИЗМЕРЕНИЯ (шт, кг и другое)
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
@@ -1971,6 +2036,19 @@ fun CreateTaskDialog(
                                 .testTag("create_task_desc_input")
                         )
 
+                        // Кнопка сохранения прямо внутри прокручиваемой области
+                        Button(
+                            onClick = saveTaskAction,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("inline_save_task_button")
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Сохранить задание", fontWeight = FontWeight.Bold)
+                        }
+
                         // Дополнительные настройки в подменю
                         TextButton(
                             onClick = { showAdvancedOptions = !showAdvancedOptions },
@@ -2045,58 +2123,15 @@ fun CreateTaskDialog(
                             Text("Отмена")
                         }
                         Button(
-                            onClick = {
-                                if (title.isBlank()) {
-                                    titleError = true
-                                    return@Button
-                                }
-                                val dueDay = if (isTomorrow) currentEpochDay + 1L else currentEpochDay
-                                val subtasks = subtasksRaw.lines()
-                                    .map { it.trim() }
-                                    .filter { it.isNotBlank() }
-                                val tags = tagsRaw.split(",")
-                                    .map { it.trim() }
-                                    .filter { it.isNotBlank() }
-                                val resolvedMinPhotos = (minPhotoCountText.toIntOrNull() ?: 1).coerceAtLeast(1)
-                                val resolvedTargetVol = if (hasVolumeRequirement) {
-                                    (targetVolumeText.replace(",", ".").toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
-                                } else {
-                                    0.0
-                                }
-                                val resolvedUnit = if (hasVolumeRequirement) {
-                                    if (isCustomUnitSelected) customUnitText.trim().ifBlank { "ед." } else selectedUnit
-                                } else {
-                                    ""
-                                }
-
-                                onCreate(
-                                    TaskDraft(
-                                        title = title.trim(),
-                                        description = description.trim(),
-                                        assigneeId = selectedAssignee.id,
-                                        customAssigneeName = if (useCustomAssigneeName) customAssigneeName.trim() else "",
-                                        priority = selectedPriority,
-                                        dueDateEpochDay = dueDay,
-                                        deadlineTime = deadlineTime.ifBlank { "18:00" },
-                                        requiresPhotoReport = requiresPhoto,
-                                        minPhotoCount = if (requiresPhoto) resolvedMinPhotos else 0,
-                                        requiresApproval = requiresApproval,
-                                        recurrenceRule = selectedRecurrence,
-                                        targetVolume = resolvedTargetVol,
-                                        volumeUnit = resolvedUnit,
-                                        tags = tags,
-                                        subtasks = subtasks,
-                                        geoLocation = geoLocation.trim()
-                                    )
-                                )
-                                onDismiss()
-                            },
+                            onClick = saveTaskAction,
                             modifier = Modifier
-                                .weight(1.4f)
+                                .weight(1.5f)
                                 .height(44.dp)
                                 .testTag("confirm_create_task_button")
                         ) {
-                            Text("Поставить задачу", fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Сохранить задание", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

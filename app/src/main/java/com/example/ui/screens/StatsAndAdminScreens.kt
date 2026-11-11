@@ -1,34 +1,40 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.HistoryEdu
-import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
@@ -39,7 +45,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -58,6 +63,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.AuditLogDocument
 import com.example.data.model.CorporateEmployee
 import com.example.data.model.CorporateRole
@@ -317,8 +324,14 @@ fun StatisticsDashboardScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                val subMeta = buildString {
+                                    append(empStat.employee.role.titleRu)
+                                    if (empStat.employee.personnelNumber.isNotBlank()) {
+                                        append(" • Таб. № ${empStat.employee.personnelNumber}")
+                                    }
+                                }
                                 Text(
-                                    text = empStat.employee.role.titleRu,
+                                    text = subMeta,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -382,10 +395,33 @@ fun AdminAndAuditScreen(
     activeEmployee: CorporateEmployee,
     siteMembers: List<SiteMemberDocument>,
     auditLogs: List<AuditLogDocument>,
+    organizationName: String = CorporateSeedData.DEFAULT_ORG_NAME,
+    siteName: String = CorporateSeedData.DEFAULT_SITE_NAME,
+    onOpenOrganizationSettings: () -> Unit = {},
     onAssignRoleToMember: (SiteMemberDocument, CorporateRole, WorkGroup, String?) -> Unit,
     onRejectMemberAccess: (SiteMemberDocument) -> Unit,
     onDeleteSiteMember: (SiteMemberDocument) -> Unit = {},
-    onPreRegisterEmployee: (email: String, fullName: String, position: String, role: CorporateRole, group: WorkGroup) -> Unit,
+    onEditEmployeeDetails: (
+        targetMember: SiteMemberDocument,
+        fullName: String,
+        position: String,
+        personnelNumber: String,
+        siteName: String,
+        groupName: String,
+        phone: String,
+        email: String,
+        role: CorporateRole
+    ) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
+    onPreRegisterEmployee: (
+        email: String,
+        fullName: String,
+        position: String,
+        role: CorporateRole,
+        group: WorkGroup,
+        personnelNumber: String,
+        siteName: String,
+        phone: String
+    ) -> Unit,
     onSwitchPersona: (String) -> Unit,
     onSignOut: () -> Unit
 ) {
@@ -398,9 +434,14 @@ fun AdminAndAuditScreen(
 
     var showPreRegisterForm by remember { mutableStateOf(false) }
     var showAuditLogSection by remember { mutableStateOf(false) }
+    var memberBeingEdited by remember { mutableStateOf<SiteMemberDocument?>(null) }
+
     var newEmpFullName by remember { mutableStateOf("") }
-    var newEmpEmail by remember { mutableStateOf("") }
     var newEmpPosition by remember { mutableStateOf("") }
+    var newEmpPersonnelNumber by remember { mutableStateOf("") }
+    var newEmpSiteName by remember(siteName) { mutableStateOf(siteName) }
+    var newEmpPhone by remember { mutableStateOf("") }
+    var newEmpEmail by remember { mutableStateOf("") }
     var newEmpRole by remember { mutableStateOf(CorporateRole.WORKER) }
     var newEmpGroup by remember { mutableStateOf(CorporateSeedData.workGroups.first()) }
 
@@ -408,9 +449,59 @@ fun AdminAndAuditScreen(
         modifier = Modifier
             .fillMaxSize()
             .testTag("admin_audit_list"),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // Блок настроек наименования организации и участка
+        item {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Business,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Column {
+                            Text(
+                                text = organizationName,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Участок: $siteName",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onOpenOrganizationSettings,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("edit_org_site_button")
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Изменить", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
         // Compact Profile Header Row
         item {
             Surface(
@@ -420,7 +511,7 @@ fun AdminAndAuditScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier.padding(12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -430,15 +521,24 @@ fun AdminAndAuditScreen(
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
+                        val profileMeta = buildString {
+                            append(activeEmployee.role.titleRu)
+                            if (activeEmployee.personnelNumber.isNotBlank()) {
+                                append(" • Таб. № ${activeEmployee.personnelNumber}")
+                            }
+                            if (activeEmployee.email.isNotBlank()) {
+                                append(" • ${activeEmployee.email}")
+                            }
+                        }
                         Text(
-                            text = "${activeEmployee.role.titleRu} • ${activeEmployee.email}",
+                            text = profileMeta,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     OutlinedButton(
                         onClick = onSignOut,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("sign_out_button")
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти", modifier = Modifier.size(16.dp))
@@ -523,23 +623,71 @@ fun AdminAndAuditScreen(
                                 .fillMaxWidth()
                                 .testTag("preregister_name_input")
                         )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = newEmpPosition,
+                                onValueChange = { newEmpPosition = it },
+                                label = { Text("Должность") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1.3f)
+                            )
+                            OutlinedTextField(
+                                value = newEmpPersonnelNumber,
+                                onValueChange = { newEmpPersonnelNumber = it },
+                                label = { Text("Таб. номер") },
+                                singleLine = true,
+                                modifier = Modifier.weight(0.9f)
+                            )
+                        }
                         OutlinedTextField(
-                            value = newEmpEmail,
-                            onValueChange = { newEmpEmail = it },
-                            label = { Text("Email сотрудника *") },
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("preregister_email_input")
-                        )
-                        OutlinedTextField(
-                            value = newEmpPosition,
-                            onValueChange = { newEmpPosition = it },
-                            label = { Text("Должность (необязательно)") },
+                            value = newEmpSiteName,
+                            onValueChange = { newEmpSiteName = it },
+                            label = { Text("Принадлежность к участку") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = newEmpPhone,
+                                onValueChange = { newEmpPhone = it },
+                                label = { Text("Телефон") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = newEmpEmail,
+                                onValueChange = { newEmpEmail = it },
+                                label = { Text("Email (необязательно)") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1.2f)
+                                    .testTag("preregister_email_input")
+                            )
+                        }
 
+                        Text("Подразделение / бригада:", style = MaterialTheme.typography.labelSmall)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CorporateSeedData.workGroups.forEach { grp ->
+                                FilterChip(
+                                    selected = newEmpGroup.id == grp.id,
+                                    onClick = { newEmpGroup = grp },
+                                    label = { Text(grp.name) }
+                                )
+                            }
+                        }
+
+                        Text("Роль:", style = MaterialTheme.typography.labelSmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             CorporateRole.entries.forEach { r ->
                                 FilterChip(
@@ -560,21 +708,26 @@ fun AdminAndAuditScreen(
 
                         Button(
                             onClick = {
-                                if (newEmpFullName.isNotBlank() && newEmpEmail.isNotBlank()) {
+                                if (newEmpFullName.isNotBlank()) {
                                     onPreRegisterEmployee(
                                         newEmpEmail,
                                         newEmpFullName,
                                         newEmpPosition.ifBlank { newEmpRole.titleRu },
                                         newEmpRole,
-                                        newEmpGroup
+                                        newEmpGroup,
+                                        newEmpPersonnelNumber,
+                                        newEmpSiteName.ifBlank { siteName },
+                                        newEmpPhone
                                     )
                                     newEmpFullName = ""
                                     newEmpEmail = ""
                                     newEmpPosition = ""
+                                    newEmpPersonnelNumber = ""
+                                    newEmpPhone = ""
                                     showPreRegisterForm = false
                                 }
                             },
-                            enabled = newEmpFullName.isNotBlank() && newEmpEmail.isNotBlank(),
+                            enabled = newEmpFullName.isNotBlank(),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("submit_preregister_button")
@@ -588,7 +741,7 @@ fun AdminAndAuditScreen(
             }
         }
 
-        // Staff Rows (Clean Table List)
+        // Staff Rows (Clean Table List with Edit button)
         if (activeApprovedMembers.isEmpty()) {
             item {
                 Surface(
@@ -609,6 +762,10 @@ fun AdminAndAuditScreen(
             items(activeApprovedMembers, key = { it.memberId.ifBlank { it.id } }) { member ->
                 val currentRole = member.parsedRoleOrNull ?: CorporateRole.WORKER
                 val memberKey = member.memberId.ifBlank { member.id }
+                val tabNumber = member.effectivePersonnelNumber
+                val empSite = member.effectiveSiteName.ifBlank { siteName }
+                val empPhone = member.effectivePhone
+
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surface,
@@ -619,7 +776,7 @@ fun AdminAndAuditScreen(
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.Top
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -627,23 +784,54 @@ fun AdminAndAuditScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold
                                 )
+                                val line1 = buildString {
+                                    append(member.position.ifBlank { currentRole.titleRu })
+                                    if (tabNumber.isNotBlank()) {
+                                        append(" • Таб. № $tabNumber")
+                                    }
+                                }
                                 Text(
-                                    text = "${member.position} • ${member.email}",
+                                    text = line1,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                val line2 = buildString {
+                                    append("Участок: $empSite • ${member.groupName}")
+                                    if (empPhone.isNotBlank()) append(" • $empPhone")
+                                }
+                                Text(
+                                    text = line2,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            if (activeEmployee.role == CorporateRole.HEAD && memberKey != activeEmployee.id) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(
-                                    onClick = { onDeleteSiteMember(member) },
-                                    modifier = Modifier.size(30.dp)
+                                    onClick = { memberBeingEdited = member },
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .testTag("edit_member_${memberKey}")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.DeleteOutline,
-                                        contentDescription = "Удалить сотрудника",
-                                        tint = MaterialTheme.colorScheme.error,
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Редактировать сотрудника",
+                                        tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(18.dp)
                                     )
+                                }
+                                if (activeEmployee.role == CorporateRole.HEAD && memberKey != activeEmployee.id) {
+                                    IconButton(
+                                        onClick = { onDeleteSiteMember(member) },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = "Удалить сотрудника",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -651,6 +839,9 @@ fun AdminAndAuditScreen(
                         if (activeEmployee.role == CorporateRole.HEAD) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -677,6 +868,15 @@ fun AdminAndAuditScreen(
                                             )
                                         }
                                     )
+                                }
+                                OutlinedButton(
+                                    onClick = { memberBeingEdited = member },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Редактировать", style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }
@@ -725,6 +925,395 @@ fun AdminAndAuditScreen(
                             text = log.details,
                             style = MaterialTheme.typography.bodySmall
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    memberBeingEdited?.let { target ->
+        EditEmployeeDialog(
+            member = target,
+            defaultSiteName = siteName,
+            onDismiss = { memberBeingEdited = null },
+            onSave = { fullName, position, personnelNumber, empSite, groupName, phone, email, role ->
+                onEditEmployeeDetails(
+                    target,
+                    fullName,
+                    position,
+                    personnelNumber,
+                    empSite,
+                    groupName,
+                    phone,
+                    email,
+                    role
+                )
+                memberBeingEdited = null
+            }
+        )
+    }
+}
+
+/**
+ * Диалог редактирования карточки сотрудника:
+ * ФИО, должность, табельный номер, принадлежность к участку, подразделение/бригада, телефон, email, роль.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun EditEmployeeDialog(
+    member: SiteMemberDocument,
+    defaultSiteName: String,
+    onDismiss: () -> Unit,
+    onSave: (
+        fullName: String,
+        position: String,
+        personnelNumber: String,
+        siteName: String,
+        groupName: String,
+        phone: String,
+        email: String,
+        role: CorporateRole
+    ) -> Unit
+) {
+    var fullName by remember(member) { mutableStateOf(member.fullName) }
+    var position by remember(member) { mutableStateOf(member.position) }
+    var personnelNumber by remember(member) { mutableStateOf(member.effectivePersonnelNumber) }
+    var siteName by remember(member, defaultSiteName) {
+        mutableStateOf(member.effectiveSiteName.ifBlank { defaultSiteName })
+    }
+    var groupName by remember(member) { mutableStateOf(member.groupName) }
+    var phone by remember(member) { mutableStateOf(member.effectivePhone) }
+    var email by remember(member) { mutableStateOf(member.email) }
+    var selectedRole by remember(member) {
+        mutableStateOf(member.parsedRoleOrNull ?: CorporateRole.WORKER)
+    }
+
+    val saveEmployeeAction: () -> Unit = {
+        if (fullName.isNotBlank()) {
+            onSave(
+                fullName.trim(),
+                position.trim().ifBlank { selectedRole.titleRu },
+                personnelNumber.trim(),
+                siteName.trim().ifBlank { defaultSiteName },
+                groupName.trim().ifBlank { "Основное подразделение" },
+                phone.trim(),
+                email.trim(),
+                selectedRole
+            )
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.90f),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Верхняя шапка с кнопкой «Сохранить»
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Карточка сотрудника",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Button(
+                                onClick = saveEmployeeAction,
+                                enabled = fullName.isNotBlank(),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .height(36.dp)
+                                    .testTag("top_save_employee_button")
+                            ) {
+                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Сохранить", style = MaterialTheme.typography.labelMedium)
+                            }
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // Прокручиваемая форма полей сотрудника
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = fullName,
+                            onValueChange = { fullName = it },
+                            label = { Text("ФИО сотрудника *") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("edit_employee_fullname_input")
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = position,
+                                onValueChange = { position = it },
+                                label = { Text("Должность") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .testTag("edit_employee_position_input")
+                            )
+                            OutlinedTextField(
+                                value = personnelNumber,
+                                onValueChange = { personnelNumber = it },
+                                label = { Text("Табельный №") },
+                                placeholder = { Text("Напр.: 0142") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .testTag("edit_employee_tab_input")
+                            )
+                        }
+
+                        OutlinedTextField(
+                            value = siteName,
+                            onValueChange = { siteName = it },
+                            label = { Text("Принадлежность к участку") },
+                            placeholder = { Text("Напр.: Участок №1 — СМР") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("edit_employee_site_input")
+                        )
+
+                        OutlinedTextField(
+                            value = groupName,
+                            onValueChange = { groupName = it },
+                            label = { Text("Бригада / подразделение") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("edit_employee_group_input")
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CorporateSeedData.workGroups.forEach { grp ->
+                                FilterChip(
+                                    selected = groupName == grp.name,
+                                    onClick = { groupName = grp.name },
+                                    label = { Text(grp.name) }
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = phone,
+                                onValueChange = { phone = it },
+                                label = { Text("Телефон") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = email,
+                                onValueChange = { email = it },
+                                label = { Text("Email") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1.2f)
+                            )
+                        }
+
+                        Text(
+                            text = "Роль в системе:",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            CorporateRole.entries.forEach { roleOption ->
+                                FilterChip(
+                                    selected = selectedRole == roleOption,
+                                    onClick = { selectedRole = roleOption },
+                                    label = {
+                                        Text(
+                                            when (roleOption) {
+                                                CorporateRole.WORKER -> "Рабочий"
+                                                CorporateRole.ITR -> "ИТР"
+                                                CorporateRole.HEAD -> "Руководитель"
+                                            }
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // Нижняя панель кнопок
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                        ) {
+                            Text("Отмена")
+                        }
+                        Button(
+                            onClick = saveEmployeeAction,
+                            enabled = fullName.isNotBlank(),
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .height(44.dp)
+                                .testTag("confirm_save_employee_button")
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Сохранить изменения", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Диалог настройки наименования организации и участка.
+ */
+@Composable
+fun OrganizationSettingsDialog(
+    currentOrganizationName: String,
+    currentSiteName: String,
+    onDismiss: () -> Unit,
+    onSave: (organizationName: String, siteName: String) -> Unit
+) {
+    var orgName by remember(currentOrganizationName) { mutableStateOf(currentOrganizationName) }
+    var siteName by remember(currentSiteName) { mutableStateOf(currentSiteName) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Организация и участок",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                    }
+                }
+
+                OutlinedTextField(
+                    value = orgName,
+                    onValueChange = { orgName = it },
+                    label = { Text("Наименование организации *") },
+                    placeholder = { Text("Напр.: ООО «ГлавСтройИнжиниринг»") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("org_name_input")
+                )
+
+                OutlinedTextField(
+                    value = siteName,
+                    onValueChange = { siteName = it },
+                    label = { Text("Наименование участка / подразделения *") },
+                    placeholder = { Text("Напр.: Участок №1 — СМР и Инженерия") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("site_name_input")
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Отмена")
+                    }
+                    Button(
+                        onClick = {
+                            if (orgName.isNotBlank() || siteName.isNotBlank()) {
+                                onSave(
+                                    orgName.trim().ifBlank { CorporateSeedData.DEFAULT_ORG_NAME },
+                                    siteName.trim().ifBlank { CorporateSeedData.DEFAULT_SITE_NAME }
+                                )
+                                onDismiss()
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1.3f)
+                            .testTag("save_org_site_button")
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Сохранить")
                     }
                 }
             }

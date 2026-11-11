@@ -120,7 +120,7 @@ enum class ReportType(
     ),
     DAILY_REPORT(
         code = "DAILY_REPORT",
-        titleRu = "Отчёт за текущий / выбранный день",
+        titleRu = "Отчет за текущий день",
         subtitleRu = "Выполненные и незавершённые задачи с фактическим объёмом работ, ФИО и фотофиксацией"
     ),
     PERIOD_REPORT(
@@ -183,6 +183,14 @@ enum class ReportType(
         subtitleRu = "Настраиваемый набор колонок, группировок и фильтров по шаблону"
     );
 
+    fun formatTitleWithDate(dateText: String): String {
+        return if (this == DAILY_REPORT) {
+            "Отчет за текущий день ($dateText)"
+        } else {
+            titleRu
+        }
+    }
+
     companion object {
         fun fromCode(code: String): ReportType =
             entries.firstOrNull { it.code.equals(code, ignoreCase = true) } ?: DAILY_REPORT
@@ -223,7 +231,8 @@ data class CorporateEmployee(
     val siteName: String,
     val supervisorId: String?,
     val phone: String,
-    val email: String
+    val email: String,
+    val personnelNumber: String = ""
 )
 
 data class WorkGroup(
@@ -771,6 +780,9 @@ data class SiteMemberDocument(
     val groupId: String = "grp_monolith",
     val groupName: String = "Бригада №1 • Монолит и ЖБК",
     val approvedByName: String? = null,
+    val personnelNumber: String = "",
+    val siteName: String = "",
+    val phone: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -786,7 +798,41 @@ data class SiteMemberDocument(
     val parsedRoleOrNull: CorporateRole?
         get() = if (role == "PENDING" || isPendingRole) null else CorporateRole.fromCode(role)
 
-    fun toCorporateEmployee(): CorporateEmployee {
+    private fun extractMetaValue(prefix: String): String {
+        val raw = approvedByName ?: return ""
+        val parts = raw.split("||")
+        return parts.firstOrNull { it.startsWith("$prefix:") }
+            ?.substringAfter("$prefix:")
+            ?.trim()
+            .orEmpty()
+    }
+
+    val cleanApprovedByName: String
+        get() = (approvedByName ?: "").substringBefore("||").trim()
+
+    val effectivePersonnelNumber: String
+        get() = personnelNumber.ifBlank { extractMetaValue("tab") }
+
+    val effectiveSiteName: String
+        get() = siteName.ifBlank { extractMetaValue("site").ifBlank { "Участок №1" } }
+
+    val effectivePhone: String
+        get() = phone.ifBlank { extractMetaValue("tel") }
+
+    fun encodeApprovedByForFirestore(approverName: String = cleanApprovedByName.ifBlank { "Руководитель" }): String {
+        val base = approverName.replace("|", "/").take(35)
+        val tabPart = effectivePersonnelNumber.replace("|", "/").take(20)
+        val sitePart = effectiveSiteName.replace("|", "/").take(35)
+        val telPart = effectivePhone.replace("|", "/").take(18)
+        return buildString {
+            append(base)
+            if (tabPart.isNotBlank()) append("||tab:$tabPart")
+            if (sitePart.isNotBlank()) append("||site:$sitePart")
+            if (telPart.isNotBlank()) append("||tel:$telPart")
+        }.take(120)
+    }
+
+    fun toCorporateEmployee(defaultSiteName: String = "Участок №1"): CorporateEmployee {
         val resolvedRole = parsedRoleOrNull ?: CorporateRole.WORKER
         val parts = fullName.trim().split(" ").filter { it.isNotBlank() }
         val shortName = when {
@@ -795,6 +841,7 @@ data class SiteMemberDocument(
             parts.size == 1 -> parts[0]
             else -> "Сотрудник"
         }
+        val resolvedSite = effectiveSiteName.ifBlank { defaultSiteName }
         return CorporateEmployee(
             id = memberId.ifBlank { id },
             fullName = fullName.ifBlank { "Сотрудник участка" },
@@ -804,10 +851,11 @@ data class SiteMemberDocument(
             groupId = groupId.ifBlank { "grp_monolith" },
             groupName = groupName.ifBlank { "Бригада №1 • Монолит и ЖБК" },
             siteId = "site_1",
-            siteName = "Участок №1 — ПГС и Инженерные сети",
+            siteName = resolvedSite,
             supervisorId = if (resolvedRole == CorporateRole.HEAD) null else "emp_head_1",
-            phone = "+7 (916) 440-00-00",
-            email = email
+            phone = effectivePhone,
+            email = email,
+            personnelNumber = effectivePersonnelNumber
         )
     }
 

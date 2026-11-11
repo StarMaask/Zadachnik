@@ -3,11 +3,12 @@ package com.example.data.local
 import android.content.Context
 import com.example.data.model.SiteMemberDocument
 import com.example.data.model.TaskDocument
+import com.example.data.seed.CorporateSeedData
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Надёжное локальное хранилище задач, участников и удалённых записей.
+ * Надёжное локальное хранилище задач, участников, удалённых записей и настроек организации/участка.
  * Обеспечивает мгновенное сохранение на телефоне независимо от состояния сети/VPN,
  * синхронизируясь поверх облачной базы Firestore.
  */
@@ -17,6 +18,30 @@ object LocalWorkspaceStore {
     private const val KEY_DELETED_TASK_IDS = "deleted_task_ids"
     private const val KEY_MEMBERS = "members_json"
     private const val KEY_DELETED_MEMBER_IDS = "deleted_member_ids"
+    private const val KEY_ORG_NAME = "organization_name"
+    private const val KEY_SITE_NAME = "site_name"
+
+    fun loadOrganizationName(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_ORG_NAME, CorporateSeedData.DEFAULT_ORG_NAME)
+            ?.takeIf { it.isNotBlank() }
+            ?: CorporateSeedData.DEFAULT_ORG_NAME
+    }
+
+    fun loadSiteName(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_SITE_NAME, CorporateSeedData.DEFAULT_SITE_NAME)
+            ?.takeIf { it.isNotBlank() }
+            ?: CorporateSeedData.DEFAULT_SITE_NAME
+    }
+
+    fun saveOrganizationAndSite(context: Context, orgName: String, siteName: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_ORG_NAME, orgName.trim().ifBlank { CorporateSeedData.DEFAULT_ORG_NAME })
+            .putString(KEY_SITE_NAME, siteName.trim().ifBlank { CorporateSeedData.DEFAULT_SITE_NAME })
+            .apply()
+    }
 
     fun loadTasks(context: Context): List<TaskDocument> {
         val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -179,6 +204,9 @@ object LocalWorkspaceStore {
         put("groupId", m.groupId)
         put("groupName", m.groupName)
         put("approvedByName", m.approvedByName ?: "")
+        put("personnelNumber", m.effectivePersonnelNumber)
+        put("siteName", m.effectiveSiteName)
+        put("phone", m.effectivePhone)
     }
 
     private fun jsonToMember(obj: JSONObject): SiteMemberDocument {
@@ -193,7 +221,10 @@ object LocalWorkspaceStore {
             approvalStatus = obj.optString("approvalStatus", "PENDING"),
             groupId = obj.optString("groupId", "grp_monolith"),
             groupName = obj.optString("groupName", "Основное подразделение"),
-            approvedByName = obj.optString("approvedByName").takeIf { it.isNotBlank() }
+            approvedByName = obj.optString("approvedByName").takeIf { it.isNotBlank() },
+            personnelNumber = obj.optString("personnelNumber", ""),
+            siteName = obj.optString("siteName", ""),
+            phone = obj.optString("phone", "")
         )
     }
 

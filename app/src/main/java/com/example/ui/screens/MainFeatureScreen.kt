@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.Badge
@@ -115,6 +116,8 @@ import com.example.ui.auth.signOut
 import com.example.ui.components.CreateTaskDialog
 import com.example.ui.components.TaskDetailDialog
 import com.example.ui.components.TaskItemCard
+import com.example.ui.components.ThemeSettingsDialog
+import com.example.ui.theme.LocalAppThemeTokens
 import com.example.ui.viewmodel.EzhednevnikViewModel
 import com.example.ui.viewmodel.TaskFilterTab
 import com.example.ui.viewmodel.UiState
@@ -227,6 +230,7 @@ fun MainFeatureScreen(
     var showSearchBar by remember { mutableStateOf(false) }
     var showTopOverflowMenu by remember { mutableStateOf(false) }
     var showOrgSettingsDialog by remember { mutableStateOf(false) }
+    var showThemeSettingsDialog by remember { mutableStateOf(false) }
 
     BackHandler(enabled = currentTab != MainNavDestination.TODAY) {
         currentTab = MainNavDestination.TODAY
@@ -299,6 +303,13 @@ fun MainFeatureScreen(
                             }
                         }
 
+                        IconButton(
+                            onClick = { showThemeSettingsDialog = true },
+                            modifier = Modifier.testTag("top_theme_switcher_button")
+                        ) {
+                            Icon(Icons.Default.Palette, contentDescription = "Оформление (Темы)")
+                        }
+
                         Box {
                             IconButton(
                                 onClick = { showTopOverflowMenu = true },
@@ -310,6 +321,15 @@ fun MainFeatureScreen(
                                 expanded = showTopOverflowMenu,
                                 onDismissRequest = { showTopOverflowMenu = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Оформление (Темы)") },
+                                    leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null) },
+                                    onClick = {
+                                        showTopOverflowMenu = false
+                                        showThemeSettingsDialog = true
+                                    },
+                                    modifier = Modifier.testTag("menu_theme_settings")
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Настройки организации и участка") },
                                     leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
@@ -601,6 +621,12 @@ fun MainFeatureScreen(
                 }
             }
         }
+    }
+
+    if (showThemeSettingsDialog) {
+        ThemeSettingsDialog(
+            onDismiss = { showThemeSettingsDialog = false }
+        )
     }
 
     if (showOrgSettingsDialog) {
@@ -1000,10 +1026,12 @@ private fun CorporateCalendarSection(
         "$mName ${displayedYearMonth.year}"
     }
 
+    val tokens = LocalAppThemeTokens.current
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shadowElevation = tokens.cardShadowElevationDp.dp,
+        border = BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("corporate_calendar_card")

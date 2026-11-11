@@ -105,19 +105,23 @@ import com.example.data.model.TaskPriority
 import com.example.data.model.TaskStatus
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.ui.theme.LocalAppThemeTokens
 
 val STANDARD_VOLUME_UNITS = listOf("шт", "кг", "м²", "м³", "п.м.", "т", "л", "компл.", "ч")
 
 @Composable
-fun statusColor(status: TaskStatus): Color = when (status) {
-    TaskStatus.NEW -> Color(0xFF2563EB)
-    TaskStatus.IN_PROGRESS -> Color(0xFFD97706)
-    TaskStatus.ON_REVIEW -> Color(0xFF7C3AED)
-    TaskStatus.APPROVED -> Color(0xFF16A34A)
-    TaskStatus.REJECTED -> Color(0xFFDC2626)
-    TaskStatus.OVERDUE -> Color(0xFFB91C1C)
-    TaskStatus.CANCELLED -> Color(0xFF64748B)
-    TaskStatus.ARCHIVED -> Color(0xFF475569)
+fun statusColor(status: TaskStatus): Color {
+    val tokens = LocalAppThemeTokens.current
+    return when (status) {
+        TaskStatus.NEW -> MaterialTheme.colorScheme.primary
+        TaskStatus.IN_PROGRESS -> tokens.statusInProgressColor
+        TaskStatus.ON_REVIEW -> if (tokens.isHighContrastField) Color(0xFF38BDF8) else Color(0xFF7C3AED)
+        TaskStatus.APPROVED -> tokens.statusDoneColor
+        TaskStatus.REJECTED -> Color(0xFFDC2626)
+        TaskStatus.OVERDUE -> Color(0xFFB91C1C)
+        TaskStatus.CANCELLED -> Color(0xFF64748B)
+        TaskStatus.ARCHIVED -> Color(0xFF475569)
+    }
 }
 
 @Composable
@@ -140,15 +144,17 @@ fun TaskItemCard(
     onToggleSubtask: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val tokens = LocalAppThemeTokens.current
     val isApproved = task.taskStatus == TaskStatus.APPROVED
     val textDeco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
-    val cardAlpha = if (isApproved) 0.65f else 1f
+    val cardAlpha = if (isApproved) 0.68f else 1f
     val subtasks = remember(task.subtaskItems) { task.decodedSubtasks() }
     val doneSubtasks = subtasks.count { it.isDone }
     val targetVol = task.effectiveTargetVolume
     val completedVol = task.effectiveCompletedVolume
     val unitLabel = task.effectiveVolumeUnit.ifBlank { "шт" }
     val pct = task.completionPercent()
+    val doneColor = tokens.statusDoneColor
 
     Surface(
         modifier = modifier
@@ -156,9 +162,10 @@ fun TaskItemCard(
             .alpha(cardAlpha)
             .clickable(onClick = onClick)
             .testTag("task_card_${task.id}"),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        shadowElevation = tokens.cardShadowElevationDp.dp,
+        border = BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
     ) {
         Row(
             modifier = Modifier
@@ -169,7 +176,7 @@ fun TaskItemCard(
             // Тонкий цветовой индикатор статуса слева
             Box(
                 modifier = Modifier
-                    .width(4.dp)
+                    .width(if (tokens.isHighContrastField) 5.dp else 4.dp)
                     .fillMaxHeight()
                     .background(statusColor(task.taskStatus))
             )
@@ -177,7 +184,7 @@ fun TaskItemCard(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -188,14 +195,14 @@ fun TaskItemCard(
                         text = task.title,
                         style = MaterialTheme.typography.titleSmall.copy(textDecoration = textDeco),
                         color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = if (tokens.isHighContrastField) FontWeight.Bold else FontWeight.SemiBold,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
-                        color = statusColor(task.taskStatus).copy(alpha = 0.12f),
+                        color = statusColor(task.taskStatus).copy(alpha = if (tokens.isDark) 0.16f else 0.10f),
                         shape = RoundedCornerShape(6.dp)
                     ) {
                         Text(
@@ -203,7 +210,7 @@ fun TaskItemCard(
                             color = statusColor(task.taskStatus),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                         )
                     }
                 }
@@ -231,13 +238,13 @@ fun TaskItemCard(
                             text = "Объём: ${SubtaskItem.formatVolumeNumber(completedVol)} из ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (pct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary
+                            color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
                         )
                         Text(
                             text = "$pct%",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = if (pct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Spacer(modifier = Modifier.height(3.dp))
@@ -245,9 +252,9 @@ fun TaskItemCard(
                         progress = { (pct / 100f).coerceIn(0f, 1f) },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(5.dp)
+                            .height(if (tokens.isHighContrastField) 6.dp else 5.dp)
                             .clip(RoundedCornerShape(3.dp)),
-                        color = if (pct >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary,
+                        color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                 }

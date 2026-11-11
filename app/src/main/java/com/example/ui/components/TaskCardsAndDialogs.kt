@@ -489,20 +489,24 @@ fun TaskDetailDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .systemBarsPadding()
                 .imePadding()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
+                .padding(horizontal = 18.dp, vertical = 28.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.92f),
-                shape = RoundedCornerShape(16.dp),
+                    .fillMaxHeight(0.84f),
+                shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
@@ -511,7 +515,7 @@ fun TaskDetailDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+                            .padding(start = 18.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -556,7 +560,7 @@ fun TaskDetailDialog(
                         modifier = Modifier
                             .weight(1f)
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .padding(horizontal = 18.dp, vertical = 12.dp)
                     ) {
                         Text(
                             text = task.title,
@@ -1227,7 +1231,7 @@ fun TaskDetailDialog(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
@@ -1555,6 +1559,7 @@ fun CreateTaskDialog(
     activeEmployee: CorporateEmployee,
     availableEmployees: List<CorporateEmployee> = listOf(activeEmployee),
     currentEpochDay: Long,
+    initialDueDateEpochDay: Long = currentEpochDay,
     onDismiss: () -> Unit,
     onCreate: (TaskDraft) -> Unit
 ) {
@@ -1570,7 +1575,7 @@ fun CreateTaskDialog(
     var customAssigneeName by remember { mutableStateOf("") }
 
     var selectedPriority by remember { mutableStateOf(TaskPriority.MEDIUM) }
-    var isTomorrow by remember { mutableStateOf(false) }
+    var selectedDueEpochDay by remember(initialDueDateEpochDay) { mutableStateOf(initialDueDateEpochDay) }
     var deadlineTime by remember { mutableStateOf("18:00") }
 
     // Обязательный фотоотчёт с возможностью ручного ввода минимального числа фото
@@ -1590,22 +1595,23 @@ fun CreateTaskDialog(
     var tagsRaw by remember { mutableStateOf("") }
     var geoLocation by remember { mutableStateOf(activeEmployee.siteName) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
-    var titleError by remember { mutableStateOf(false) }
 
     val formScrollState = rememberScrollState()
-    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
 
-    val saveTaskAction: () -> Unit = saveBlock@{
+    val saveTaskAction: () -> Unit = {
+        val dueDay = selectedDueEpochDay
+        val assigneeLabel = if (useCustomAssigneeName && customAssigneeName.isNotBlank()) {
+            customAssigneeName.trim()
+        } else {
+            selectedAssignee.shortName
+        }
         val fallbackTitle = subtasksRaw.lines().map { it.trim() }.firstOrNull { it.isNotBlank() }
             ?: description.lines().map { it.trim() }.firstOrNull { it.isNotBlank() }
             ?: ""
-        val effectiveTitle = title.trim().ifBlank { fallbackTitle }
-        if (effectiveTitle.isBlank()) {
-            titleError = true
-            coroutineScope.launch { formScrollState.animateScrollTo(0) }
-            return@saveBlock
-        }
-        val dueDay = if (isTomorrow) currentEpochDay + 1L else currentEpochDay
+        val effectiveTitle = title.trim()
+            .ifBlank { fallbackTitle }
+            .ifBlank { "Задание — $assigneeLabel (${ReportDocumentGenerator.formatEpochDay(dueDay)})" }
+
         val subtasks = subtasksRaw.lines()
             .map { it.trim() }
             .filter { it.isNotBlank() }
@@ -1649,20 +1655,24 @@ fun CreateTaskDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .systemBarsPadding()
                 .imePadding()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
+                .padding(horizontal = 18.dp, vertical = 28.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.92f),
-                shape = RoundedCornerShape(16.dp),
+                    .fillMaxHeight(0.84f),
+                shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
@@ -1671,7 +1681,7 @@ fun CreateTaskDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 6.dp),
+                            .padding(start = 18.dp, end = 12.dp, top = 10.dp, bottom = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1683,13 +1693,13 @@ fun CreateTaskDialog(
                         )
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Button(
                                 onClick = saveTaskAction,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                                 modifier = Modifier
-                                    .height(36.dp)
+                                    .height(38.dp)
                                     .testTag("top_save_task_button")
                             ) {
                                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1698,7 +1708,7 @@ fun CreateTaskDialog(
                             }
                             IconButton(
                                 onClick = onDismiss,
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier.size(38.dp)
                             ) {
                                 Icon(Icons.Default.Close, contentDescription = "Закрыть")
                             }
@@ -1712,20 +1722,14 @@ fun CreateTaskDialog(
                         modifier = Modifier
                             .weight(1f)
                             .verticalScroll(formScrollState)
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         OutlinedTextField(
                             value = title,
-                            onValueChange = {
-                                title = it
-                                if (it.isNotBlank()) titleError = false
-                            },
+                            onValueChange = { title = it },
                             label = { Text("Наименование задачи *") },
-                            isError = titleError,
-                            supportingText = if (titleError) {
-                                { Text("Введите наименование задачи или заполните пункты чек-листа") }
-                            } else null,
+                            placeholder = { Text("Например: Монтаж опалубки перекрытия") },
                             singleLine = true,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1895,23 +1899,69 @@ fun CreateTaskDialog(
                             }
                         }
 
-                        // Срок и приоритет
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        // Срок (выбор даты календаря) и приоритет
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            FilterChip(
-                                selected = !isTomorrow,
-                                onClick = { isTomorrow = false },
-                                label = { Text("На сегодня") },
-                                modifier = Modifier.weight(1f)
-                            )
-                            FilterChip(
-                                selected = isTomorrow,
-                                onClick = { isTomorrow = true },
-                                label = { Text("На завтра") },
-                                modifier = Modifier.weight(1f)
-                            )
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Дата выполнения: ${ReportDocumentGenerator.formatEpochDay(selectedDueEpochDay)}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        OutlinedButton(
+                                            onClick = { selectedDueEpochDay -= 1L },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(30.dp)
+                                        ) {
+                                            Text("-1 дн.", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                        OutlinedButton(
+                                            onClick = { selectedDueEpochDay += 1L },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(30.dp)
+                                        ) {
+                                            Text("+1 дн.", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = selectedDueEpochDay == currentEpochDay,
+                                        onClick = { selectedDueEpochDay = currentEpochDay },
+                                        label = { Text("На сегодня (${ReportDocumentGenerator.formatEpochDay(currentEpochDay)})") }
+                                    )
+                                    FilterChip(
+                                        selected = selectedDueEpochDay == currentEpochDay + 1L,
+                                        onClick = { selectedDueEpochDay = currentEpochDay + 1L },
+                                        label = { Text("На завтра (${ReportDocumentGenerator.formatEpochDay(currentEpochDay + 1L)})") }
+                                    )
+                                    if (initialDueDateEpochDay != currentEpochDay && initialDueDateEpochDay != currentEpochDay + 1L) {
+                                        FilterChip(
+                                            selected = selectedDueEpochDay == initialDueDateEpochDay,
+                                            onClick = { selectedDueEpochDay = initialDueDateEpochDay },
+                                            label = { Text("Выбранная: ${ReportDocumentGenerator.formatEpochDay(initialDueDateEpochDay)}") }
+                                        )
+                                    }
+                                }
+                            }
                         }
 
                         Row(
@@ -2111,14 +2161,14 @@ fun CreateTaskDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         OutlinedButton(
                             onClick = onDismiss,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(44.dp)
+                                .height(46.dp)
                         ) {
                             Text("Отмена")
                         }
@@ -2126,7 +2176,7 @@ fun CreateTaskDialog(
                             onClick = saveTaskAction,
                             modifier = Modifier
                                 .weight(1.5f)
-                                .height(44.dp)
+                                .height(46.dp)
                                 .testTag("confirm_create_task_button")
                         ) {
                             Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))

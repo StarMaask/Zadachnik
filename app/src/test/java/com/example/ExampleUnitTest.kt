@@ -4,6 +4,7 @@ import com.example.data.model.CorporateRole
 import com.example.data.model.ExportFormat
 import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.SheetLayout
+import com.example.data.model.SiteMemberDocument
 import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
 import com.example.data.seed.CorporateSeedData
@@ -193,5 +194,27 @@ class ExampleUnitTest {
         assertEquals("ТН-0452", decodedMember.effectivePersonnelNumber)
         assertEquals("Участок №1", decodedMember.effectiveSiteName)
         assertEquals("+79991234567", decodedMember.effectivePhone)
+
+        // Updating employee card fields overwrites previous metadata cleanly
+        val updatedApprovedBy = decodedMember.encodeApprovedByForFirestore(
+            approverName = "Ковалёв Д.С.",
+            explicitPersonnelNumber = "ТН-0999",
+            explicitSiteName = "Участок №2 — ПТО",
+            explicitPhone = "+79005554433"
+        )
+        val editedMember = decodedMember.copy(
+            fullName = "Петров Пётр Сергеевич",
+            position = "Мастер участка",
+            personnelNumber = "ТН-0999",
+            siteName = "Участок №2 — ПТО",
+            phone = "+79005554433",
+            approvedByName = updatedApprovedBy
+        )
+        val corpEmp = editedMember.toCorporateEmployee()
+        assertEquals("Петров Пётр Сергеевич", corpEmp.fullName)
+        assertEquals("Мастер участка", corpEmp.position)
+        assertEquals("ТН-0999", corpEmp.personnelNumber)
+        assertEquals("Участок №2 — ПТО", corpEmp.siteName)
+        assertEquals("+79005554433", corpEmp.phone)
     }
 }

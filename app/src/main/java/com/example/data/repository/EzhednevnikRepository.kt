@@ -64,6 +64,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     // --- REALTIME OBSERVATION FLOWS ---
 
     fun observeUserProfile(userId: String = requireUserId()): Flow<UserProfile?> = flow {
+        emit(null)
+        if (auth.currentUser == null) return@flow
         val uid = if (userId.isNotBlank()) userId else requireUserId()
         val path = "users/$uid"
         emitAll(
@@ -87,6 +89,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     }
 
     fun observeTasks(userId: String = requireUserId()): Flow<List<TaskDocument>> = flow {
+        emit(emptyList())
+        if (auth.currentUser == null) return@flow
         val uid = if (userId.isNotBlank()) userId else requireUserId()
         val path = "tasks"
         emitAll(
@@ -111,6 +115,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     }
 
     fun observeReportTemplates(userId: String = requireUserId()): Flow<List<ReportTemplateDocument>> = flow {
+        emit(emptyList())
+        if (auth.currentUser == null) return@flow
         val uid = if (userId.isNotBlank()) userId else requireUserId()
         val path = "report_templates"
         emitAll(
@@ -131,6 +137,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     }
 
     fun observeGeneratedReports(userId: String = requireUserId()): Flow<List<GeneratedReportDocument>> = flow {
+        emit(emptyList())
+        if (auth.currentUser == null) return@flow
         val uid = if (userId.isNotBlank()) userId else requireUserId()
         val path = "generated_reports"
         emitAll(
@@ -151,6 +159,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     }
 
     fun observeAuditLogs(userId: String = requireUserId()): Flow<List<AuditLogDocument>> = flow {
+        emit(emptyList())
+        if (auth.currentUser == null) return@flow
         val uid = if (userId.isNotBlank()) userId else requireUserId()
         val path = "audit_logs"
         emitAll(
@@ -171,7 +181,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     }
 
     fun observeSiteMembers(): Flow<List<SiteMemberDocument>> = flow {
+        emit(emptyList())
         val uid = auth.currentUser?.uid ?: ""
+        if (uid.isBlank()) return@flow
         val path = "site_members"
         emitAll(
             db.collection(path)
@@ -352,6 +364,23 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             }
 
             val docRef = db.collection("site_members").document(safeMemberId)
+            val existingByIdSnap = try {
+                docRef.get().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (existingByIdSnap != null && existingByIdSnap.exists()) {
+                val existingObj = existingByIdSnap.toObject(
+                    SiteMemberDocument::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                )
+                if (existingObj != null) {
+                    return@runCatching existingObj
+                }
+            }
+
             val payload = mutableMapOf<String, Any>(
                 "memberId" to safeMemberId,
                 "email" to normalizedEmail.take(160),
@@ -405,6 +434,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val newPosition = customPosition?.takeIf { it.isNotBlank() }
             ?: targetMember.position.ifBlank { assignedRole.titleRu }
 
+        val encodedApprovedBy = targetMember.encodeApprovedByForFirestore(actor.fullName)
         val updatedMember = targetMember.copy(
             id = safeId,
             memberId = safeId,
@@ -413,7 +443,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             groupId = assignedGroup.id,
             groupName = assignedGroup.name,
             position = newPosition,
-            approvedByName = actor.fullName
+            approvedByName = encodedApprovedBy
         )
 
         val currentUid = auth.currentUser?.uid
@@ -434,7 +464,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                         "groupId" to assignedGroup.id.take(64),
                         "groupName" to assignedGroup.name.take(120),
                         "position" to newPosition.take(120),
-                        "approvedByName" to actor.fullName.take(120),
+                        "approvedByName" to encodedApprovedBy,
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 ).await()
@@ -449,7 +479,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                         "approvalStatus" to MemberApprovalStatus.APPROVED.code,
                         "groupId" to assignedGroup.id.take(64),
                         "groupName" to assignedGroup.name.take(120),
-                        "approvedByName" to actor.fullName.take(120),
+                        "approvedByName" to encodedApprovedBy,
                         "createdAt" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -546,27 +576,55 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             siteName = siteName.trim().ifBlank { actor.siteName },
             phone = phone.trim()
         )
-        val encodedApprovedBy = baseMember.encodeApprovedByForFirestore(actor.fullName)
+        val encodedApprovedBy = baseMember.encodeApprovedByForFirestore(
+            approverName = actor.fullName,
+            explicitPersonnelNumber = personnelNumber.trim(),
+            explicitSiteName = siteName.trim().ifBlank { actor.siteName },
+            explicitPhone = phone.trim()
+        )
         val newMember = baseMember.copy(approvedByName = encodedApprovedBy)
 
         val currentUid = auth.currentUser?.uid
         if (currentUid != null) {
             val docRef = db.collection("site_members").document(safeId)
-            docRef.set(
-                mapOf(
-                    "memberId" to safeId,
-                    "email" to normalizedEmail.take(160),
-                    "fullName" to newMember.fullName.take(120),
-                    "position" to resolvedPosition.take(120),
-                    "role" to assignedRole.code,
-                    "approvalStatus" to MemberApprovalStatus.APPROVED.code,
-                    "groupId" to assignedGroup.id.take(64),
-                    "groupName" to assignedGroup.name.take(120),
-                    "approvedByName" to encodedApprovedBy,
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
+            val snap = try {
+                docRef.get().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (snap != null && snap.exists()) {
+                docRef.update(
+                    mapOf(
+                        "email" to normalizedEmail.take(160),
+                        "fullName" to newMember.fullName.take(120),
+                        "position" to resolvedPosition.take(120),
+                        "role" to assignedRole.code,
+                        "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                        "groupId" to assignedGroup.id.take(64),
+                        "groupName" to assignedGroup.name.take(120),
+                        "approvedByName" to encodedApprovedBy,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                docRef.set(
+                    mapOf(
+                        "memberId" to safeId,
+                        "email" to normalizedEmail.take(160),
+                        "fullName" to newMember.fullName.take(120),
+                        "position" to resolvedPosition.take(120),
+                        "role" to assignedRole.code,
+                        "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                        "groupId" to assignedGroup.id.take(64),
+                        "groupName" to assignedGroup.name.take(120),
+                        "approvedByName" to encodedApprovedBy,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
 
             appendAuditLog(
                 uid = currentUid,

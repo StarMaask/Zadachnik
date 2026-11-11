@@ -819,17 +819,22 @@ data class SiteMemberDocument(
     val effectivePhone: String
         get() = phone.ifBlank { extractMetaValue("tel") }
 
-    fun encodeApprovedByForFirestore(approverName: String = cleanApprovedByName.ifBlank { "Руководитель" }): String {
-        val base = approverName.replace("|", "/").take(35)
-        val tabPart = effectivePersonnelNumber.replace("|", "/").take(20)
-        val sitePart = effectiveSiteName.replace("|", "/").take(35)
-        val telPart = effectivePhone.replace("|", "/").take(18)
+    fun encodeApprovedByForFirestore(
+        approverName: String = cleanApprovedByName.ifBlank { "Руководитель" },
+        explicitPersonnelNumber: String? = null,
+        explicitSiteName: String? = null,
+        explicitPhone: String? = null
+    ): String {
+        val base = approverName.substringBefore("||").replace("|", "/").trim().take(28)
+        val tabPart = (explicitPersonnelNumber ?: effectivePersonnelNumber).replace("|", "/").trim().take(16)
+        val sitePart = (explicitSiteName ?: effectiveSiteName).replace("|", "/").trim().take(28)
+        val telPart = (explicitPhone ?: effectivePhone).replace("|", "/").trim().take(16)
         return buildString {
-            append(base)
+            append(base.ifBlank { "Руководитель" })
             if (tabPart.isNotBlank()) append("||tab:$tabPart")
             if (sitePart.isNotBlank()) append("||site:$sitePart")
             if (telPart.isNotBlank()) append("||tel:$telPart")
-        }.take(120)
+        }.take(100)
     }
 
     fun toCorporateEmployee(defaultSiteName: String = "Участок №1"): CorporateEmployee {

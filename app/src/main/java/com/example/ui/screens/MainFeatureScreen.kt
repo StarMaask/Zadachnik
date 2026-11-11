@@ -100,6 +100,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.R
+import com.example.data.model.AuditLogDocument
 import com.example.data.model.CorporateEmployee
 import com.example.data.model.CorporateRole
 import com.example.data.model.ReportTemplateDocument
@@ -114,9 +115,18 @@ import com.example.ui.auth.CorporateLoginSession
 import com.example.ui.auth.PendingRoleApprovalScreen
 import com.example.ui.auth.signOut
 import com.example.ui.components.CreateTaskDialog
+import com.example.ui.components.DirectorExecutiveDashboard
+import com.example.ui.components.ItrFilterPillsRow
+import com.example.ui.components.ItrHorizontalDateStrip
+import com.example.ui.components.ItrPersonaTaskCard
+import com.example.ui.components.ItrQuickFilter
+import com.example.ui.components.PersonaModeSwitcherBar
+import com.example.ui.components.PersonaUiMode
 import com.example.ui.components.TaskDetailDialog
 import com.example.ui.components.TaskItemCard
 import com.example.ui.components.ThemeSettingsDialog
+import com.example.ui.components.WorkerPersonaTaskCard
+import com.example.ui.components.WorkerTodayHeaderCard
 import com.example.ui.theme.LocalAppThemeTokens
 import com.example.ui.viewmodel.EzhednevnikViewModel
 import com.example.ui.viewmodel.TaskFilterTab
@@ -507,10 +517,13 @@ fun MainFeatureScreen(
 
                     when (currentTab) {
                         MainNavDestination.TODAY -> {
+                            val logs = (auditLogsState as? UiState.Success)?.data ?: emptyList()
                             TodayTasksContent(
                                 activeEmployee = activeEmployee,
                                 tasksState = tasksState,
                                 visibleTasks = roleVisibleTasks,
+                                activeStaffCount = availableEmployees.size.coerceAtLeast(1),
+                                auditLogs = logs,
                                 pendingMembersCount = pendingMembersCount,
                                 selectedFilter = selectedFilter,
                                 showSearchBar = showSearchBar,
@@ -527,6 +540,9 @@ fun MainFeatureScreen(
                                 },
                                 onOpenReportingTab = { currentTab = MainNavDestination.REPORTING },
                                 onTaskClick = { selectedTaskId = it.id },
+                                onQuickCompleteTask = viewModel::quickCompleteTaskFromCard,
+                                onApproveTask = { viewModel.approveReport(it, "Принято руководителем") },
+                                onRejectTask = { viewModel.rejectReport(it, "Возвращено на доработку руководителем") },
                                 onDeleteTask = viewModel::deleteTask,
                                 onToggleSubtask = viewModel::toggleSubtask
                             )
@@ -658,6 +674,7 @@ fun MainFeatureScreen(
         TaskDetailDialog(
             task = task,
             activeEmployee = activeEmployee,
+            availableEmployees = availableEmployees,
             onDismiss = { selectedTaskId = null },
             onAddPhoto = { uri, gps, cmt -> viewModel.addPhotoToTask(task, uri, gps, cmt) },
             onDeletePhoto = { photoId -> viewModel.deletePhotoFromTask(task, photoId) },
@@ -667,6 +684,9 @@ fun MainFeatureScreen(
                 viewModel.updateSubtaskDetails(task, subId, tVol, cVol, unit)
             },
             onUpdateTaskVolume = { vol -> viewModel.updateTaskVolumeProgress(task, vol) },
+            onUpdateAssignee = { empId, customName ->
+                viewModel.updateTaskAssignee(task, empId, customName)
+            },
             onAddSubtask = { title, vol, unit -> viewModel.addSubtaskToTask(task, title, vol, unit) },
             onDeleteSubtask = { subId -> viewModel.deleteSubtaskFromTask(task, subId) },
             onAddComment = { txt, mention -> viewModel.addComment(task, txt, mention) },
@@ -694,6 +714,8 @@ private fun TodayTasksContent(
     activeEmployee: CorporateEmployee,
     tasksState: UiState<List<TaskDocument>>,
     visibleTasks: List<TaskDocument>,
+    activeStaffCount: Int,
+    auditLogs: List<AuditLogDocument>,
     pendingMembersCount: Int,
     selectedFilter: TaskFilterTab,
     showSearchBar: Boolean,
@@ -707,11 +729,23 @@ private fun TodayTasksContent(
     onOpenCreateDialogForDate: (Long) -> Unit,
     onOpenReportingTab: () -> Unit,
     onTaskClick: (TaskDocument) -> Unit,
+    onQuickCompleteTask: (TaskDocument) -> Unit,
+    onApproveTask: (TaskDocument) -> Unit,
+    onRejectTask: (TaskDocument) -> Unit,
     onDeleteTask: (TaskDocument) -> Unit,
     onToggleSubtask: (TaskDocument, String) -> Unit
 ) {
+    val tokens = LocalAppThemeTokens.current
+    var selectedPersonaMode by remember(activeEmployee.role) {
+        mutableStateOf(PersonaUiMode.defaultForRole(activeEmployee.role))
+    }
+    var selectedItrFilter by remember { mutableStateOf(ItrQuickFilter.ALL) }
+    var showFullMonthCalendarInItr by remember { mutableStateOf(false) }
+
     val filteredTasks = remember(
         visibleTasks,
+        selectedPersonaMode,
+        selectedItrFilter,
         selectedFilter,
         searchQuery,
         currentEpochDay,
@@ -723,42 +757,75 @@ private fun TodayTasksContent(
                 task.assigneeName.contains(searchQuery, ignoreCase = true) ||
                 task.description.contains(searchQuery, ignoreCase = true)
 
-            val matchesTab = when (selectedFilter) {
-                TaskFilterTab.TODAY -> task.dueDateEpochDay <= currentEpochDay && task.taskStatus != TaskStatus.ARCHIVED
-                TaskFilterTab.TOMORROW -> task.dueDateEpochDay > currentEpochDay && task.taskStatus != TaskStatus.ARCHIVED
-                TaskFilterTab.CALENDAR_DATE -> task.dueDateEpochDay == selectedCalendarEpochDay && task.taskStatus != TaskStatus.ARCHIVED
-                TaskFilterTab.ON_REVIEW -> task.taskStatus == TaskStatus.ON_REVIEW
-                TaskFilterTab.OVERDUE -> task.taskStatus == TaskStatus.OVERDUE || task.taskStatus == TaskStatus.REJECTED || task.carryoverCount > 0L
-                TaskFilterTab.APPROVED -> task.taskStatus == TaskStatus.APPROVED
-                TaskFilterTab.RECURRING -> task.recurrenceRule != "NONE"
-                TaskFilterTab.ARCHIVE -> task.taskStatus == TaskStatus.ARCHIVED
-                TaskFilterTab.ALL -> true
+            val matchesModeAndFilter = when (selectedPersonaMode) {
+                PersonaUiMode.WORKER -> {
+                    task.taskStatus != TaskStatus.ARCHIVED && task.dueDateEpochDay <= currentEpochDay + 1L
+                }
+                PersonaUiMode.ITR -> {
+                    val matchesDateOrAll = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                        task.dueDateEpochDay == selectedCalendarEpochDay
+                    } else {
+                        true
+                    }
+                    val matchesItrPill = when (selectedItrFilter) {
+                        ItrQuickFilter.IN_WORK -> {
+                            task.taskStatus == TaskStatus.NEW || task.taskStatus == TaskStatus.IN_PROGRESS
+                        }
+                        ItrQuickFilter.ON_REVIEW -> {
+                            task.taskStatus == TaskStatus.ON_REVIEW
+                        }
+                        ItrQuickFilter.PROBLEMS -> {
+                            task.taskStatus == TaskStatus.OVERDUE ||
+                                task.taskStatus == TaskStatus.REJECTED ||
+                                task.carryoverCount > 0L
+                        }
+                        ItrQuickFilter.ALL -> task.taskStatus != TaskStatus.ARCHIVED
+                    }
+                    matchesDateOrAll && matchesItrPill
+                }
+                PersonaUiMode.DIRECTOR -> true
             }
-            matchesQuery && matchesTab
+            matchesQuery && matchesModeAndFilter
         }
+    }
+
+    val itrInWorkCount = remember(visibleTasks) {
+        visibleTasks.count { it.taskStatus == TaskStatus.NEW || it.taskStatus == TaskStatus.IN_PROGRESS }
+    }
+    val itrOnReviewCount = remember(visibleTasks) {
+        visibleTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
+    }
+    val itrProblemsCount = remember(visibleTasks) {
+        visibleTasks.count {
+            it.taskStatus == TaskStatus.OVERDUE ||
+                it.taskStatus == TaskStatus.REJECTED ||
+                it.carryoverCount > 0L
+        }
+    }
+    val itrAllActiveCount = remember(visibleTasks) {
+        visibleTasks.count { it.taskStatus != TaskStatus.ARCHIVED }
     }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .testTag("today_tasks_list"),
-        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 96.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 112.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // Компактное уведомление для Администратора / Руководителя при наличии новых заявок
         if (activeEmployee.role.isAdminOrHead && pendingMembersCount > 0) {
             item {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     color = Color(0xFFFEF3C7),
-                    border = BorderStroke(1.dp, Color(0xFFF59E0B)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { onOpenRoleAssignments() }
                         .testTag("head_pending_roles_banner")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -791,13 +858,26 @@ private fun TodayTasksContent(
             }
         }
 
-        // Collapsible Search Bar
+        // Переключатель 3 ролевых интерфейсов: Рабочий | ИТР (Прораб) | Руководитель
+        item {
+            PersonaModeSwitcherBar(
+                selectedMode = selectedPersonaMode,
+                onSelectMode = { mode ->
+                    selectedPersonaMode = mode
+                    if (mode == PersonaUiMode.ITR && selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                        onSelectFilter(TaskFilterTab.ALL)
+                    }
+                }
+            )
+        }
+
+        // Поиск (при необходимости)
         if (showSearchBar || searchQuery.isNotBlank()) {
             item {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = onSearchChange,
-                    placeholder = { Text("Поиск по названию задачи или исполнителю...") },
+                    placeholder = { Text("Поиск по задаче, участку или исполнителю...") },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     trailingIcon = {
                         if (searchQuery.isNotBlank()) {
@@ -807,7 +887,7 @@ private fun TodayTasksContent(
                         }
                     },
                     singleLine = true,
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("task_search_input")
@@ -815,156 +895,211 @@ private fun TodayTasksContent(
             }
         }
 
-        // Интерактивный Календарь задач и планов по датам
-        item {
-            CorporateCalendarSection(
-                currentEpochDay = currentEpochDay,
-                selectedCalendarEpochDay = selectedCalendarEpochDay,
-                isCalendarFilterActive = selectedFilter == TaskFilterTab.CALENDAR_DATE,
-                allVisibleTasks = visibleTasks,
-                onSelectDate = onSelectCalendarDate,
-                onCreateTaskForDate = onOpenCreateDialogForDate,
-                onOpenReportingTab = onOpenReportingTab
-            )
-        }
-
-        // Compact Filter Tabs Row + Date Summary
-        item {
-            val activeDateLabel = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
-                "Выбрана дата: ${ReportDocumentGenerator.formatEpochDay(selectedCalendarEpochDay)}"
-            } else {
-                "Сегодня: ${ReportDocumentGenerator.formatEpochDay(currentEpochDay)}"
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = activeDateLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "Показано: ${filteredTasks.size} из ${visibleTasks.size}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                listOf(
-                    TaskFilterTab.TODAY,
-                    TaskFilterTab.TOMORROW,
-                    TaskFilterTab.CALENDAR_DATE,
-                    TaskFilterTab.ON_REVIEW,
-                    TaskFilterTab.APPROVED,
-                    TaskFilterTab.ALL
-                ).forEach { tab ->
-                    val chipTitle = if (tab == TaskFilterTab.CALENDAR_DATE) {
-                        "Дата: ${ReportDocumentGenerator.formatEpochDay(selectedCalendarEpochDay).take(5)}"
-                    } else {
-                        tab.titleRu
-                    }
-                    FilterChip(
-                        selected = selectedFilter == tab,
-                        onClick = { onSelectFilter(tab) },
-                        label = { Text(chipTitle) },
-                        modifier = Modifier.testTag("filter_tab_${tab.name}")
+        when (selectedPersonaMode) {
+            // =========================================================================
+            // 1. ИНТЕРФЕЙС РАБОЧЕГО (Монтажник)
+            // =========================================================================
+            PersonaUiMode.WORKER -> {
+                val doneCount = filteredTasks.count {
+                    it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ON_REVIEW
+                }
+                item {
+                    WorkerTodayHeaderCard(
+                        currentEpochDay = currentEpochDay,
+                        totalTasksToday = filteredTasks.size,
+                        completedTasksToday = doneCount,
+                        onCreateTaskClick = { onOpenCreateDialogForDate(currentEpochDay) }
                     )
                 }
-            }
-        }
 
-        when (tasksState) {
-            is UiState.Loading -> {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(32.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator()
-                    }
-                }
-            }
-            is UiState.Error -> {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = tasksState.message,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(16.dp)
-                        )
-                    }
-                }
-            }
-            is UiState.Success -> {
                 if (filteredTasks.isEmpty()) {
                     item {
-                        val targetDayForNewTask = when (selectedFilter) {
-                            TaskFilterTab.CALENDAR_DATE -> selectedCalendarEpochDay
-                            TaskFilterTab.TOMORROW -> currentEpochDay + 1L
-                            else -> currentEpochDay
-                        }
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
-                                        "На ${ReportDocumentGenerator.formatEpochDay(selectedCalendarEpochDay)} задач и планов пока нет"
-                                    } else {
-                                        "Список задач пуст"
-                                    },
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Нажмите кнопку ниже, чтобы поставить задачу или запланировать объём работ на ${ReportDocumentGenerator.formatEpochDay(targetDayForNewTask)}.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Button(onClick = { onOpenCreateDialogForDate(targetDayForNewTask) }) {
-                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Создать задачу на ${ReportDocumentGenerator.formatEpochDay(targetDayForNewTask)}")
-                                }
-                            }
-                        }
+                        EmptyTasksCleanCard(
+                            targetEpochDay = currentEpochDay,
+                            onCreateClick = { onOpenCreateDialogForDate(currentEpochDay) }
+                        )
                     }
                 } else {
-                    items(filteredTasks, key = { it.id }) { task ->
-                        TaskItemCard(
+                    items(filteredTasks, key = { "worker_${it.id}" }) { task ->
+                        WorkerPersonaTaskCard(
                             task = task,
-                            onClick = { onTaskClick(task) },
-                            onDelete = { onDeleteTask(task) },
+                            onOpenDetail = { onTaskClick(task) },
+                            onQuickComplete = { onQuickCompleteTask(task) },
                             onToggleSubtask = { subId -> onToggleSubtask(task, subId) }
                         )
                     }
                 }
+            }
+
+            // =========================================================================
+            // 2. ИНТЕРФЕЙС ИТР (Прораб, Мастер)
+            // =========================================================================
+            PersonaUiMode.ITR -> {
+                item {
+                    ItrHorizontalDateStrip(
+                        currentEpochDay = currentEpochDay,
+                        selectedEpochDay = selectedCalendarEpochDay,
+                        allVisibleTasks = visibleTasks,
+                        onSelectDate = { day ->
+                            if (selectedFilter == TaskFilterTab.CALENDAR_DATE && selectedCalendarEpochDay == day) {
+                                onSelectFilter(TaskFilterTab.ALL)
+                            } else {
+                                onSelectCalendarDate(day)
+                            }
+                        },
+                        onCreateTaskForDate = onOpenCreateDialogForDate,
+                        onToggleFullCalendar = { showFullMonthCalendarInItr = !showFullMonthCalendarInItr },
+                        isFullCalendarExpanded = showFullMonthCalendarInItr
+                    )
+                }
+
+                if (showFullMonthCalendarInItr) {
+                    item {
+                        CorporateCalendarSection(
+                            currentEpochDay = currentEpochDay,
+                            selectedCalendarEpochDay = selectedCalendarEpochDay,
+                            isCalendarFilterActive = selectedFilter == TaskFilterTab.CALENDAR_DATE,
+                            allVisibleTasks = visibleTasks,
+                            onSelectDate = onSelectCalendarDate,
+                            onCreateTaskForDate = onOpenCreateDialogForDate,
+                            onOpenReportingTab = onOpenReportingTab
+                        )
+                    }
+                }
+
+                item {
+                    ItrFilterPillsRow(
+                        selectedItrFilter = selectedItrFilter,
+                        inWorkCount = itrInWorkCount,
+                        onReviewCount = itrOnReviewCount,
+                        problemsCount = itrProblemsCount,
+                        allCount = itrAllActiveCount,
+                        onSelectFilter = { pill -> selectedItrFilter = pill }
+                    )
+                }
+
+                when (tasksState) {
+                    is UiState.Loading -> {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator()
+                            }
+                        }
+                    }
+                    is UiState.Error -> {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = tasksState.message,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(16.dp)
+                                )
+                            }
+                        }
+                    }
+                    is UiState.Success -> {
+                        if (filteredTasks.isEmpty()) {
+                            item {
+                                val targetDayForNewTask = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                                    selectedCalendarEpochDay
+                                } else {
+                                    currentEpochDay
+                                }
+                                EmptyTasksCleanCard(
+                                    targetEpochDay = targetDayForNewTask,
+                                    onCreateClick = { onOpenCreateDialogForDate(targetDayForNewTask) }
+                                )
+                            }
+                        } else {
+                            items(filteredTasks, key = { "itr_${it.id}" }) { task ->
+                                ItrPersonaTaskCard(
+                                    task = task,
+                                    onClick = { onTaskClick(task) },
+                                    onDelete = { onDeleteTask(task) },
+                                    onToggleSubtask = { subId -> onToggleSubtask(task, subId) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // =========================================================================
+            // 3. ИНТЕРФЕЙС РУКОВОДИТЕЛЯ (Директор) — Executive Dashboard
+            // =========================================================================
+            PersonaUiMode.DIRECTOR -> {
+                item {
+                    DirectorExecutiveDashboard(
+                        allTasks = visibleTasks,
+                        activeStaffCount = activeStaffCount,
+                        auditLogs = auditLogs,
+                        onApproveTask = onApproveTask,
+                        onRejectTask = onRejectTask,
+                        onOpenTaskDetail = onTaskClick
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyTasksCleanCard(
+    targetEpochDay: Long,
+    onCreateClick: () -> Unit
+) {
+    val tokens = LocalAppThemeTokens.current
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = tokens.cardShadowElevationDp.dp,
+        border = if (tokens.cardBorderWidthDp > 0f) {
+            BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
+        } else {
+            null
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Список задач пуст",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Поставьте задачу или запланируйте объём работ на ${ReportDocumentGenerator.formatEpochDay(targetEpochDay)}.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(14.dp))
+            Button(
+                onClick = onCreateClick,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "+ Задача на ${ReportDocumentGenerator.formatEpochDay(targetEpochDay)}",
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }

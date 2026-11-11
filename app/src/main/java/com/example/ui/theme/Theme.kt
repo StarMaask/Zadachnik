@@ -23,7 +23,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 4 премиальные темы оформления строительного ежедневника (в стиле Linear, Notion, Stripe).
+ * 3 премиальные темы оформления строительного ежедневника (в стиле Linear, Notion, Apple)
+ * + переключатель «Системная тема».
  */
 enum class AppThemeMode(
     val code: String,
@@ -44,8 +45,8 @@ enum class AppThemeMode(
         code = "CLASSIC_LIGHT",
         titleEn = "Classic Light",
         titleRu = "Чистый свет",
-        badgeLabel = "Корпоративный B2B",
-        vibeDescription = "Воздушный светлый интерфейс (#F8F9FA) с чисто белыми карточками, мягкими тенями без жёстких синих рамок и графитовым текстом.",
+        badgeLabel = "Linear • Без рамок",
+        vibeDescription = "Светло-серый фон (#F5F7FA), чисто белые карточки (#FFFFFF) с мягкими тенями без жёстких обводок, графитовый текст и спокойный синий акцент.",
         isDarkPalette = false,
         previewBgColor = ClassicLightBackground,
         previewCardColor = ClassicLightSurface,
@@ -53,14 +54,14 @@ enum class AppThemeMode(
         previewTextSecondary = ClassicLightTextSecondary,
         previewAccentColor = ClassicLightAccentBlue,
         previewDoneColor = ClassicLightStatusDone,
-        previewBorderColor = ClassicLightOutlineSubtle
+        previewBorderColor = Color.Transparent
     ),
     OBSIDIAN_DARK(
         code = "OBSIDIAN_DARK",
         titleEn = "Obsidian Dark",
         titleRu = "Глубокий космос",
         badgeLabel = "Pro Dark • Glass",
-        vibeDescription = "Глубокий угольно-синий фон (#0F1115), карточки с эффектом матового стекла (Glassmorphism), неоново-синий и изумрудный акценты.",
+        vibeDescription = "Глубокий тёмный фон (#0B0D12), карточки с эффектом матового стекла (Glassmorphism) и мягкими светящимися акцентами.",
         isDarkPalette = true,
         previewBgColor = ObsidianBackground,
         previewCardColor = ObsidianSurface,
@@ -72,10 +73,10 @@ enum class AppThemeMode(
     ),
     TACTICAL_FIELD(
         code = "TACTICAL_FIELD",
-        titleEn = "Tactical / Field",
-        titleRu = "Полевая (Стройплощадка)",
+        titleEn = "Field Mode",
+        titleRu = "Стройплощадка",
         badgeLabel = "Антиблик • Солнце",
-        vibeDescription = "Специальный высококонтрастный режим для яркого солнца и работы в перчатках: асфальтовый фон, сигнальный янтарный (#F59E0B) и лаймовый (#84CC16) без тяжёлых теней.",
+        vibeDescription = "Высококонтрастный режим для яркого солнца: антибликовый тёмный фон, сигнальные оранжево-жёлтые акценты (#F59E0B) и ярко-зелёный статус «Выполнено».",
         isDarkPalette = true,
         previewBgColor = TacticalBackground,
         previewCardColor = TacticalSurface,
@@ -84,21 +85,6 @@ enum class AppThemeMode(
         previewAccentColor = TacticalAccentAmber,
         previewDoneColor = TacticalStatusLime,
         previewBorderColor = TacticalBorderStrong
-    ),
-    WARM_PAPER(
-        code = "WARM_PAPER",
-        titleEn = "Warm Paper",
-        titleRu = "Инженерная бумага",
-        badgeLabel = "Стиль Notion",
-        vibeDescription = "Тёплый бумажно-каменный фон (#F4F3EF) для длительной работы со сметами, графиками и суточными отчётами без усталости глаз.",
-        isDarkPalette = false,
-        previewBgColor = PaperBackground,
-        previewCardColor = PaperSurface,
-        previewTextPrimary = PaperTextPrimary,
-        previewTextSecondary = PaperTextSecondary,
-        previewAccentColor = PaperAccentIndigo,
-        previewDoneColor = PaperStatusDone,
-        previewBorderColor = PaperOutlineSubtle
     );
 
     companion object {
@@ -111,9 +97,9 @@ enum class AppThemeMode(
 data class AppThemeDesignTokens(
     val mode: AppThemeMode = AppThemeMode.CLASSIC_LIGHT,
     val isDark: Boolean = false,
-    val cardShadowElevationDp: Float = 2.5f,
-    val cardBorderWidthDp: Float = 0.75f,
-    val cardBorderColor: Color = ClassicLightOutlineSubtle,
+    val cardShadowElevationDp: Float = 4f,
+    val cardBorderWidthDp: Float = 0f,
+    val cardBorderColor: Color = Color.Transparent,
     val useGlassmorphism: Boolean = false,
     val useButtonGlow: Boolean = false,
     val isHighContrastField: Boolean = false,
@@ -251,43 +237,19 @@ private val TacticalFieldColorScheme = darkColorScheme(
     onError = Color(0xFF4C0519)
 )
 
-private val WarmPaperColorScheme = lightColorScheme(
-    primary = PaperAccentIndigo,
-    onPrimary = Color.White,
-    primaryContainer = PaperAccentContainer,
-    onPrimaryContainer = PaperOnAccentContainer,
-    secondary = Color(0xFF44403C),
-    onSecondary = Color.White,
-    secondaryContainer = PaperSurfaceVariant,
-    onSecondaryContainer = PaperTextPrimary,
-    tertiary = PaperStatusDone,
-    onTertiary = Color.White,
-    background = PaperBackground,
-    onBackground = PaperTextPrimary,
-    surface = PaperSurface,
-    onSurface = PaperTextPrimary,
-    surfaceVariant = PaperSurfaceVariant,
-    onSurfaceVariant = PaperTextSecondary,
-    outline = Color(0xFFD6D3C9),
-    outlineVariant = PaperOutlineSubtle,
-    error = CrimsonAlert,
-    onError = Color.White
-)
-
 fun colorSchemeForMode(mode: AppThemeMode): ColorScheme = when (mode) {
     AppThemeMode.CLASSIC_LIGHT -> ClassicLightColorScheme
     AppThemeMode.OBSIDIAN_DARK -> ObsidianDarkColorScheme
     AppThemeMode.TACTICAL_FIELD -> TacticalFieldColorScheme
-    AppThemeMode.WARM_PAPER -> WarmPaperColorScheme
 }
 
 fun designTokensForMode(mode: AppThemeMode): AppThemeDesignTokens = when (mode) {
     AppThemeMode.CLASSIC_LIGHT -> AppThemeDesignTokens(
         mode = AppThemeMode.CLASSIC_LIGHT,
         isDark = false,
-        cardShadowElevationDp = 3f,
-        cardBorderWidthDp = 0.6f,
-        cardBorderColor = ClassicLightOutlineSubtle,
+        cardShadowElevationDp = 4f,
+        cardBorderWidthDp = 0f, // Никаких жестких обводок (borders) — разделение за счет фонов и мягких теней
+        cardBorderColor = Color.Transparent,
         useGlassmorphism = false,
         useButtonGlow = false,
         isHighContrastField = false,
@@ -298,8 +260,8 @@ fun designTokensForMode(mode: AppThemeMode): AppThemeDesignTokens = when (mode) 
     AppThemeMode.OBSIDIAN_DARK -> AppThemeDesignTokens(
         mode = AppThemeMode.OBSIDIAN_DARK,
         isDark = true,
-        cardShadowElevationDp = 2f,
-        cardBorderWidthDp = 1f,
+        cardShadowElevationDp = 2.5f,
+        cardBorderWidthDp = 0.8f,
         cardBorderColor = ObsidianGlassBorder,
         useGlassmorphism = true,
         useButtonGlow = true,
@@ -311,33 +273,20 @@ fun designTokensForMode(mode: AppThemeMode): AppThemeDesignTokens = when (mode) 
     AppThemeMode.TACTICAL_FIELD -> AppThemeDesignTokens(
         mode = AppThemeMode.TACTICAL_FIELD,
         isDark = true,
-        cardShadowElevationDp = 0f, // Flat high-contrast rendering without GPU-heavy shadows
-        cardBorderWidthDp = 1.5f,
+        cardShadowElevationDp = 0f,
+        cardBorderWidthDp = 1f,
         cardBorderColor = TacticalBorderStrong,
         useGlassmorphism = false,
         useButtonGlow = false,
         isHighContrastField = true,
         statusDoneColor = TacticalStatusLime,
         statusInProgressColor = TacticalAccentAmber,
-        buttonCornerRadiusDp = 12
-    )
-    AppThemeMode.WARM_PAPER -> AppThemeDesignTokens(
-        mode = AppThemeMode.WARM_PAPER,
-        isDark = false,
-        cardShadowElevationDp = 1.5f,
-        cardBorderWidthDp = 1f,
-        cardBorderColor = PaperOutlineSubtle,
-        useGlassmorphism = false,
-        useButtonGlow = false,
-        isHighContrastField = false,
-        statusDoneColor = PaperStatusDone,
-        statusInProgressColor = Color(0xFFD97706),
         buttonCornerRadiusDp = 14
     )
 }
 
 val AppShapes = Shapes(
-    small = RoundedCornerShape(10.dp),
+    small = RoundedCornerShape(12.dp),
     medium = RoundedCornerShape(14.dp),
     large = RoundedCornerShape(16.dp)
 )

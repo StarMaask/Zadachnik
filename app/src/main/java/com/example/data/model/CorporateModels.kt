@@ -219,8 +219,16 @@ enum class ReportType(
 }
 
 enum class SheetLayout(val code: String, val titleRu: String, val shortRu: String) {
-    SINGLE_SHEET("SINGLE_SHEET", "На одном листе (План + Отчёт вместе)", "Единый лист"),
-    SPLIT_SHEETS("SPLIT_SHEETS", "На раздельных листах (Лист 1: План / Лист 2: Отчёт)", "Раздельные листы");
+    SINGLE_SHEET(
+        "SINGLE_SHEET",
+        "На одном листе (Раздел 1: Отчёт за день + Раздел 2: План на следующий день)",
+        "На 1 листе (Отчёт + План)"
+    ),
+    SPLIT_SHEETS(
+        "SPLIT_SHEETS",
+        "На раздельных листах (Лист 1: Отчёт за день / Лист 2: План на следующий день)",
+        "На 2 листах (Отчёт / План)"
+    );
 
     companion object {
         fun fromCode(code: String): SheetLayout =

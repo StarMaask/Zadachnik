@@ -65,11 +65,26 @@ class ExampleUnitTest {
         )
 
         assertEquals(2, preview.sheets.size)
-        assertTrue(preview.sheets[0].sheetTitle.contains("План"))
+        assertTrue(preview.sheets[0].sheetTitle.contains("План", ignoreCase = true))
         assertTrue(
             preview.sheets[1].sheetTitle.contains("Отчет", ignoreCase = true) ||
                 preview.sheets[1].sheetTitle.contains("Отчёт", ignoreCase = true)
         )
+
+        // Single-sheet mode must explicitly contain two separate sections on one sheet:
+        // Section 1 = Daily Fact Report, Section 2 = Next-Day Plan
+        val singleSheetPreview = ReportDocumentGenerator.buildPreview(
+            actor = headActor,
+            template = template,
+            allTasks = tasks,
+            currentEpochDay = today,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            overrideFormat = ExportFormat.PDF
+        )
+        assertEquals(1, singleSheetPreview.sheets.size)
+        assertEquals(2, singleSheetPreview.sheets[0].sections.size)
+        assertTrue(singleSheetPreview.sheets[0].sections[0].bannerTitle.contains("ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ"))
+        assertTrue(singleSheetPreview.sheets[0].sections[1].bannerTitle.contains("ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ"))
     }
 
     @Test

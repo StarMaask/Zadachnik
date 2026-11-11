@@ -56,11 +56,9 @@ import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.ThemePreferencesManager
 
 /**
- * Экран «Настройки -> Оформление (Темы)» в эстетике Linear / Notion / Stripe.
- * Включает:
- * 1. Верхний блок: Переключатель (Switch) «Следовать системной теме» (Вкл/Выкл).
- * 2. Нижний блок: Интерактивные карточки тем с миниатюрой-превью (UI Mockup карточки ежедневника),
- *    названием, описанием и радио-индикатором выбранной темы (кружок с галочкой).
+ * Экран «Настройки -> Оформление (Темы)» в эстетике Linear / Notion / Apple:
+ * - Переключатель «Системная тема»
+ * - 3 ручные премиальные темы: Classic Light, Obsidian Dark, Field Mode (Стройплощадка)
  */
 @Composable
 fun ThemeSettingsDialog(
@@ -88,31 +86,30 @@ fun ThemeSettingsDialog(
                 .testTag("theme_settings_dialog"),
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.background,
-            tonalElevation = 2.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            tonalElevation = 2.dp
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 // Шапка экрана «Настройки -> Оформление (Темы)»
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 1.dp
+                    shadowElevation = 2.dp
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                            .padding(horizontal = 18.dp, vertical = 14.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.weight(1f)
                         ) {
                             Surface(
-                                shape = RoundedCornerShape(10.dp),
+                                shape = RoundedCornerShape(12.dp),
                                 color = MaterialTheme.colorScheme.primaryContainer,
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier.size(38.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
@@ -125,13 +122,13 @@ fun ThemeSettingsDialog(
                             }
                             Column {
                                 Text(
-                                    text = "Оформление (Темы)",
+                                    text = "Оформление и темы",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Настройки • Визуальный стиль и читаемость",
+                                    text = "Дизайн-система • Без рамок и визуального шума",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -150,21 +147,18 @@ fun ThemeSettingsDialog(
                     }
                 }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // ВЕРХНИЙ БЛОК: Переключатель «Следовать системной теме»
+                    // ВЕРХНИЙ БЛОК: Переключатель «Системная тема»
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = if (activeEffectiveTheme == AppThemeMode.CLASSIC_LIGHT) 2.dp else 0.dp,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        shadowElevation = if (activeEffectiveTheme == AppThemeMode.CLASSIC_LIGHT) 3.dp else 0.dp,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -176,7 +170,7 @@ fun ThemeSettingsDialog(
                                         followSystem = !themeSettings.followSystemTheme
                                     )
                                 }
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -186,9 +180,9 @@ fun ThemeSettingsDialog(
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Surface(
-                                    shape = RoundedCornerShape(10.dp),
+                                    shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant,
-                                    modifier = Modifier.size(38.dp)
+                                    modifier = Modifier.size(40.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Icon(
@@ -201,7 +195,7 @@ fun ThemeSettingsDialog(
                                 }
                                 Column(modifier = Modifier.padding(end = 8.dp)) {
                                     Text(
-                                        text = "Следовать системной теме",
+                                        text = "Системная тема",
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.SemiBold,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -210,7 +204,7 @@ fun ThemeSettingsDialog(
                                         text = if (themeSettings.followSystemTheme) {
                                             "Включено • Автоматически (Classic Light / Obsidian Dark)"
                                         } else {
-                                            "Выключено • Ручной выбор темы (${themeSettings.selectedTheme.titleRu})"
+                                            "Выключено • Ручной выбор (${themeSettings.selectedTheme.titleEn})"
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -227,32 +221,22 @@ fun ThemeSettingsDialog(
                         }
                     }
 
-                    // Заголовок секции ручного выбора тем
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Палитры оформления",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            Text(
-                                text = if (themeSettings.followSystemTheme) {
-                                    "Нажмите на любую карточку ниже, чтобы перейти на ручной режим"
-                                } else {
-                                    "Выберите оптимальную тему для офиса, ночи или стройплощадки"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    // Заголовок секции 3 ручных тем
+                    Column {
+                        Text(
+                            text = "3 ручные темы оформления",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            text = "Выберите тему для офиса, вечерней смены или яркого солнца на стройплощадке",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
-                    // НИЖНИЙ БЛОК: Карточки тем с миниатюрой-превью (UI Mockup)
+                    // Карточки 3 тем с миниатюрой-превью (UI Mockup)
                     AppThemeMode.entries.forEach { mode ->
                         val isSelectedManual = !themeSettings.followSystemTheme && themeSettings.selectedTheme == mode
                         val isEffectiveActive = activeEffectiveTheme == mode
@@ -269,17 +253,17 @@ fun ThemeSettingsDialog(
                     }
                 }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
                 // Нижняя панель с кнопкой «Готово»
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 1.dp
+                    shadowElevation = 2.dp
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(horizontal = 18.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -313,10 +297,6 @@ fun ThemeSettingsDialog(
     }
 }
 
-/**
- * Карточка выбора конкретной темы с миниатюрой-превью (UI Mockup),
- * названием темы и радио-индикатором выбранного состояния.
- */
 @Composable
 private fun ThemePreviewOptionCard(
     mode: AppThemeMode,
@@ -329,13 +309,13 @@ private fun ThemePreviewOptionCard(
     val borderStroke = if (activeHighlight) {
         BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
     } else {
-        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        null
     }
 
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
-        shadowElevation = if (mode == AppThemeMode.CLASSIC_LIGHT && activeHighlight) 3.dp else 0.dp,
+        shadowElevation = if (activeHighlight) 4.dp else 2.dp,
         border = borderStroke,
         modifier = Modifier
             .fillMaxWidth()
@@ -344,10 +324,9 @@ private fun ThemePreviewOptionCard(
             .testTag("theme_card_${mode.code}")
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
+            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. Верхняя строка: Название темы + Бейдж + Радио-кнопка с галочкой
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -359,7 +338,7 @@ private fun ThemePreviewOptionCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "${mode.titleEn} • ${mode.titleRu}",
+                            text = "${mode.titleEn} (${mode.titleRu})",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -377,7 +356,7 @@ private fun ThemePreviewOptionCard(
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(3.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = mode.vibeDescription,
                         style = MaterialTheme.typography.bodySmall,
@@ -389,7 +368,6 @@ private fun ThemePreviewOptionCard(
 
                 Spacer(modifier = Modifier.width(10.dp))
 
-                // Радио-индикатор (кружок с галочкой)
                 Box(
                     modifier = Modifier
                         .size(26.dp)
@@ -416,45 +394,31 @@ private fun ThemePreviewOptionCard(
                 }
             }
 
-            // 2. Миниатюра-превью (UI Mockup) карточки строительного ежедневника в цветах темы
             MiniaturePlannerMockup(mode = mode)
         }
     }
 }
 
-/**
- * Миниатюра-превью (UI Mockup): рендерит аутентичный фрагмент экрана ежедневника
- * (фон приложения, карточка задачи с чек-листом, бейдж статуса, прогрессбар объёма и акцентная кнопка)
- * строго в цветовых токенах конкретной темы.
- */
 @Composable
 private fun MiniaturePlannerMockup(mode: AppThemeMode) {
     val isClassicLight = mode == AppThemeMode.CLASSIC_LIGHT
     val isObsidian = mode == AppThemeMode.OBSIDIAN_DARK
     val isTactical = mode == AppThemeMode.TACTICAL_FIELD
 
-    // Контейнер фона темы
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(mode.previewBgColor)
-            .border(
-                width = 1.dp,
-                color = mode.previewBorderColor,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .padding(10.dp)
+            .padding(12.dp)
     ) {
-        // Мини-карточка задачи внутри фона темы
-        val cardShape = RoundedCornerShape(10.dp)
+        val cardShape = RoundedCornerShape(12.dp)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(
                     if (isClassicLight) {
-                        // В Classic Light — мягкая воздушная тень без жестких рамок
-                        Modifier.shadow(elevation = 3.dp, shape = cardShape, clip = false)
+                        Modifier.shadow(elevation = 4.dp, shape = cardShape, clip = false)
                     } else {
                         Modifier
                     }
@@ -462,10 +426,9 @@ private fun MiniaturePlannerMockup(mode: AppThemeMode) {
                 .clip(cardShape)
                 .background(
                     if (isObsidian) {
-                        // В Obsidian Dark — легкий градиент матового стекла (Glassmorphism)
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFF212530),
+                                Color(0xFF1D2330),
                                 mode.previewCardColor
                             )
                         )
@@ -475,19 +438,20 @@ private fun MiniaturePlannerMockup(mode: AppThemeMode) {
                         )
                     }
                 )
-                .border(
-                    width = when {
-                        isClassicLight -> 0.5.dp
-                        isTactical -> 1.5.dp
-                        else -> 1.dp
-                    },
-                    color = mode.previewBorderColor,
-                    shape = cardShape
+                .then(
+                    if (!isClassicLight) {
+                        Modifier.border(
+                            width = if (isTactical) 1.dp else 0.8.dp,
+                            color = mode.previewBorderColor,
+                            shape = cardShape
+                        )
+                    } else {
+                        Modifier
+                    }
                 )
-                .padding(10.dp)
+                .padding(12.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                // Строка заголовка мини-задачи + статус-бейдж
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -504,22 +468,22 @@ private fun MiniaturePlannerMockup(mode: AppThemeMode) {
                                 .background(mode.previewDoneColor)
                         )
                         Text(
-                            text = "Армирование плиты ПМ-1",
+                            text = "Монтаж опалубки перекрытия",
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (isTactical) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            fontWeight = FontWeight.Bold,
                             color = mode.previewTextPrimary
                         )
                     }
 
-                    // Бейдж статуса («Выполнено 100%» / «В работе»)
+                    // Устранение дублей: чистый объём 190 / 450 м² без текстовых процентов
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(5.dp))
+                            .clip(RoundedCornerShape(6.dp))
                             .background(mode.previewDoneColor.copy(alpha = if (isTactical) 0.22f else 0.14f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .padding(horizontal = 7.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "Объём: 150 / 150 м²",
+                            text = "190 / 450 м²",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = mode.previewDoneColor
@@ -527,7 +491,6 @@ private fun MiniaturePlannerMockup(mode: AppThemeMode) {
                     }
                 }
 
-                // Полоса прогресса + мини-кнопка действия
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -535,39 +498,37 @@ private fun MiniaturePlannerMockup(mode: AppThemeMode) {
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Чек-лист: 4/4 п. • Фотоотчёт: 3 шт",
+                            text = "Корпус 2 • Секция Б • 1/2 фото",
                             style = MaterialTheme.typography.labelSmall,
                             color = mode.previewTextSecondary
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        // Мини-индикатор выполнения
+                        Spacer(modifier = Modifier.height(5.dp))
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth(0.85f)
-                                .height(5.dp)
+                                .fillMaxWidth(0.84f)
+                                .height(6.dp)
                                 .clip(RoundedCornerShape(3.dp))
-                                .background(mode.previewTextSecondary.copy(alpha = 0.2f))
+                                .background(mode.previewTextSecondary.copy(alpha = 0.18f))
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .fillMaxWidth(0.76f)
-                                    .height(5.dp)
+                                    .fillMaxWidth(0.42f)
+                                    .height(6.dp)
                                     .clip(RoundedCornerShape(3.dp))
                                     .background(mode.previewAccentColor)
                             )
                         }
                     }
 
-                    // Мини-кнопка действия в акцентном цвете темы
                     val buttonTextColor = if (isTactical) Color(0xFF111312) else Color.White
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .background(mode.previewAccentColor)
-                            .padding(horizontal = 9.dp, vertical = 4.dp)
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
                         Text(
-                            text = "+ Задача",
+                            text = "Выполнено",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = buttonTextColor

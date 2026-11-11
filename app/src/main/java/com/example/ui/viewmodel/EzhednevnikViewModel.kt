@@ -1233,6 +1233,57 @@ class EzhednevnikViewModel(
         }
     }
 
+    fun updateTaskAssignee(task: TaskDocument, assigneeId: String, customAssigneeName: String = "") {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val customFio = customAssigneeName.trim()
+        val resolvedAssignee: CorporateEmployee = if (customFio.isNotBlank()) {
+            val existingByName = availableEmployees.value.firstOrNull {
+                it.fullName.equals(customFio, ignoreCase = true) ||
+                    it.shortName.equals(customFio, ignoreCase = true)
+            }
+            if (existingByName != null) {
+                existingByName
+            } else {
+                val newEmpId = "emp_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+                val newMember = SiteMemberDocument(
+                    id = newEmpId,
+                    memberId = newEmpId,
+                    email = "$newEmpId@site1.ru",
+                    fullName = customFio,
+                    position = "Исполнитель",
+                    role = CorporateRole.WORKER.code,
+                    approvalStatus = MemberApprovalStatus.APPROVED.code,
+                    groupId = CorporateSeedData.workGroups.first().id,
+                    groupName = CorporateSeedData.workGroups.first().name,
+                    approvedByName = actor.fullName,
+                    siteName = _siteName.value
+                )
+                upsertLocalMember(newMember)
+                newMember.toCorporateEmployee(defaultSiteName = _siteName.value)
+            }
+        } else {
+            availableEmployees.value.firstOrNull {
+                it.id == assigneeId || normalizeMemberKey(it.id) == normalizeMemberKey(assigneeId)
+            } ?: return
+        }
+
+        val updatedTask = currentTask.copy(
+            assigneeId = resolvedAssignee.id,
+            assigneeName = resolvedAssignee.fullName,
+            groupId = resolvedAssignee.groupId,
+            groupName = resolvedAssignee.groupName,
+            historyItems = currentTask.historyItems + StatusHistoryEntry(
+                nowText(),
+                actor.shortName,
+                currentTask.status,
+                "Назначен исполнитель: ${resolvedAssignee.fullName}"
+            ).encode()
+        )
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Исполнитель задачи изменён: ${resolvedAssignee.fullName}"
+    }
+
     fun deleteTask(task: TaskDocument) {
         val taskId = task.id
         if (taskId.isBlank()) return
@@ -1726,6 +1777,58 @@ class EzhednevnikViewModel(
 
     fun submitCompletion(task: TaskDocument, note: String) {
         submitWorkerReportWithVolume(task = task, manualCompletedVolume = null, note = note)
+    }
+
+    /**
+     * Быстрая отметка «Выполнено» прямо с карточки задачи на главном экране РАБОЧЕГО без проваливания внутрь.
+     */
+    fun quickCompleteTaskFromCard(task: TaskDocument) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val targetVol = currentTask.effectiveTargetVolume
+        val unitLabel = currentTask.effectiveVolumeUnit.ifBlank { "шт" }
+        val decoded = currentTask.decodedSubtasks()
+        val updatedDecoded = decoded.map { sub ->
+            val subTarget = sub.effectiveTargetVolume
+            sub.copy(
+                targetVolume = subTarget,
+                completedVolume = subTarget,
+                isDone = true,
+                unit = sub.effectiveUnit
+            )
+        }
+        val updatedEncoded = updatedDecoded.map { it.encode() }
+        val nextStatus = if (currentTask.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
+        val logText = if (targetVol > 0.0) {
+            "Отмечено «Выполнено» с карточки: ${SubtaskItem.formatVolumeNumber(targetVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
+        } else {
+            "Отмечено «Выполнено» с карточки"
+        }
+        val updatedTask = currentTask
+            .copy(
+                subtaskItems = updatedEncoded,
+                status = nextStatus.code,
+                rejectionReason = null,
+                historyItems = currentTask.historyItems + StatusHistoryEntry(
+                    nowText(),
+                    actor.shortName,
+                    nextStatus.code,
+                    logText
+                ).encode()
+            )
+            .let {
+                if (targetVol > 0.0) it.withUpdatedVolume(targetVol, targetVol, unitLabel) else it
+            }
+
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Задача «${currentTask.title}» отмечена выполненной (${nextStatus.titleRu})"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateSubtasksList(updatedTask, updatedTask.subtaskItems, updatedTask.tags)
+                repository.submitTaskCompletion(actor, updatedTask, logText)
+            }
+        }
     }
 
     fun approveReport(task: TaskDocument, comment: String) {

@@ -102,6 +102,7 @@ data class CorporateLoginSession(
 
 private const val PREFS_AUTH_NAME = "ezhednevnik_corporate_auth"
 private const val KEY_SAVED_USER_ID = "saved_user_id"
+private const val KEY_SAVED_EMAIL = "saved_email"
 private const val KEY_SAVED_NAME = "saved_name"
 private const val KEY_SAVED_SUBDIVISION = "saved_subdivision"
 private const val KEY_SAVED_SITE = "saved_site"
@@ -109,11 +110,14 @@ private const val KEY_SAVED_POSITION = "saved_position"
 private const val KEY_SAVED_ADMIN_FLAG = "saved_admin_flag"
 
 fun saveCorporateSession(context: Context, session: CorporateLoginSession) {
-    val isAdmin = session.isHeadActivated || SiteMemberDocument.isRootAdminEmail(session.email)
+    val cleanEmail = session.email.trim().lowercase()
+    val canonicalId = SiteMemberDocument.canonicalMemberId(session.userId, cleanEmail)
+    val isAdmin = session.isHeadActivated || SiteMemberDocument.isRootAdminEmail(cleanEmail)
     context.applicationContext
         .getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
         .edit()
-        .putString(KEY_SAVED_USER_ID, session.userId)
+        .putString(KEY_SAVED_USER_ID, canonicalId)
+        .putString(KEY_SAVED_EMAIL, cleanEmail)
         .putString(KEY_SAVED_NAME, session.fullName)
         .putString(KEY_SAVED_SUBDIVISION, session.requestedSubdivision)
         .putString(KEY_SAVED_SITE, session.requestedSiteName)
@@ -124,32 +128,27 @@ fun saveCorporateSession(context: Context, session: CorporateLoginSession) {
 
 fun loadSavedCorporateSession(context: Context): CorporateLoginSession? {
     val prefs = context.applicationContext.getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
+    val savedId = prefs.getString(KEY_SAVED_USER_ID, null) ?: return null
+    val savedEmail = prefs.getString(KEY_SAVED_EMAIL, "")?.trim()?.lowercase().orEmpty()
     val savedSub = prefs.getString(KEY_SAVED_SUBDIVISION, "") ?: ""
     val savedSite = prefs.getString(KEY_SAVED_SITE, "") ?: ""
     val savedPos = prefs.getString(KEY_SAVED_POSITION, "") ?: ""
 
     val firebaseUser = Firebase.auth.currentUser
-    if (firebaseUser != null) {
-        val email = firebaseUser.email.orEmpty()
-        val isAdmin = SiteMemberDocument.isRootAdminEmail(email) || prefs.getBoolean(KEY_SAVED_ADMIN_FLAG, false)
-        val name = firebaseUser.displayName ?: prefs.getString(KEY_SAVED_NAME, null)
-            ?: if (isAdmin) "Администратор" else "Сотрудник участка"
-        return CorporateLoginSession(
-            userId = firebaseUser.uid,
-            email = email,
-            fullName = name,
-            isHeadActivated = isAdmin,
-            requestedSubdivision = savedSub,
-            requestedSiteName = savedSite,
-            requestedPosition = savedPos
-        )
+    val resolvedEmail = savedEmail.ifBlank { firebaseUser?.email?.trim()?.lowercase().orEmpty() }
+    val isAdmin = if (resolvedEmail.isNotBlank()) {
+        SiteMemberDocument.isRootAdminEmail(resolvedEmail)
+    } else {
+        prefs.getBoolean(KEY_SAVED_ADMIN_FLAG, false)
     }
-    val savedId = prefs.getString(KEY_SAVED_USER_ID, null) ?: return null
-    val savedName = prefs.getString(KEY_SAVED_NAME, "Сотрудник участка") ?: "Сотрудник участка"
-    val isAdmin = prefs.getBoolean(KEY_SAVED_ADMIN_FLAG, false)
+    val canonicalId = SiteMemberDocument.canonicalMemberId(savedId, resolvedEmail)
+    val savedName = prefs.getString(KEY_SAVED_NAME, null)
+        ?: firebaseUser?.displayName
+        ?: if (isAdmin) "Администратор" else "Сотрудник участка"
+
     return CorporateLoginSession(
-        userId = savedId,
-        email = "",
+        userId = canonicalId,
+        email = resolvedEmail,
         fullName = savedName,
         isHeadActivated = isAdmin,
         requestedSubdivision = savedSub,
@@ -208,12 +207,13 @@ fun attemptAutoSignIn(
                 val authCredential = GoogleAuthProvider.getCredential(tokenCred.idToken, null)
                 val authResult = Firebase.auth.signInWithCredential(authCredential).await()
                 val user = authResult.user
-                val email = user?.email ?: tokenCred.id
+                val email = (user?.email ?: tokenCred.id).trim().lowercase()
                 val isAdmin = SiteMemberDocument.isRootAdminEmail(email)
                 val fullName = user?.displayName ?: tokenCred.displayName
                     ?: if (isAdmin) "Администратор" else "Сотрудник участка"
+                val canonicalId = SiteMemberDocument.canonicalMemberId(user?.uid ?: "", email)
                 val session = CorporateLoginSession(
-                    userId = user?.uid ?: "usr_${email.hashCode()}",
+                    userId = canonicalId,
                     email = email,
                     fullName = fullName,
                     isHeadActivated = isAdmin
@@ -259,7 +259,7 @@ fun onGoogleSignInClicked(
             val credential = result.credential
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val tokenCred = GoogleIdTokenCredential.createFrom(credential.data)
-                val email = tokenCred.id
+                val email = tokenCred.id.trim().lowercase()
                 val isAdmin = SiteMemberDocument.isRootAdminEmail(email)
                 val displayName = tokenCred.displayName
                     ?: if (isAdmin) "Администратор" else "Сотрудник участка"
@@ -267,10 +267,11 @@ fun onGoogleSignInClicked(
                     val authCredential = GoogleAuthProvider.getCredential(tokenCred.idToken, null)
                     val authResult = Firebase.auth.signInWithCredential(authCredential).await()
                     val fbUser = authResult.user
-                    val resolvedEmail = fbUser?.email ?: email
+                    val resolvedEmail = (fbUser?.email ?: email).trim().lowercase()
                     val resolvedAdmin = SiteMemberDocument.isRootAdminEmail(resolvedEmail)
+                    val canonicalId = SiteMemberDocument.canonicalMemberId(fbUser?.uid ?: "", resolvedEmail)
                     val session = CorporateLoginSession(
-                        userId = fbUser?.uid ?: "usr_${resolvedEmail.replace(Regex("[^a-zA-Z0-9]"), "_")}",
+                        userId = canonicalId,
                         email = resolvedEmail,
                         fullName = fbUser?.displayName ?: displayName,
                         isHeadActivated = resolvedAdmin,
@@ -281,9 +282,9 @@ fun onGoogleSignInClicked(
                     saveCorporateSession(context, session)
                     onAuthSuccess(session)
                 } catch (firebaseEx: Exception) {
-                    val safeId = "usr_${email.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+                    val canonicalId = SiteMemberDocument.canonicalMemberId("", email)
                     val session = CorporateLoginSession(
-                        userId = safeId,
+                        userId = canonicalId,
                         email = email,
                         fullName = displayName,
                         isHeadActivated = isAdmin,
@@ -321,7 +322,6 @@ fun signOut(
             } catch (e: Exception) {
                 Log.w("Auth", "Failed to clear credential state: ${e.message}")
             } finally {
-                Firebase.auth.signOut()
                 onSignOutComplete()
             }
         }

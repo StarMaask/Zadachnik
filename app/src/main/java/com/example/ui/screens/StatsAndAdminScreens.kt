@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -61,6 +62,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -436,9 +438,14 @@ fun AdminAndAuditScreen(
         siteName: String,
         phone: String
     ) -> Unit,
+    onRefreshSiteMembers: (Boolean) -> Unit = {},
     onSwitchPersona: (String) -> Unit,
     onSignOut: () -> Unit
 ) {
+    LaunchedEffect(Unit) {
+        onRefreshSiteMembers(false)
+    }
+
     val pendingMembers = remember(siteMembers) {
         siteMembers.filter { it.isPendingRole && !it.isRejected }
     }
@@ -618,24 +625,53 @@ fun AdminAndAuditScreen(
         }
 
         // SECTION 1: Pending Role Assignment Queue
-        if (pendingMembers.isNotEmpty()) {
+        if (pendingMembers.isNotEmpty() || canManageUsers) {
             item {
-                Text(
-                    text = "Ожидают подтверждения (${pendingMembers.size})",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFD97706)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (pendingMembers.isNotEmpty()) {
+                            "Ожидают подтверждения (${pendingMembers.size})"
+                        } else {
+                            "Заявки на назначение роли (0)"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = if (pendingMembers.isNotEmpty()) {
+                            Color(0xFFD97706)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                    TextButton(
+                        onClick = { onRefreshSiteMembers(true) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.testTag("refresh_pending_members_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Обновить заявки",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Обновить заявки", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
-            items(pendingMembers, key = { it.memberId.ifBlank { it.id } }) { pendingUser ->
-                PendingUserRoleAssignmentCard(
-                    member = pendingUser,
-                    canManageRoles = canManageUsers,
-                    onAssignRole = { role, group, pos ->
-                        onAssignRoleToMember(pendingUser, role, group, pos)
-                    },
-                    onReject = { onRejectMemberAccess(pendingUser) }
-                )
+            if (pendingMembers.isNotEmpty()) {
+                items(pendingMembers, key = { it.memberId.ifBlank { it.id } }) { pendingUser ->
+                    PendingUserRoleAssignmentCard(
+                        member = pendingUser,
+                        canManageRoles = canManageUsers,
+                        onAssignRole = { role, group, pos ->
+                            onAssignRoleToMember(pendingUser, role, group, pos)
+                        },
+                        onReject = { onRejectMemberAccess(pendingUser) }
+                    )
+                }
             }
         }
 
@@ -1774,8 +1810,19 @@ private fun PendingUserRoleAssignmentCard(
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold
                     )
+                    if (member.email.isNotBlank() && !member.email.endsWith("@site1.ru")) {
+                        Text(
+                            text = member.email,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     Text(
-                        text = "${member.position} • ${member.groupName} • ${member.effectiveSiteName}",
+                        text = buildString {
+                            append(member.position.ifBlank { "Специалист" })
+                            if (member.groupName.isNotBlank()) append(" • ${member.groupName}")
+                            if (member.effectiveSiteName.isNotBlank()) append(" • ${member.effectiveSiteName}")
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

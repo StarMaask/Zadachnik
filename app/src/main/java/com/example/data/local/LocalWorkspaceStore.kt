@@ -177,18 +177,43 @@ object LocalWorkspaceStore {
 
     fun saveMembers(context: Context, members: List<SiteMemberDocument>) {
         val arr = JSONArray()
+        val activeKeys = mutableSetOf<String>()
         members.forEach { m ->
             arr.put(memberToJson(m))
+            val rawId = m.id.trim()
+            val mId = m.memberId.trim()
+            if (rawId.isNotBlank()) activeKeys.add(rawId)
+            if (mId.isNotBlank()) activeKeys.add(mId)
+            val canonical = SiteMemberDocument.canonicalMemberId(mId.ifBlank { rawId }, m.email)
+            if (canonical.isNotBlank()) activeKeys.add(canonical)
         }
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val currentDeleted = prefs.getStringSet(KEY_DELETED_MEMBER_IDS, emptySet()).orEmpty()
+        val cleanedDeleted = currentDeleted - activeKeys
+        prefs.edit()
             .putString(KEY_MEMBERS, arr.toString())
+            .putStringSet(KEY_DELETED_MEMBER_IDS, cleanedDeleted)
             .apply()
     }
 
     fun loadDeletedMemberIds(context: Context): Set<String> {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getStringSet(KEY_DELETED_MEMBER_IDS, emptySet()) ?: emptySet()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val rawDeleted = prefs.getStringSet(KEY_DELETED_MEMBER_IDS, emptySet()) ?: emptySet()
+        if (rawDeleted.isEmpty()) return emptySet()
+        val activeMembers = loadMembers(context)
+        val activeIds = buildSet {
+            activeMembers.forEach { m ->
+                if (m.id.isNotBlank()) add(m.id.trim())
+                if (m.memberId.isNotBlank()) add(m.memberId.trim())
+                val canonical = SiteMemberDocument.canonicalMemberId(m.memberId.ifBlank { m.id }, m.email)
+                if (canonical.isNotBlank()) add(canonical)
+            }
+        }
+        val cleaned = rawDeleted - activeIds
+        if (cleaned.size != rawDeleted.size) {
+            prefs.edit().putStringSet(KEY_DELETED_MEMBER_IDS, cleaned).apply()
+        }
+        return cleaned
     }
 
     fun addDeletedMemberId(context: Context, memberId: String) {
@@ -198,6 +223,15 @@ object LocalWorkspaceStore {
             .edit()
             .putStringSet(KEY_DELETED_MEMBER_IDS, current)
             .apply()
+    }
+
+    fun removeDeletedMemberIds(context: Context, memberIds: Collection<String>) {
+        if (memberIds.isEmpty()) return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val current = prefs.getStringSet(KEY_DELETED_MEMBER_IDS, emptySet()).orEmpty().toMutableSet()
+        if (current.removeAll(memberIds.toSet())) {
+            prefs.edit().putStringSet(KEY_DELETED_MEMBER_IDS, current).apply()
+        }
     }
 
     private fun taskToJson(t: TaskDocument): JSONObject = JSONObject().apply {

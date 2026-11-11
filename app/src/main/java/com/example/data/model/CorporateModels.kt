@@ -1065,5 +1065,18 @@ data class SiteMemberDocument(
         }
 
         fun isRootHeadEmail(email: String?): Boolean = isRootAdminEmail(email)
+
+        fun canonicalMemberId(rawUserId: String, email: String?): String {
+            val cleanEmail = email?.trim()?.lowercase().orEmpty()
+            val trimmedId = rawUserId.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(120)
+            // Keep pre-registered employee IDs (emp_...) intact if they have placeholder @site1.ru emails
+            if (trimmedId.startsWith("emp_") && (cleanEmail.isBlank() || cleanEmail.endsWith("@site1.ru"))) {
+                return trimmedId
+            }
+            if (cleanEmail.isNotBlank() && !cleanEmail.endsWith("@site1.ru")) {
+                return "usr_${cleanEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+            }
+            return trimmedId.ifBlank { "usr_${System.currentTimeMillis()}" }
+        }
     }
 }

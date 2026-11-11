@@ -627,6 +627,7 @@ fun MainFeatureScreen(
                                 onRejectMemberAccess = viewModel::rejectMemberAccess,
                                 onDeleteSiteMember = viewModel::deleteSiteMember,
                                 onPreRegisterEmployee = viewModel::preRegisterEmployeeByEmail,
+                                onRefreshSiteMembers = viewModel::refreshSiteMembersQueue,
                                 onSwitchPersona = viewModel::switchPersona,
                                 onSignOut = {
                                     signOut(context, credentialManager, scope, onSignOutComplete)

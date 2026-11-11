@@ -357,4 +357,41 @@ class ExampleUnitTest {
         assertEquals(450.0, task.effectiveTargetVolume, 0.001)
         assertEquals(150.0, task.effectiveCompletedVolume, 0.001)
     }
+
+    @Test
+    fun `canonicalMemberId isolates pending user and administrator accounts even with shared device uid`() {
+        val sharedFirebaseUid = "firebase_uid_shared_device_123"
+        val pendingUserId = SiteMemberDocument.canonicalMemberId(sharedFirebaseUid, "starmaksai@gmail.com")
+        val adminUserId = SiteMemberDocument.canonicalMemberId(sharedFirebaseUid, "m241185m@gmail.com")
+
+        assertEquals("usr_starmaksai_gmail_com", pendingUserId)
+        assertEquals("usr_m241185m_gmail_com", adminUserId)
+        assertFalse(pendingUserId == adminUserId)
+
+        val pendingMember = SiteMemberDocument(
+            id = pendingUserId,
+            memberId = pendingUserId,
+            email = "starmaksai@gmail.com",
+            fullName = "StarMaks",
+            position = "Электромеханик",
+            role = "PENDING",
+            approvalStatus = "PENDING",
+            groupId = "grp_monolith",
+            groupName = "ЛПДС \"Быково\"",
+            siteName = "УЭСАиТМ"
+        ).let { draft ->
+            draft.copy(
+                approvedByName = draft.encodeApprovedByForFirestore(
+                    approverName = "Заявка",
+                    explicitSiteName = "УЭСАиТМ",
+                    isAdminRole = false
+                )
+            )
+        }
+
+        assertTrue(pendingMember.isPendingRole)
+        assertFalse(pendingMember.isRejected)
+        assertEquals("УЭСАиТМ", pendingMember.effectiveSiteName)
+        assertEquals("ЛПДС \"Быково\"", pendingMember.groupName)
+    }
 }

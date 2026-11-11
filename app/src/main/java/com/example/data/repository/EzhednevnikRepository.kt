@@ -290,20 +290,85 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun fetchAllSiteMembersOnce(): List<SiteMemberDocument> {
+        if (auth.currentUser == null) return emptyList()
+        return try {
+            val snap = db.collection("site_members").get().await()
+            snap.toObjects(
+                SiteMemberDocument::class.java,
+                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+            ).sortedWith(
+                compareBy<SiteMemberDocument> { !it.isPendingRole }
+                    .thenBy { it.fullName }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun fetchSiteMemberByIdOrEmail(
+        rawMemberId: String,
+        email: String
+    ): SiteMemberDocument? {
+        if (auth.currentUser == null) return null
+        val normalizedEmail = email.trim().lowercase()
+        val canonicalId = SiteMemberDocument.canonicalMemberId(rawMemberId, normalizedEmail)
+        if (normalizedEmail.isNotBlank() && !normalizedEmail.endsWith("@site1.ru")) {
+            val byEmail = try {
+                db.collection("site_members")
+                    .whereEqualTo("email", normalizedEmail)
+                    .get()
+                    .await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            val docs = byEmail?.toObjects(
+                SiteMemberDocument::class.java,
+                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+            ).orEmpty()
+            // Prefer an approved document if multiple exist
+            val approved = docs.firstOrNull { !it.isPendingRole && !it.isRejected }
+            if (approved != null) return approved
+            if (docs.isNotEmpty()) return docs.first()
+        }
+        for (candidateId in listOf(canonicalId, rawMemberId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")).distinct()) {
+            if (candidateId.isBlank()) continue
+            val snap = try {
+                db.collection("site_members").document(candidateId).get().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (snap != null && snap.exists()) {
+                val obj = snap.toObject(
+                    SiteMemberDocument::class.java,
+                    DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                )
+                if (obj != null) return obj
+            }
+        }
+        return null
+    }
+
     suspend fun registerOrResolveSiteMember(
         rawMemberId: String,
         email: String,
         fullName: String,
         position: String = "Специалист участка",
         requestedGroup: WorkGroup = CorporateSeedData.workGroups.first(),
-        forceHeadActivation: Boolean = false
+        siteName: String = "",
+        forceHeadActivation: Boolean = false,
+        forceUpdatePendingDetails: Boolean = false
     ): Result<SiteMemberDocument> = runCatching {
-        val safeMemberId = rawMemberId
-            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
-            .take(120)
-            .ifBlank { "usr_${System.currentTimeMillis()}" }
-        val normalizedEmail = email.trim().lowercase().ifBlank { "$safeMemberId@site1.ru" }
-        val isAutoAdmin = forceHeadActivation || SiteMemberDocument.isRootAdminEmail(normalizedEmail)
+        val normalizedEmail = email.trim().lowercase()
+        val safeMemberId = SiteMemberDocument.canonicalMemberId(rawMemberId, normalizedEmail)
+        val effectiveEmail = normalizedEmail.ifBlank { "$safeMemberId@site1.ru" }
+        val isAutoAdmin = forceHeadActivation || SiteMemberDocument.isRootAdminEmail(effectiveEmail)
 
         val resolvedRole = if (isAutoAdmin) CorporateRole.ADMIN.code else "PENDING"
         val resolvedStatus = if (isAutoAdmin) {
@@ -312,22 +377,40 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             MemberApprovalStatus.PENDING.code
         }
         val resolvedGroup = if (isAutoAdmin) {
-            CorporateSeedData.workGroups.last()
+            requestedGroup.takeIf { it.name.isNotBlank() } ?: CorporateSeedData.workGroups.last()
         } else {
             requestedGroup
         }
         val resolvedPosition = if (isAutoAdmin) {
-            "Администратор системы"
+            position.ifBlank { "Администратор системы" }
         } else {
             position.ifBlank { "Специалист участка" }
         }
+        val resolvedSite = siteName.trim().ifBlank { CorporateSeedData.DEFAULT_SITE_NAME }
+
+        val templateDoc = SiteMemberDocument(
+            id = safeMemberId,
+            memberId = safeMemberId,
+            email = effectiveEmail,
+            fullName = fullName.ifBlank { "Сотрудник участка" },
+            position = resolvedPosition,
+            role = resolvedRole,
+            approvalStatus = resolvedStatus,
+            groupId = resolvedGroup.id.ifBlank { "grp_monolith" },
+            groupName = resolvedGroup.name.ifBlank { "Основное подразделение" },
+            siteName = resolvedSite
+        )
+        val encodedMeta = templateDoc.encodeApprovedByForFirestore(
+            approverName = if (isAutoAdmin) "Администратор" else "Заявка",
+            explicitSiteName = resolvedSite,
+            isAdminRole = isAutoAdmin
+        )
 
         if (auth.currentUser != null) {
             // Check if pre-registered by email or already registered by memberId
             val existingByEmail = try {
                 db.collection("site_members")
-                    .whereEqualTo("email", normalizedEmail)
-                    .limit(1)
+                    .whereEqualTo("email", effectiveEmail)
                     .get()
                     .await()
             } catch (e: CancellationException) {
@@ -336,21 +419,26 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 null
             }
 
-            val existingDoc = existingByEmail?.documents?.firstOrNull()
-            if (existingDoc != null && existingDoc.exists()) {
-                val existingObj = existingDoc.toObject(
+            val emailDocs = existingByEmail?.documents.orEmpty()
+            val approvedDoc = emailDocs.firstOrNull { doc ->
+                val obj = doc.toObject(SiteMemberDocument::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                obj != null && !obj.isPendingRole && !obj.isRejected
+            } ?: emailDocs.firstOrNull()
+
+            if (approvedDoc != null && approvedDoc.exists()) {
+                val existingObj = approvedDoc.toObject(
                     SiteMemberDocument::class.java,
                     DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
                 )
                 if (existingObj != null) {
                     if (isAutoAdmin && existingObj.parsedRoleOrNull != CorporateRole.ADMIN) {
                         runCatching {
-                            existingDoc.reference.update(
+                            approvedDoc.reference.update(
                                 mapOf(
-                                    "role" to CorporateRole.HEAD.code,
+                                    "role" to CorporateRole.ADMIN.code,
                                     "approvalStatus" to MemberApprovalStatus.APPROVED.code,
-                                    "position" to "Администратор системы",
-                                    "approvedByName" to "Администратор||adm:1",
+                                    "position" to resolvedPosition.take(120),
+                                    "approvedByName" to encodedMeta,
                                     "updatedAt" to FieldValue.serverTimestamp()
                                 )
                             ).await()
@@ -358,8 +446,61 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                         return@runCatching existingObj.copy(
                             role = CorporateRole.ADMIN.code,
                             approvalStatus = MemberApprovalStatus.APPROVED.code,
-                            position = "Администратор системы",
-                            approvedByName = "Администратор||adm:1"
+                            position = resolvedPosition,
+                            approvedByName = encodedMeta,
+                            siteName = resolvedSite
+                        )
+                    }
+                    // If user is still pending (or re-applying after rejection), update their pending request details in Firestore
+                    if (!isAutoAdmin && (existingObj.isPendingRole || existingObj.isRejected || forceUpdatePendingDetails)) {
+                        val updatedPosition = if (forceUpdatePendingDetails || existingObj.position.isBlank() || existingObj.position == "Специалист участка" || existingObj.position == "Специалист") {
+                            resolvedPosition
+                        } else {
+                            existingObj.position
+                        }
+                        val updatedGroupName = if (forceUpdatePendingDetails || existingObj.groupName.isBlank()) {
+                            resolvedGroup.name
+                        } else {
+                            existingObj.groupName
+                        }
+                        val updatedGroupId = if (forceUpdatePendingDetails || existingObj.groupId.isBlank()) {
+                            resolvedGroup.id
+                        } else {
+                            existingObj.groupId
+                        }
+                        val updatedSite = if (forceUpdatePendingDetails || existingObj.effectiveSiteName.isBlank()) {
+                            resolvedSite
+                        } else {
+                            existingObj.effectiveSiteName
+                        }
+                        val newMeta = existingObj.encodeApprovedByForFirestore(
+                            approverName = "Заявка",
+                            explicitSiteName = updatedSite,
+                            isAdminRole = false
+                        )
+                        runCatching {
+                            approvedDoc.reference.update(
+                                mapOf(
+                                    "fullName" to fullName.ifBlank { existingObj.fullName }.take(120),
+                                    "position" to updatedPosition.take(120),
+                                    "role" to "PENDING",
+                                    "approvalStatus" to MemberApprovalStatus.PENDING.code,
+                                    "groupId" to updatedGroupId.ifBlank { "grp_monolith" }.take(64),
+                                    "groupName" to updatedGroupName.ifBlank { "Основное подразделение" }.take(120),
+                                    "approvedByName" to newMeta,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            ).await()
+                        }
+                        return@runCatching existingObj.copy(
+                            fullName = fullName.ifBlank { existingObj.fullName },
+                            position = updatedPosition,
+                            role = "PENDING",
+                            approvalStatus = MemberApprovalStatus.PENDING.code,
+                            groupId = updatedGroupId.ifBlank { "grp_monolith" },
+                            groupName = updatedGroupName.ifBlank { "Основное подразделение" },
+                            approvedByName = newMeta,
+                            siteName = updatedSite
                         )
                     }
                     return@runCatching existingObj
@@ -380,26 +521,58 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
                 )
                 if (existingObj != null) {
+                    if (!isAutoAdmin && (existingObj.isPendingRole || existingObj.isRejected || forceUpdatePendingDetails)) {
+                        val updatedSite = resolvedSite.ifBlank { existingObj.effectiveSiteName }
+                        val newMeta = existingObj.encodeApprovedByForFirestore(
+                            approverName = "Заявка",
+                            explicitSiteName = updatedSite,
+                            isAdminRole = false
+                        )
+                        runCatching {
+                            docRef.update(
+                                mapOf(
+                                    "email" to effectiveEmail.take(160),
+                                    "fullName" to fullName.ifBlank { existingObj.fullName }.take(120),
+                                    "position" to resolvedPosition.take(120),
+                                    "role" to "PENDING",
+                                    "approvalStatus" to MemberApprovalStatus.PENDING.code,
+                                    "groupId" to resolvedGroup.id.ifBlank { "grp_monolith" }.take(64),
+                                    "groupName" to resolvedGroup.name.ifBlank { "Основное подразделение" }.take(120),
+                                    "approvedByName" to newMeta,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            ).await()
+                        }
+                        return@runCatching existingObj.copy(
+                            email = effectiveEmail,
+                            fullName = fullName.ifBlank { existingObj.fullName },
+                            position = resolvedPosition,
+                            role = "PENDING",
+                            approvalStatus = MemberApprovalStatus.PENDING.code,
+                            groupId = resolvedGroup.id.ifBlank { "grp_monolith" },
+                            groupName = resolvedGroup.name.ifBlank { "Основное подразделение" },
+                            approvedByName = newMeta,
+                            siteName = updatedSite
+                        )
+                    }
                     return@runCatching existingObj
                 }
             }
 
-            val firestoreSafeRole = if (isAutoAdmin) CorporateRole.HEAD.code else resolvedRole
+            val firestoreSafeRole = if (isAutoAdmin) CorporateRole.ADMIN.code else resolvedRole
             val payload = mutableMapOf<String, Any>(
                 "memberId" to safeMemberId,
-                "email" to normalizedEmail.take(160),
+                "email" to effectiveEmail.take(160),
                 "fullName" to fullName.ifBlank { "Сотрудник участка" }.take(120),
                 "position" to resolvedPosition.take(120),
                 "role" to firestoreSafeRole,
                 "approvalStatus" to resolvedStatus,
-                "groupId" to resolvedGroup.id.take(64),
-                "groupName" to resolvedGroup.name.take(120),
+                "groupId" to resolvedGroup.id.ifBlank { "grp_monolith" }.take(64),
+                "groupName" to resolvedGroup.name.ifBlank { "Основное подразделение" }.take(120),
+                "approvedByName" to encodedMeta,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            if (isAutoAdmin) {
-                payload["approvedByName"] = "Администратор||adm:1"
-            }
             try {
                 docRef.set(payload).await()
             } catch (e: CancellationException) {
@@ -409,18 +582,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             }
         }
 
-        SiteMemberDocument(
-            id = safeMemberId,
-            memberId = safeMemberId,
-            email = normalizedEmail,
-            fullName = fullName.ifBlank { "Сотрудник участка" },
-            position = resolvedPosition,
-            role = resolvedRole,
-            approvalStatus = resolvedStatus,
-            groupId = resolvedGroup.id,
-            groupName = resolvedGroup.name,
-            approvedByName = if (isAutoAdmin) "Администратор||adm:1" else null
-        )
+        templateDoc.copy(approvedByName = encodedMeta)
     }
 
     suspend fun assignRoleToSiteMember(
@@ -433,61 +595,97 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         if (!actor.role.isAdminOrHead) {
             throw IllegalAccessException("Назначать роли пользователям может только Администратор или Руководитель участка")
         }
-        val safeId = targetMember.memberId.ifBlank { targetMember.id }
+        val safeId = SiteMemberDocument.canonicalMemberId(
+            targetMember.memberId.ifBlank { targetMember.id },
+            targetMember.email
+        )
+        val rawOriginalId = targetMember.memberId.ifBlank { targetMember.id }
             .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
         val newPosition = customPosition?.takeIf { it.isNotBlank() }
             ?: targetMember.position.ifBlank { assignedRole.titleRu }
 
-        val encodedApprovedBy = targetMember.encodeApprovedByForFirestore(actor.fullName)
+        val encodedApprovedBy = targetMember.encodeApprovedByForFirestore(
+            approverName = actor.fullName,
+            isAdminRole = assignedRole == CorporateRole.ADMIN
+        )
         val updatedMember = targetMember.copy(
             id = safeId,
             memberId = safeId,
             role = assignedRole.code,
             approvalStatus = MemberApprovalStatus.APPROVED.code,
-            groupId = assignedGroup.id,
-            groupName = assignedGroup.name,
+            groupId = assignedGroup.id.ifBlank { "grp_monolith" },
+            groupName = assignedGroup.name.ifBlank { "Основное подразделение" },
             position = newPosition,
             approvedByName = encodedApprovedBy
         )
 
         val currentUid = auth.currentUser?.uid
         if (currentUid != null) {
-            val docRef = db.collection("site_members").document(safeId)
-            val snap = try {
-                docRef.get().await()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
+            val idsToUpdate = listOf(safeId, rawOriginalId).filter { it.isNotBlank() }.distinct()
+            idsToUpdate.forEach { docId ->
+                val docRef = db.collection("site_members").document(docId)
+                val snap = try {
+                    docRef.get().await()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                if (snap != null && snap.exists()) {
+                    docRef.update(
+                        mapOf(
+                            "role" to assignedRole.code,
+                            "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                            "groupId" to assignedGroup.id.ifBlank { "grp_monolith" }.take(64),
+                            "groupName" to assignedGroup.name.ifBlank { "Основное подразделение" }.take(120),
+                            "position" to newPosition.take(120),
+                            "approvedByName" to encodedApprovedBy,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                } else if (docId == safeId) {
+                    docRef.set(
+                        mapOf(
+                            "memberId" to safeId,
+                            "email" to updatedMember.email.ifBlank { "$safeId@site1.ru" }.take(160),
+                            "fullName" to updatedMember.fullName.ifBlank { "Сотрудник" }.take(120),
+                            "position" to newPosition.take(120),
+                            "role" to assignedRole.code,
+                            "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                            "groupId" to assignedGroup.id.ifBlank { "grp_monolith" }.take(64),
+                            "groupName" to assignedGroup.name.ifBlank { "Основное подразделение" }.take(120),
+                            "approvedByName" to encodedApprovedBy,
+                            "createdAt" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
             }
-            if (snap != null && snap.exists()) {
-                docRef.update(
-                    mapOf(
-                        "role" to assignedRole.code,
-                        "approvalStatus" to MemberApprovalStatus.APPROVED.code,
-                        "groupId" to assignedGroup.id.take(64),
-                        "groupName" to assignedGroup.name.take(120),
-                        "position" to newPosition.take(120),
-                        "approvedByName" to encodedApprovedBy,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
-            } else {
-                docRef.set(
-                    mapOf(
-                        "memberId" to safeId,
-                        "email" to updatedMember.email.ifBlank { "$safeId@site1.ru" }.take(160),
-                        "fullName" to updatedMember.fullName.take(120),
-                        "position" to newPosition.take(120),
-                        "role" to assignedRole.code,
-                        "approvalStatus" to MemberApprovalStatus.APPROVED.code,
-                        "groupId" to assignedGroup.id.take(64),
-                        "groupName" to assignedGroup.name.take(120),
-                        "approvedByName" to encodedApprovedBy,
-                        "createdAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+
+            // Also update any other site_members docs matching by email
+            val cleanEmail = updatedMember.email.trim().lowercase()
+            if (cleanEmail.isNotBlank() && !cleanEmail.endsWith("@site1.ru")) {
+                runCatching {
+                    val byEmail = db.collection("site_members")
+                        .whereEqualTo("email", cleanEmail)
+                        .get()
+                        .await()
+                    byEmail.documents.forEach { doc ->
+                        if (doc.id !in idsToUpdate) {
+                            doc.reference.update(
+                                mapOf(
+                                    "role" to assignedRole.code,
+                                    "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                                    "groupId" to assignedGroup.id.ifBlank { "grp_monolith" }.take(64),
+                                    "groupName" to assignedGroup.name.ifBlank { "Основное подразделение" }.take(120),
+                                    "position" to newPosition.take(120),
+                                    "approvedByName" to encodedApprovedBy,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            ).await()
+                        }
+                    }
+                }
             }
 
             appendAuditLog(
@@ -562,7 +760,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val normalizedEmail = email.trim().lowercase().ifBlank {
             "emp_${System.currentTimeMillis()}@site1.ru"
         }
-        val safeId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+        val fallbackEmpId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+        val safeId = SiteMemberDocument.canonicalMemberId(fallbackEmpId, normalizedEmail)
         val resolvedPosition = position.ifBlank { assignedRole.titleRu }
 
         val baseMember = SiteMemberDocument(

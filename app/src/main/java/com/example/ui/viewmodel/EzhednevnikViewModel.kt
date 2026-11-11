@@ -179,7 +179,8 @@ class EzhednevnikViewModel(
     private fun normalizeMemberKey(raw: String): String =
         raw.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
 
-    private val normalizedCurrentUserId = normalizeMemberKey(currentUserId)
+    private val normalizedCurrentUserId: String =
+        SiteMemberDocument.canonicalMemberId(currentUserId, currentUserEmail)
 
     private val firestoreProfileFlow = repository.observeUserProfile(currentUserId)
         .map<UserProfile?, UiState<UserProfile?>> { UiState.Success(it) }
@@ -212,7 +213,7 @@ class EzhednevnikViewModel(
             emit(emptyList())
         }
 
-    // Локальные изменения участников имеют приоритет над устаревшим кешем Firestore
+    // Объединение облачных и локальных сотрудников без потери заявок на назначение роли
     val siteMembersState: StateFlow<List<SiteMemberDocument>> = combine(
         firestoreSiteMembersFlow,
         _localSiteMembers,
@@ -222,26 +223,31 @@ class EzhednevnikViewModel(
         remoteList.forEach { m ->
             val rawKey = m.memberId.ifBlank { m.id }
             val normKey = normalizeMemberKey(rawKey)
-            if (normKey.isNotBlank() &&
+            val canonicalKey = SiteMemberDocument.canonicalMemberId(rawKey, m.email)
+            val isDeleted = (rawKey in deletedIds || normKey in deletedIds || canonicalKey in deletedIds) && !m.isPendingRole
+            if (canonicalKey.isNotBlank() &&
                 !CorporateSeedData.isLegacyFakeSeedMemberId(rawKey) &&
                 !CorporateSeedData.isLegacyFakeSeedMemberId(normKey) &&
-                rawKey !in deletedIds &&
-                normKey !in deletedIds
+                !isDeleted
             ) {
-                mergedMap[normKey] = m
+                mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
             }
         }
-        // Локальный список перезаписывает remoteList мгновенно (как по ID, так и по нормализованному ключу)
+        // Локальный список объединяется с облачным; если в облаке заявка уже подтверждена (APPROVED), сохраняем подтверждённую роль
         localList.forEach { m ->
             val rawKey = m.memberId.ifBlank { m.id }
             val normKey = normalizeMemberKey(rawKey)
-            if (normKey.isNotBlank() &&
+            val canonicalKey = SiteMemberDocument.canonicalMemberId(rawKey, m.email)
+            if (canonicalKey.isNotBlank() &&
                 !CorporateSeedData.isLegacyFakeSeedMemberId(rawKey) &&
-                !CorporateSeedData.isLegacyFakeSeedMemberId(normKey) &&
-                rawKey !in deletedIds &&
-                normKey !in deletedIds
+                !CorporateSeedData.isLegacyFakeSeedMemberId(normKey)
             ) {
-                mergedMap[normKey] = m
+                val existingRemote = mergedMap[canonicalKey]
+                if (existingRemote != null && !existingRemote.isPendingRole && !existingRemote.isRejected && m.isPendingRole) {
+                    mergedMap[canonicalKey] = existingRemote
+                } else {
+                    mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
+                }
             }
         }
         mergedMap.values.sortedWith(
@@ -469,6 +475,42 @@ class EzhednevnikViewModel(
 
     init {
         initializeUserAndRoleStatus()
+        observeMemberRoleUpdates()
+    }
+
+    private fun observeMemberRoleUpdates() {
+        viewModelScope.launch {
+            siteMembersState.collect { members ->
+                // Sync subdivisions and sites from discovered member records
+                val remoteSubdivisions = members.map { it.groupName.trim() }.filter { it.isNotBlank() }
+                val mergedSubdivisions = (_subdivisionsList.value + remoteSubdivisions).distinct()
+                if (mergedSubdivisions.size != _subdivisionsList.value.size) {
+                    _subdivisionsList.value = mergedSubdivisions
+                    appContext?.let { LocalWorkspaceStore.saveSubdivisions(it, mergedSubdivisions) }
+                }
+                val remoteSites = members.map { it.effectiveSiteName.trim() }.filter { it.isNotBlank() }
+                val mergedSites = (_sitesList.value + remoteSites).distinct()
+                if (mergedSites.size != _sitesList.value.size) {
+                    _sitesList.value = mergedSites
+                    appContext?.let { LocalWorkspaceStore.saveSites(it, mergedSites) }
+                }
+
+                // If current user was pending and got approved in siteMembersState, unlock immediately
+                val cur = _currentMemberRecord.value ?: return@collect
+                if (cur.isPendingRole) {
+                    val curCanonical = SiteMemberDocument.canonicalMemberId(cur.memberId.ifBlank { cur.id }, cur.email)
+                    val matched = members.firstOrNull { m ->
+                        val mCanonical = SiteMemberDocument.canonicalMemberId(m.memberId.ifBlank { m.id }, m.email)
+                        mCanonical == curCanonical ||
+                            (cur.email.isNotBlank() && !cur.email.endsWith("@site1.ru") && m.email.equals(cur.email, ignoreCase = true))
+                    }
+                    if (matched != null && !matched.isPendingRole && !matched.isRejected) {
+                        _currentMemberRecord.value = matched
+                        upsertLocalMember(matched)
+                    }
+                }
+            }
+        }
     }
 
     private fun persistTasksLocally(tasks: List<TaskDocument>) {
@@ -493,17 +535,50 @@ class EzhednevnikViewModel(
             val normalizedEmail = currentUserEmail.trim().lowercase()
             val isRootAdmin = initialHeadActivated || SiteMemberDocument.isRootAdminEmail(normalizedEmail)
 
+            // Un-mark current user's keys from deletedIds so re-registration is never hidden
+            val keysToUnblock = listOf(
+                currentUserId,
+                normalizeMemberKey(currentUserId),
+                normalizedCurrentUserId
+            ).filter { it.isNotBlank() }.distinct()
+            _deletedMemberIds.value = _deletedMemberIds.value - keysToUnblock.toSet()
+            appContext?.let { LocalWorkspaceStore.removeDeletedMemberIds(it, keysToUnblock) }
+
+            // Refresh local store snapshot on startup
+            appContext?.let { ctx ->
+                val freshLocal = LocalWorkspaceStore.loadMembers(ctx).filterNot {
+                    CorporateSeedData.isLegacyFakeSeedMemberId(it.memberId.ifBlank { it.id })
+                }
+                if (freshLocal.isNotEmpty()) {
+                    _localSiteMembers.value = freshLocal
+                }
+            }
+
             val existingLocal = _localSiteMembers.value.firstOrNull { m ->
-                val mNorm = normalizeMemberKey(m.memberId.ifBlank { m.id })
-                mNorm == normalizedCurrentUserId ||
-                    m.memberId == currentUserId ||
-                    m.id == currentUserId ||
-                    (normalizedEmail.isNotBlank() && m.email.equals(normalizedEmail, ignoreCase = true))
+                val mEmail = m.email.trim().lowercase()
+                val hasDifferentRealEmail = normalizedEmail.isNotBlank() &&
+                    !normalizedEmail.endsWith("@site1.ru") &&
+                    mEmail.isNotBlank() &&
+                    !mEmail.endsWith("@site1.ru") &&
+                    !mEmail.equals(normalizedEmail, ignoreCase = true)
+
+                if (hasDifferentRealEmail) {
+                    false
+                } else {
+                    val mNorm = SiteMemberDocument.canonicalMemberId(m.memberId.ifBlank { m.id }, mEmail)
+                    mNorm == normalizedCurrentUserId ||
+                        m.memberId == currentUserId ||
+                        m.id == currentUserId ||
+                        (normalizedEmail.isNotBlank() && mEmail == normalizedEmail)
+                }
             }
 
             val resolvedMember = if (existingLocal != null) {
                 val preserved = if (isRootAdmin && (existingLocal.isPendingRole || existingLocal.parsedRoleOrNull != CorporateRole.ADMIN)) {
                     val baseAdmin = existingLocal.copy(
+                        id = normalizedCurrentUserId,
+                        memberId = normalizedCurrentUserId,
+                        email = normalizedEmail.ifBlank { existingLocal.email },
                         role = CorporateRole.ADMIN.code,
                         approvalStatus = MemberApprovalStatus.APPROVED.code,
                         position = existingLocal.position.ifBlank { "Администратор" }
@@ -514,11 +589,69 @@ class EzhednevnikViewModel(
                             isAdminRole = true
                         )
                     )
+                } else if (!isRootAdmin && existingLocal.isPendingRole) {
+                    val updatedSub = initialSubdivision.ifBlank { existingLocal.groupName }
+                    val updatedSite = initialSiteName.ifBlank { existingLocal.effectiveSiteName.ifBlank { _siteName.value } }
+                    val updatedPos = initialPosition.ifBlank { existingLocal.position.ifBlank { "Специалист" } }
+                    val matchedGroup = CorporateSeedData.workGroups.firstOrNull {
+                        it.name.equals(updatedSub, ignoreCase = true)
+                    } ?: CorporateSeedData.workGroups.first().copy(name = updatedSub)
+                    val draftPending = existingLocal.copy(
+                        id = normalizedCurrentUserId,
+                        memberId = normalizedCurrentUserId,
+                        email = normalizedEmail.ifBlank { existingLocal.email },
+                        fullName = cleanName.ifBlank { existingLocal.fullName },
+                        position = updatedPos,
+                        groupId = matchedGroup.id,
+                        groupName = updatedSub,
+                        siteName = updatedSite
+                    )
+                    draftPending.copy(
+                        approvedByName = draftPending.encodeApprovedByForFirestore(
+                            approverName = "Заявка",
+                            explicitSiteName = updatedSite,
+                            isAdminRole = false
+                        )
+                    )
                 } else {
-                    existingLocal
+                    existingLocal.copy(
+                        id = normalizedCurrentUserId,
+                        memberId = normalizedCurrentUserId,
+                        email = normalizedEmail.ifBlank { existingLocal.email }
+                    )
                 }
-                upsertLocalMember(preserved)
-                preserved
+                upsertLocalMember(preserved, previousKey = existingLocal.memberId.ifBlank { existingLocal.id })
+
+                // Always sync with Firestore so pending users appear on Admin devices and approved users get unlocked
+                val remoteSynced = if (isCloudAuthenticated) {
+                    val grp = CorporateSeedData.workGroups.firstOrNull {
+                        it.name.equals(preserved.groupName, ignoreCase = true)
+                    }?.copy(name = preserved.groupName)
+                        ?: CorporateSeedData.workGroups.first().copy(id = preserved.groupId, name = preserved.groupName)
+
+                    repository.registerOrResolveSiteMember(
+                        rawMemberId = normalizedCurrentUserId,
+                        email = preserved.email,
+                        fullName = preserved.fullName,
+                        position = preserved.position,
+                        requestedGroup = grp,
+                        siteName = preserved.effectiveSiteName.ifBlank { _siteName.value },
+                        forceHeadActivation = isRootAdmin
+                    ).getOrNull()
+                } else {
+                    null
+                }
+
+                if (remoteSynced != null && !remoteSynced.isPendingRole && !remoteSynced.isRejected && preserved.isPendingRole) {
+                    val unlocked = remoteSynced.copy(
+                        id = normalizedCurrentUserId,
+                        memberId = normalizedCurrentUserId
+                    )
+                    upsertLocalMember(unlocked)
+                    unlocked
+                } else {
+                    preserved
+                }
             } else if (isRootAdmin) {
                 val resolvedSubdivision = initialSubdivision.ifBlank { "АУП и управление участком" }
                 val resolvedSite = initialSiteName.ifBlank { _siteName.value }
@@ -550,6 +683,7 @@ class EzhednevnikViewModel(
                         fullName = adminDoc.fullName,
                         position = adminDoc.position,
                         requestedGroup = CorporateSeedData.workGroups.last().copy(name = resolvedSubdivision),
+                        siteName = resolvedSite,
                         forceHeadActivation = true
                     )
                 }
@@ -575,19 +709,7 @@ class EzhednevnikViewModel(
                     appContext?.let { LocalWorkspaceStore.saveSubdivisions(it, updatedSubdivisions) }
                 }
 
-                val created = repository.registerOrResolveSiteMember(
-                    rawMemberId = normalizedCurrentUserId,
-                    email = normalizedEmail,
-                    fullName = cleanName,
-                    position = resolvedPos,
-                    requestedGroup = matchedGroup.copy(name = resolvedSubdivision),
-                    forceHeadActivation = false
-                ).getOrNull()?.let { remoteMember ->
-                    remoteMember.copy(
-                        groupName = remoteMember.groupName.ifBlank { resolvedSubdivision },
-                        siteName = remoteMember.effectiveSiteName.ifBlank { resolvedSite }
-                    )
-                } ?: SiteMemberDocument(
+                val baseLocalPending = SiteMemberDocument(
                     id = normalizedCurrentUserId,
                     memberId = normalizedCurrentUserId,
                     email = normalizedEmail,
@@ -598,7 +720,36 @@ class EzhednevnikViewModel(
                     groupId = matchedGroup.id,
                     groupName = resolvedSubdivision,
                     siteName = resolvedSite
-                )
+                ).let { doc ->
+                    doc.copy(
+                        approvedByName = doc.encodeApprovedByForFirestore(
+                            approverName = "Заявка",
+                            explicitSiteName = resolvedSite,
+                            isAdminRole = false
+                        )
+                    )
+                }
+                // Save locally first so the pending request is persisted immediately even before network completes
+                upsertLocalMember(baseLocalPending)
+                _currentMemberRecord.value = baseLocalPending
+
+                val created = repository.registerOrResolveSiteMember(
+                    rawMemberId = normalizedCurrentUserId,
+                    email = normalizedEmail,
+                    fullName = cleanName,
+                    position = resolvedPos,
+                    requestedGroup = matchedGroup.copy(name = resolvedSubdivision),
+                    siteName = resolvedSite,
+                    forceHeadActivation = false
+                ).getOrNull()?.let { remoteMember ->
+                    remoteMember.copy(
+                        id = normalizedCurrentUserId,
+                        memberId = normalizedCurrentUserId,
+                        groupName = remoteMember.groupName.ifBlank { resolvedSubdivision },
+                        siteName = remoteMember.effectiveSiteName.ifBlank { resolvedSite }
+                    )
+                } ?: baseLocalPending
+
                 upsertLocalMember(created)
                 created
             }
@@ -609,15 +760,28 @@ class EzhednevnikViewModel(
 
     private fun upsertLocalMember(member: SiteMemberDocument, previousKey: String? = null) {
         val rawKey = member.memberId.ifBlank { member.id }
-        val normKey = normalizeMemberKey(rawKey).ifBlank { "emp_${System.currentTimeMillis()}" }
+        val normKey = SiteMemberDocument.canonicalMemberId(rawKey, member.email)
+            .ifBlank { "emp_${System.currentTimeMillis()}" }
         val prevNormKey = previousKey?.let { normalizeMemberKey(it) }
+        val cleanMemberEmail = member.email.trim().lowercase()
+        val hasRealEmail = cleanMemberEmail.isNotBlank() && !cleanMemberEmail.endsWith("@site1.ru")
+
+        val keysToUnblock = listOfNotNull(rawKey, normalizeMemberKey(rawKey), normKey, previousKey, prevNormKey)
+            .filter { it.isNotBlank() }
+            .distinct()
+        _deletedMemberIds.value = _deletedMemberIds.value - keysToUnblock.toSet()
+        appContext?.let { LocalWorkspaceStore.removeDeletedMemberIds(it, keysToUnblock) }
+
         val normalizedMember = member.copy(id = normKey, memberId = normKey)
         val updated = listOf(normalizedMember) +
             _localSiteMembers.value.filterNot { existing ->
                 val itRaw = existing.memberId.ifBlank { existing.id }
-                val itNorm = normalizeMemberKey(itRaw)
+                val itNorm = SiteMemberDocument.canonicalMemberId(itRaw, existing.email)
+                val existingEmail = existing.email.trim().lowercase()
+                val sameRealEmail = hasRealEmail && existingEmail == cleanMemberEmail
                 itNorm == normKey ||
                     itRaw == rawKey ||
+                    sameRealEmail ||
                     (prevNormKey != null && (itNorm == prevNormKey || itRaw == previousKey))
             }
         persistMembersLocally(updated)
@@ -640,17 +804,38 @@ class EzhednevnikViewModel(
     ) {
         val current = _currentMemberRecord.value ?: return
         val cleanSite = siteName.trim().ifBlank { _siteName.value }
+        val canonicalId = SiteMemberDocument.canonicalMemberId(current.memberId.ifBlank { current.id }, current.email)
         val draftUpdated = current.copy(
+            id = canonicalId,
+            memberId = canonicalId,
             position = position.ifBlank { "Специалист" },
             groupId = group.id,
             groupName = group.name,
             siteName = cleanSite
         )
         val updated = draftUpdated.copy(
-            approvedByName = draftUpdated.encodeApprovedByForFirestore(explicitSiteName = cleanSite)
+            approvedByName = draftUpdated.encodeApprovedByForFirestore(
+                approverName = "Заявка",
+                explicitSiteName = cleanSite,
+                isAdminRole = false
+            )
         )
         _currentMemberRecord.value = updated
-        upsertLocalMember(updated)
+        upsertLocalMember(updated, previousKey = current.memberId.ifBlank { current.id })
+        appContext?.let { ctx ->
+            saveCorporateSession(
+                ctx,
+                CorporateLoginSession(
+                    userId = canonicalId,
+                    email = updated.email,
+                    fullName = updated.fullName,
+                    isHeadActivated = false,
+                    requestedSubdivision = group.name,
+                    requestedSiteName = cleanSite,
+                    requestedPosition = updated.position
+                )
+            )
+        }
         viewModelScope.launch {
             if (isCloudAuthenticated) {
                 repository.registerOrResolveSiteMember(
@@ -659,7 +844,9 @@ class EzhednevnikViewModel(
                     fullName = updated.fullName,
                     position = updated.position,
                     requestedGroup = group,
-                    forceHeadActivation = false
+                    siteName = cleanSite,
+                    forceHeadActivation = false,
+                    forceUpdatePendingDetails = true
                 )
             }
             _bannerMessage.value = "Данные заявки обновлены (подразделение: ${group.name}, участок: $cleanSite)"
@@ -668,17 +855,76 @@ class EzhednevnikViewModel(
 
     fun refreshMyRoleAssignmentStatus() {
         val current = _currentMemberRecord.value ?: return
-        val currentNorm = normalizeMemberKey(current.memberId.ifBlank { current.id })
-        val latestFromList = siteMembersState.value.firstOrNull {
-            normalizeMemberKey(it.memberId.ifBlank { it.id }) == currentNorm ||
-                (current.email.isNotBlank() && it.email.equals(current.email, ignoreCase = true))
+        val currentNorm = SiteMemberDocument.canonicalMemberId(current.memberId.ifBlank { current.id }, current.email)
+
+        // Reload local store in case role was assigned on this device
+        appContext?.let { ctx ->
+            val freshLocal = LocalWorkspaceStore.loadMembers(ctx).filterNot {
+                CorporateSeedData.isLegacyFakeSeedMemberId(it.memberId.ifBlank { it.id })
+            }
+            if (freshLocal.isNotEmpty()) {
+                _localSiteMembers.value = freshLocal
+            }
         }
-        if (latestFromList != null) {
-            _currentMemberRecord.value = latestFromList
-            if (!latestFromList.isPendingRole) {
-                _bannerMessage.value = "Назначена роль: ${latestFromList.parsedRoleOrNull?.titleRu}"
+
+        viewModelScope.launch {
+            val remoteFetched = if (isCloudAuthenticated) {
+                repository.fetchSiteMemberByIdOrEmail(currentNorm, current.email)
             } else {
-                _bannerMessage.value = "Заявка ожидает подтверждения руководителем"
+                null
+            }
+            val latestFromList = siteMembersState.value.firstOrNull {
+                SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email) == currentNorm ||
+                    (current.email.isNotBlank() && it.email.equals(current.email, ignoreCase = true))
+            }
+            val resolved = when {
+                remoteFetched != null && !remoteFetched.isPendingRole -> remoteFetched.copy(id = currentNorm, memberId = currentNorm)
+                latestFromList != null && !latestFromList.isPendingRole -> latestFromList
+                remoteFetched != null -> remoteFetched.copy(id = currentNorm, memberId = currentNorm)
+                else -> latestFromList
+            }
+            if (resolved != null) {
+                _currentMemberRecord.value = resolved
+                upsertLocalMember(resolved)
+                if (!resolved.isPendingRole) {
+                    _bannerMessage.value = "Назначена роль: ${resolved.parsedRoleOrNull?.titleRu}"
+                } else {
+                    _bannerMessage.value = "Заявка ожидает подтверждения администратором"
+                }
+            } else {
+                _bannerMessage.value = "Заявка ожидает подтверждения администратором"
+            }
+        }
+    }
+
+    fun refreshSiteMembersQueue(showBanner: Boolean = false) {
+        appContext?.let { ctx ->
+            val freshLocal = LocalWorkspaceStore.loadMembers(ctx).filterNot {
+                CorporateSeedData.isLegacyFakeSeedMemberId(it.memberId.ifBlank { it.id })
+            }
+            _localSiteMembers.value = freshLocal
+            _deletedMemberIds.value = LocalWorkspaceStore.loadDeletedMemberIds(ctx)
+        }
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                val remoteMembers = repository.fetchAllSiteMembersOnce()
+                remoteMembers.forEach { remote ->
+                    val canonicalId = SiteMemberDocument.canonicalMemberId(remote.memberId.ifBlank { remote.id }, remote.email)
+                    val existsLocally = _localSiteMembers.value.any {
+                        SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email) == canonicalId
+                    }
+                    if (!existsLocally || remote.isPendingRole) {
+                        upsertLocalMember(remote.copy(id = canonicalId, memberId = canonicalId))
+                    }
+                }
+            }
+            if (showBanner) {
+                val pendingCount = siteMembersState.value.count { it.isPendingRole && !it.isRejected }
+                _bannerMessage.value = if (pendingCount > 0) {
+                    "Список обновлён: ожидают назначения роли — $pendingCount чел."
+                } else {
+                    "Список персонала обновлён (новых заявок нет)"
+                }
             }
         }
     }
@@ -691,7 +937,7 @@ class EzhednevnikViewModel(
     ) {
         val actor = activeEmployee.value
         val originalRawKey = targetMember.memberId.ifBlank { targetMember.id }
-        val key = normalizeMemberKey(originalRawKey)
+        val key = SiteMemberDocument.canonicalMemberId(originalRawKey, targetMember.email)
             .ifBlank { "usr_${System.currentTimeMillis()}" }
         val newPosition = customPosition?.takeIf { it.isNotBlank() }
             ?: targetMember.position.ifBlank { assignedRole.titleRu }
@@ -706,12 +952,17 @@ class EzhednevnikViewModel(
             position = newPosition
         )
         val approvedMember = draftApproved.copy(
-            approvedByName = draftApproved.encodeApprovedByForFirestore(actor.fullName)
+            approvedByName = draftApproved.encodeApprovedByForFirestore(
+                approverName = actor.fullName,
+                isAdminRole = assignedRole == CorporateRole.ADMIN
+            )
         )
 
         // Мгновенно обновляем локальный список и сохраняем на устройство
         upsertLocalMember(approvedMember, previousKey = originalRawKey)
-        val currentRecKey = _currentMemberRecord.value?.let { normalizeMemberKey(it.memberId.ifBlank { it.id }) }
+        val currentRecKey = _currentMemberRecord.value?.let {
+            SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email)
+        }
         if (currentRecKey == key || key == normalizedCurrentUserId) {
             _currentMemberRecord.value = approvedMember
         }
@@ -753,7 +1004,7 @@ class EzhednevnikViewModel(
 
     fun deleteSiteMember(targetMember: SiteMemberDocument) {
         val rawKey = targetMember.memberId.ifBlank { targetMember.id }
-        val normKey = normalizeMemberKey(rawKey)
+        val normKey = SiteMemberDocument.canonicalMemberId(rawKey, targetMember.email)
         _deletedMemberIds.value = _deletedMemberIds.value + setOf(rawKey, normKey)
         appContext?.let {
             LocalWorkspaceStore.addDeletedMemberId(it, rawKey)
@@ -761,7 +1012,7 @@ class EzhednevnikViewModel(
         }
         val remaining = _localSiteMembers.value.filterNot {
             val itRaw = it.memberId.ifBlank { it.id }
-            val itNorm = normalizeMemberKey(itRaw)
+            val itNorm = SiteMemberDocument.canonicalMemberId(itRaw, it.email)
             itRaw == rawKey || itNorm == normKey
         }
         persistMembersLocally(remaining)
@@ -791,7 +1042,8 @@ class EzhednevnikViewModel(
         val normalizedEmail = email.trim().lowercase().ifBlank {
             "emp_${System.currentTimeMillis()}@site1.ru"
         }
-        val safeId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+        val fallbackId = "emp_${normalizedEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
+        val safeId = SiteMemberDocument.canonicalMemberId(fallbackId, normalizedEmail)
         val resolvedPosition = position.ifBlank { assignedRole.titleRu }
         val resolvedSite = siteName.trim().ifBlank { _siteName.value }
 
@@ -815,12 +1067,13 @@ class EzhednevnikViewModel(
                 approverName = actor.fullName,
                 explicitPersonnelNumber = personnelNumber.trim(),
                 explicitSiteName = resolvedSite,
-                explicitPhone = phone.trim()
+                explicitPhone = phone.trim(),
+                isAdminRole = assignedRole == CorporateRole.ADMIN
             )
         )
         // Если сотрудник с таким safeId был ранее удалён, снимаем пометку удаления
-        _deletedMemberIds.value = _deletedMemberIds.value - safeId
-        upsertLocalMember(created)
+        _deletedMemberIds.value = _deletedMemberIds.value - setOf(safeId, fallbackId)
+        upsertLocalMember(created, previousKey = fallbackId)
         appendLocalAudit(
             actor = actor,
             actionType = "PRE_REGISTER_USER",
@@ -861,7 +1114,8 @@ class EzhednevnikViewModel(
         val cleanName = fullName.trim().ifBlank { targetMember.fullName.ifBlank { "Сотрудник участка" } }
         val actor = activeEmployee.value
         val originalRawKey = targetMember.memberId.ifBlank { targetMember.id }
-        val key = normalizeMemberKey(originalRawKey)
+        val prelimCleanEmail = email.trim().ifBlank { targetMember.email }
+        val key = SiteMemberDocument.canonicalMemberId(originalRawKey, prelimCleanEmail)
             .ifBlank { "emp_${System.currentTimeMillis()}" }
         val resolvedPosition = position.trim().ifBlank { role.titleRu }
         val resolvedSite = siteName.trim().ifBlank { _siteName.value }
@@ -874,7 +1128,7 @@ class EzhednevnikViewModel(
         val resolvedGroupId = matchedGroup?.id ?: targetMember.groupId.ifBlank { "grp_monolith" }
         val cleanTab = personnelNumber.trim()
         val cleanPhone = phone.trim()
-        val cleanEmail = email.trim().ifBlank { targetMember.email.ifBlank { "$key@site1.ru" } }
+        val cleanEmail = prelimCleanEmail.ifBlank { "$key@site1.ru" }
 
         val draftUpdated = targetMember.copy(
             id = key,

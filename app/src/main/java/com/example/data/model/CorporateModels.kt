@@ -246,40 +246,69 @@ data class WorkGroup(
 )
 
 /**
- * Пункт чек-листа с поддержкой отчётности по объёму выполнения (шт, кг, м² и др.).
+ * Пункт чек-листа с обязательным учётом объёма выполнения по каждому пункту (шт, кг, м² и др.).
  * Пункт считается выполненным (isDone = true) при достижении 100% планового объёма.
  */
 data class SubtaskItem(
     val id: String,
     val title: String,
     val isDone: Boolean,
-    val targetVolume: Double = 0.0,
+    val targetVolume: Double = 1.0,
     val completedVolume: Double = 0.0,
-    val unit: String = ""
+    val unit: String = "шт"
 ) {
+    val effectiveTargetVolume: Double
+        get() = if (targetVolume > 0.0) targetVolume else 1.0
+
+    val effectiveCompletedVolume: Double
+        get() = when {
+            targetVolume > 0.0 -> completedVolume.coerceAtLeast(0.0)
+            isDone -> 1.0
+            else -> completedVolume.coerceIn(0.0, 1.0)
+        }
+
+    val effectiveUnit: String
+        get() = unit.trim().ifBlank { "шт" }
+
     val hasVolume: Boolean
-        get() = targetVolume > 0.0
+        get() = true
 
     val progressPercent: Int
         get() = if (targetVolume > 0.0) {
             ((completedVolume / targetVolume) * 100.0).toInt().coerceIn(0, 100)
         } else {
-            if (isDone) 100 else 0
+            if (isDone) 100 else ((effectiveCompletedVolume / effectiveTargetVolume) * 100.0).toInt().coerceIn(0, 100)
         }
 
     fun formatVolumeStatus(): String {
-        if (!hasVolume) return if (isDone) "100%" else "0%"
-        val u = unit.ifBlank { "ед." }
-        return "${formatVolumeNumber(completedVolume)} / ${formatVolumeNumber(targetVolume)} $u ($progressPercent%)"
+        val u = effectiveUnit
+        val cStr = formatVolumeNumber(effectiveCompletedVolume)
+        val tStr = formatVolumeNumber(effectiveTargetVolume)
+        return "выполнено $cStr из $tStr $u ($progressPercent%)"
+    }
+
+    fun formatConcreteVolumeForReport(index: Int? = null): String {
+        val prefix = if (index != null) "$index) " else ""
+        val u = effectiveUnit
+        val cStr = formatVolumeNumber(effectiveCompletedVolume)
+        val tStr = formatVolumeNumber(effectiveTargetVolume)
+        val pct = progressPercent
+        return if (pct < 100) {
+            val rem = (effectiveTargetVolume - effectiveCompletedVolume).coerceAtLeast(0.0)
+            val remStr = formatVolumeNumber(rem)
+            "$prefix$title: выполнено $cStr из $tStr $u ($pct%, ост. $remStr $u)"
+        } else {
+            "$prefix$title: выполнено $cStr из $tStr $u (100%)"
+        }
     }
 
     fun encode(): String = listOf(
         id,
         if (isDone) "1" else "0",
         title.replace("|", "/"),
-        targetVolume.toString(),
-        completedVolume.toString(),
-        unit.replace("|", "/")
+        effectiveTargetVolume.toString(),
+        effectiveCompletedVolume.toString(),
+        effectiveUnit.replace("|", "/")
     ).joinToString("|")
 
     companion object {
@@ -291,31 +320,90 @@ data class SubtaskItem(
             }
         }
 
+        /**
+         * Разбирает строку вида "Монтаж лотков : 50 п.м." или "Укладка кабеля - 120 м"
+         * либо использует переданный объём по умолчанию.
+         */
+        fun parseFromRawLine(
+            rawLine: String,
+            index: Int,
+            defaultTargetVolume: Double = 1.0,
+            defaultUnit: String = "шт"
+        ): SubtaskItem {
+            val trimmed = rawLine.trim()
+            if (trimmed.contains("|")) {
+                return decode(trimmed)
+            }
+            val regex = Regex("""^(.+?)\s*[:\-—]\s*(\d+(?:[.,]\d+)?)\s*([а-яА-Яa-zA-Z0-9²³./]+)?$""")
+            val match = regex.matchEntire(trimmed)
+            return if (match != null) {
+                val parsedTitle = match.groupValues[1].trim().ifBlank { trimmed }
+                val parsedVol = match.groupValues[2].replace(",", ".").toDoubleOrNull()
+                    ?.takeIf { it > 0.0 } ?: defaultTargetVolume.coerceAtLeast(1.0)
+                val parsedUnit = match.groupValues[3].trim().ifBlank { defaultUnit.ifBlank { "шт" } }
+                SubtaskItem(
+                    id = "sub_${System.currentTimeMillis()}_$index",
+                    title = parsedTitle,
+                    isDone = false,
+                    targetVolume = parsedVol,
+                    completedVolume = 0.0,
+                    unit = parsedUnit
+                )
+            } else {
+                SubtaskItem(
+                    id = "sub_${System.currentTimeMillis()}_$index",
+                    title = trimmed,
+                    isDone = false,
+                    targetVolume = defaultTargetVolume.takeIf { it > 0.0 } ?: 1.0,
+                    completedVolume = 0.0,
+                    unit = defaultUnit.ifBlank { "шт" }
+                )
+            }
+        }
+
         fun decode(raw: String): SubtaskItem {
             val parts = raw.split("|")
             return when {
                 parts.size >= 6 -> {
-                    val target = parts[3].toDoubleOrNull() ?: 0.0
-                    val completed = parts[4].toDoubleOrNull() ?: 0.0
-                    val doneFlag = if (target > 0.0) completed >= target else parts[1] == "1"
+                    val rawTarget = parts[3].toDoubleOrNull() ?: 0.0
+                    val rawCompleted = parts[4].toDoubleOrNull() ?: 0.0
+                    val wasDone = parts[1] == "1"
+                    val target = if (rawTarget > 0.0) rawTarget else 1.0
+                    val completed = if (rawTarget > 0.0) {
+                        rawCompleted.coerceAtLeast(0.0)
+                    } else {
+                        if (wasDone) 1.0 else 0.0
+                    }
+                    val doneFlag = completed >= target
                     SubtaskItem(
                         id = parts[0],
                         isDone = doneFlag,
                         title = parts[2],
                         targetVolume = target,
                         completedVolume = completed,
-                        unit = parts[5]
+                        unit = parts[5].ifBlank { "шт" }
                     )
                 }
                 parts.size == 3 -> {
+                    val doneFlag = parts[1] == "1"
                     SubtaskItem(
                         id = parts[0],
-                        isDone = parts[1] == "1",
-                        title = parts[2]
+                        isDone = doneFlag,
+                        title = parts[2],
+                        targetVolume = 1.0,
+                        completedVolume = if (doneFlag) 1.0 else 0.0,
+                        unit = "шт"
                     )
                 }
                 else -> {
-                    SubtaskItem(id = "sub_${raw.hashCode()}", title = raw, isDone = false)
+                    SubtaskItem(
+                        id = "sub_${raw.hashCode()}",
+                        title = raw,
+                        isDone = false,
+                        targetVolume = 1.0,
+                        completedVolume = 0.0,
+                        unit = "шт"
+                    )
                 }
             }
         }
@@ -520,13 +608,34 @@ data class TaskDocument(
     }
 
     val effectiveTargetVolume: Double
-        get() = if (targetVolume > 0.0) targetVolume else (parsedVolumeTag()?.first ?: 0.0)
+        get() {
+            val explicit = if (targetVolume > 0.0) targetVolume else (parsedVolumeTag()?.first ?: 0.0)
+            if (explicit > 0.0) return explicit
+            val subs = decodedSubtasks()
+            return if (subs.isNotEmpty()) subs.sumOf { it.effectiveTargetVolume } else 0.0
+        }
 
     val effectiveCompletedVolume: Double
-        get() = if (targetVolume > 0.0 || completedVolume > 0.0) completedVolume else (parsedVolumeTag()?.second ?: 0.0)
+        get() {
+            val explicitTarget = if (targetVolume > 0.0) targetVolume else (parsedVolumeTag()?.first ?: 0.0)
+            if (explicitTarget > 0.0) {
+                return if (targetVolume > 0.0 || completedVolume > 0.0) {
+                    completedVolume
+                } else {
+                    parsedVolumeTag()?.second ?: 0.0
+                }
+            }
+            val subs = decodedSubtasks()
+            return if (subs.isNotEmpty()) subs.sumOf { it.effectiveCompletedVolume } else 0.0
+        }
 
     val effectiveVolumeUnit: String
-        get() = if (volumeUnit.isNotBlank()) volumeUnit else (parsedVolumeTag()?.third ?: "")
+        get() {
+            val explicit = if (volumeUnit.isNotBlank()) volumeUnit else (parsedVolumeTag()?.third ?: "")
+            if (explicit.isNotBlank()) return explicit
+            val subs = decodedSubtasks()
+            return subs.firstOrNull()?.effectiveUnit ?: "шт"
+        }
 
     val visibleTags: List<String>
         get() = tags.filterNot { it.startsWith("__vol__|") }
@@ -555,7 +664,7 @@ data class TaskDocument(
         !requiresPhotoReport || photoItems.size >= minPhotoCount.toInt()
 
     fun hasVolumeTracking(): Boolean =
-        effectiveTargetVolume > 0.0 || decodedSubtasks().any { it.hasVolume }
+        effectiveTargetVolume > 0.0 || subtaskItems.isNotEmpty()
 
     /**
      * Общий процент выполнения задачи (0..100%).
@@ -566,17 +675,22 @@ data class TaskDocument(
         val tVol = effectiveTargetVolume
         val cVol = effectiveCompletedVolume
         return when {
-            tVol > 0.0 && subs.isNotEmpty() -> {
-                val mainPct = ((cVol / tVol) * 100.0).toInt().coerceIn(0, 100)
-                val subPct = (subs.sumOf { it.progressPercent } / subs.size).coerceIn(0, 100)
-                ((mainPct + subPct) / 2).coerceIn(0, 100)
+            subs.isNotEmpty() -> {
+                val distinctUnits = subs.map { it.effectiveUnit.lowercase() }.distinct()
+                if (distinctUnits.size == 1) {
+                    val totalSubTarget = subs.sumOf { it.effectiveTargetVolume }
+                    val totalSubCompleted = subs.sumOf { it.effectiveCompletedVolume }
+                    if (totalSubTarget > 0.0) {
+                        ((totalSubCompleted / totalSubTarget) * 100.0).toInt().coerceIn(0, 100)
+                    } else {
+                        (subs.sumOf { it.progressPercent } / subs.size).coerceIn(0, 100)
+                    }
+                } else {
+                    (subs.sumOf { it.progressPercent } / subs.size).coerceIn(0, 100)
+                }
             }
             tVol > 0.0 -> {
                 ((cVol / tVol) * 100.0).toInt().coerceIn(0, 100)
-            }
-            subs.isNotEmpty() -> {
-                val sumPct = subs.sumOf { it.progressPercent }
-                (sumPct / subs.size).coerceIn(0, 100)
             }
             taskStatus == TaskStatus.APPROVED || taskStatus == TaskStatus.ON_REVIEW -> 100
             else -> 0
@@ -584,7 +698,7 @@ data class TaskDocument(
     }
 
     /**
-     * Проверка, выполнен ли объём на 100%.
+     * Проверка, выполнен ли объём на 100% по всем пунктам чек-листа и по задаче.
      */
     fun isVolumeCompleted100Percent(): Boolean {
         val subs = decodedSubtasks()
@@ -596,47 +710,62 @@ data class TaskDocument(
     }
 
     /**
-     * Текстовое представление выполненного объёма для карточек и отчётов.
-     * Если работа выполнена не до конца (< 100%), явно указывает выполненный объём и остаток.
+     * Детализация конкретного выполненного объёма по каждому пункту чек-листа для отчётов.
+     */
+    fun formatChecklistBreakdownForReport(): List<String> {
+        val subs = decodedSubtasks()
+        return subs.mapIndexed { idx, sub ->
+            sub.formatConcreteVolumeForReport(index = idx + 1)
+        }
+    }
+
+    /**
+     * Текстовое представление конкретного выполненного объёма для карточек и отчётных документов.
+     * Если работа выполнена не до конца (< 100%), явно указывает выполненный объём, остаток и расшифровку по пунктам чек-листа.
      */
     fun formatVolumeSummaryForReport(): String {
         val subs = decodedSubtasks()
         val tVol = effectiveTargetVolume
         val cVol = effectiveCompletedVolume
         val uLabel = effectiveVolumeUnit.ifBlank { "шт" }
+
+        val perItemDetails = if (subs.isNotEmpty()) {
+            subs.mapIndexed { idx, s ->
+                val cItem = SubtaskItem.formatVolumeNumber(s.effectiveCompletedVolume)
+                val tItem = SubtaskItem.formatVolumeNumber(s.effectiveTargetVolume)
+                "${idx + 1}) ${s.title}: $cItem из $tItem ${s.effectiveUnit} (${s.progressPercent}%)"
+            }.joinToString("; ")
+        } else {
+            ""
+        }
+
         if (tVol > 0.0) {
-            val pct = ((cVol / tVol) * 100.0).toInt().coerceIn(0, 100)
+            val pct = completionPercent()
             val factStr = SubtaskItem.formatVolumeNumber(cVol)
             val planStr = SubtaskItem.formatVolumeNumber(tVol)
-            return if (pct < 100) {
+            val mainSummary = if (pct < 100) {
                 val rem = (tVol - cVol).coerceAtLeast(0.0)
                 val remStr = SubtaskItem.formatVolumeNumber(rem)
                 "Не до конца: $factStr из $planStr $uLabel ($pct%, ост. $remStr $uLabel)"
             } else {
                 "Выполнено: $factStr из $planStr $uLabel (100%)"
             }
-        }
-        if (subs.isNotEmpty()) {
-            val volSubs = subs.filter { it.hasVolume }
-            if (volSubs.isNotEmpty()) {
-                val pct = completionPercent()
-                val details = volSubs.joinToString(", ") {
-                    "${SubtaskItem.formatVolumeNumber(it.completedVolume)}/${SubtaskItem.formatVolumeNumber(it.targetVolume)} ${it.unit.ifBlank { "шт" }}"
-                }
-                return if (pct < 100) {
-                    "Не до конца ($pct%): $details"
-                } else {
-                    "Выполнено (100%): $details"
-                }
+            return if (subs.size > 1 || (subs.size == 1 && !subs.first().title.equals(title, ignoreCase = true))) {
+                "$mainSummary [Чек-лист: $perItemDetails]"
+            } else {
+                mainSummary
             }
-            val doneCount = subs.count { it.isDone }
+        }
+
+        if (subs.isNotEmpty()) {
             val pct = completionPercent()
             return if (pct < 100) {
-                "Не до конца: $doneCount/${subs.size} п. ($pct%)"
+                "Не до конца ($pct%): $perItemDetails"
             } else {
-                "Выполнено: ${subs.size}/${subs.size} п. (100%)"
+                "Выполнено (100%): $perItemDetails"
             }
         }
+
         return if (taskStatus == TaskStatus.APPROVED) {
             "Выполнено (100%)"
         } else {

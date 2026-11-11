@@ -217,4 +217,57 @@ class ExampleUnitTest {
         assertEquals("Участок №2 — ПТО", corpEmp.siteName)
         assertEquals("+79005554433", corpEmp.phone)
     }
+
+    @Test
+    fun `checklist items specify volume per item and report outputs concrete completed volume`() {
+        val today = CorporateSeedData.BASE_EPOCH_DAY
+        val headActor = CorporateSeedData.findEmployee("emp_head_1")
+        val template = CorporateSeedData.buildInitialReportTemplates(userId = "test_user_1").first()
+
+        val item1 = SubtaskItem.parseFromRawLine("Монтаж лотка : 50 п.м.", index = 1)
+            .copy(completedVolume = 35.0, isDone = false)
+        val item2 = SubtaskItem.parseFromRawLine("Установка коробок : 20 шт", index = 2)
+            .copy(completedVolume = 20.0, isDone = true)
+
+        assertEquals(50.0, item1.effectiveTargetVolume, 0.001)
+        assertEquals(35.0, item1.effectiveCompletedVolume, 0.001)
+        assertEquals("п.м.", item1.effectiveUnit)
+        assertEquals(70, item1.progressPercent)
+
+        assertEquals(20.0, item2.effectiveTargetVolume, 0.001)
+        assertEquals(20.0, item2.effectiveCompletedVolume, 0.001)
+        assertEquals("шт", item2.effectiveUnit)
+        assertEquals(100, item2.progressPercent)
+
+        val taskWithPerItemVolumes = TaskDocument(
+            id = "task_per_item_vol",
+            userId = "test_user_1",
+            title = "Электромонтаж кабельной трассы",
+            assigneeId = headActor.id,
+            assigneeName = headActor.shortName,
+            groupId = headActor.groupId,
+            groupName = headActor.groupName,
+            dueDateEpochDay = today,
+            subtaskItems = listOf(item1.encode(), item2.encode())
+        )
+
+        val breakdown = taskWithPerItemVolumes.formatChecklistBreakdownForReport()
+        assertEquals(2, breakdown.size)
+        assertTrue(breakdown[0].contains("Монтаж лотка: выполнено 35 из 50 п.м. (70%, ост. 15 п.м.)"))
+        assertTrue(breakdown[1].contains("Установка коробок: выполнено 20 из 20 шт (100%)"))
+
+        val preview = ReportDocumentGenerator.buildPreview(
+            actor = headActor,
+            template = template,
+            allTasks = listOf(taskWithPerItemVolumes),
+            currentEpochDay = today
+        )
+        val factSheet = preview.sheets.last()
+        assertEquals(1, factSheet.rows.size)
+        val row = factSheet.rows.first()
+        assertEquals(2, row.checklistBreakdown.size)
+        assertTrue(row.volumeInfo.contains("35 из 50 п.м."))
+        assertTrue(row.volumeInfo.contains("20 из 20 шт"))
+        assertTrue(preview.summaryText.contains("Монтаж лотка: выполнено 35 из 50 п.м."))
+    }
 }

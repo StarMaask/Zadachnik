@@ -627,6 +627,9 @@ fun MainFeatureScreen(
             onDeletePhoto = { photoId -> viewModel.deletePhotoFromTask(task, photoId) },
             onToggleSubtask = { subId -> viewModel.toggleSubtask(task, subId) },
             onUpdateSubtaskVolume = { subId, vol -> viewModel.updateSubtaskVolume(task, subId, vol) },
+            onUpdateSubtaskDetails = { subId, tVol, cVol, unit ->
+                viewModel.updateSubtaskDetails(task, subId, tVol, cVol, unit)
+            },
             onUpdateTaskVolume = { vol -> viewModel.updateTaskVolumeProgress(task, vol) },
             onAddSubtask = { title, vol, unit -> viewModel.addSubtaskToTask(task, title, vol, unit) },
             onAddComment = { txt, mention -> viewModel.addComment(task, txt, mention) },

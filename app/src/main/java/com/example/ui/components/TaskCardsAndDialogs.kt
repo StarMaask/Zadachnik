@@ -73,6 +73,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -250,11 +251,11 @@ fun TaskItemCard(
                     )
                 }
 
-                // Интерактивный чек-лист прямо на карточке
+                // Интерактивный чек-лист прямо на карточке с указанием объёма по каждому пункту
                 if (subtasks.isNotEmpty() && onToggleSubtask != null) {
                     Spacer(modifier = Modifier.height(6.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        subtasks.take(3).forEach { sub ->
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        subtasks.take(4).forEach { sub ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -269,11 +270,7 @@ fun TaskItemCard(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (sub.hasVolume) {
-                                        "${sub.title} (${sub.formatVolumeStatus()})"
-                                    } else {
-                                        sub.title
-                                    },
+                                    text = "${sub.title} — ${sub.formatVolumeStatus()}",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
                                     ),
@@ -381,6 +378,7 @@ fun TaskDetailDialog(
     onDeletePhoto: (photoId: String) -> Unit = {},
     onToggleSubtask: (subtaskId: String) -> Unit,
     onUpdateSubtaskVolume: (subtaskId: String, completedVol: Double) -> Unit = { _, _ -> },
+    onUpdateSubtaskDetails: (subtaskId: String, targetVol: Double, completedVol: Double, unit: String) -> Unit = { _, _, _, _ -> },
     onUpdateTaskVolume: (completedVol: Double) -> Unit = {},
     onAddSubtask: (title: String, targetVolume: Double, unit: String) -> Unit = { _, _, _ -> },
     onAddComment: (text: String, mentionedUser: String) -> Unit,
@@ -394,11 +392,12 @@ fun TaskDetailDialog(
     var photoComment by remember { mutableStateOf("") }
     val photoGps = remember(task.geoLocation) { task.geoLocation ?: "Участок №1" }
 
-    // Поля для добавления нового пункта чек-листа (с возможным объёмом)
+    // Поля для добавления нового пункта чек-листа (всегда с указанием планового объёма и ед. изм.)
     var newSubtaskTitle by remember { mutableStateOf("") }
-    var newSubtaskTargetVolText by remember { mutableStateOf("") }
-    var newSubtaskUnit by remember { mutableStateOf(task.effectiveVolumeUnit.ifBlank { "шт" }) }
-    var showAddSubtaskVolumeFields by remember { mutableStateOf(false) }
+    var newSubtaskTargetVolText by remember { mutableStateOf("1") }
+    var newSubtaskUnit by remember(task.effectiveVolumeUnit) {
+        mutableStateOf(task.effectiveVolumeUnit.ifBlank { "шт" })
+    }
 
     // Поле для ввода выполненного объёма по задаче в целом
     val targetVol = task.effectiveTargetVolume
@@ -736,7 +735,7 @@ fun TaskDetailDialog(
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // Список пунктов чек-листа (с отчётностью по объёму для каждого пункта)
+                        // Список пунктов чек-листа (с обязательным указанием объёма и вводом факта по каждому пункту)
                         if (subtasks.isEmpty()) {
                             Text(
                                 text = "Пункты чек-листа не добавлены",
@@ -751,15 +750,26 @@ fun TaskDetailDialog(
                             ) {
                                 Column {
                                     subtasks.forEachIndexed { idx, sub ->
-                                        var subVolInput by remember(sub.id, sub.completedVolume) {
+                                        val itemTarget = sub.effectiveTargetVolume
+                                        val itemCompleted = sub.effectiveCompletedVolume
+                                        val itemUnit = sub.effectiveUnit
+                                        var subVolInput by remember(sub.id, itemCompleted) {
                                             mutableStateOf(
-                                                if (sub.completedVolume > 0.0) SubtaskItem.formatVolumeNumber(sub.completedVolume) else ""
+                                                if (itemCompleted > 0.0) SubtaskItem.formatVolumeNumber(itemCompleted) else ""
                                             )
                                         }
+                                        var showEditPlanRow by remember(sub.id) { mutableStateOf(false) }
+                                        var editTargetInput by remember(sub.id, itemTarget) {
+                                            mutableStateOf(SubtaskItem.formatVolumeNumber(itemTarget))
+                                        }
+                                        var editUnitInput by remember(sub.id, itemUnit) {
+                                            mutableStateOf(itemUnit)
+                                        }
+
                                         Column(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                                                .padding(horizontal = 10.dp, vertical = 8.dp)
                                                 .testTag("subtask_row_${sub.id}")
                                         ) {
                                             Row(
@@ -775,66 +785,160 @@ fun TaskDetailDialog(
                                                 )
                                                 Column(modifier = Modifier.weight(1f)) {
                                                     Text(
-                                                        text = sub.title,
+                                                        text = "${idx + 1}. ${sub.title}",
                                                         style = MaterialTheme.typography.bodySmall.copy(
                                                             textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
                                                         ),
-                                                        fontWeight = FontWeight.Medium,
+                                                        fontWeight = FontWeight.SemiBold,
                                                         color = if (sub.isDone) {
                                                             MaterialTheme.colorScheme.onSurfaceVariant
                                                         } else {
                                                             MaterialTheme.colorScheme.onSurface
                                                         }
                                                     )
-                                                    if (sub.hasVolume) {
+                                                    Text(
+                                                        text = "Объём по пункту: ${sub.formatVolumeStatus()}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = if (sub.progressPercent >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                                if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                                                    TextButton(
+                                                        onClick = { showEditPlanRow = !showEditPlanRow },
+                                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                                    ) {
                                                         Text(
-                                                            text = "Выполнено: ${sub.formatVolumeStatus()}",
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = if (sub.progressPercent >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary,
-                                                            fontWeight = FontWeight.SemiBold
+                                                            text = if (showEditPlanRow) "Скрыть" else "План/ед.",
+                                                            style = MaterialTheme.typography.labelSmall
                                                         )
                                                     }
                                                 }
                                             }
 
-                                            // Если у пункта чек-листа задан объём — поле ввода выполненного объёма прямо в строке чек-листа
-                                            if (sub.hasVolume && task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            LinearProgressIndicator(
+                                                progress = { (sub.progressPercent / 100f).coerceIn(0f, 1f) },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(start = 36.dp)
+                                                    .height(4.dp)
+                                                    .clip(RoundedCornerShape(2.dp)),
+                                                color = if (sub.progressPercent >= 100) Color(0xFF16A34A) else MaterialTheme.colorScheme.primary,
+                                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                            )
+
+                                            // Поле ввода конкретного выполненного объёма прямо по пункту чек-листа
+                                            if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
                                                 Row(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(start = 36.dp, top = 4.dp),
+                                                        .padding(start = 36.dp, top = 6.dp),
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     OutlinedTextField(
                                                         value = subVolInput,
                                                         onValueChange = { subVolInput = it },
+                                                        label = { Text("Факт ($itemUnit)") },
                                                         placeholder = {
-                                                            Text("из ${SubtaskItem.formatVolumeNumber(sub.targetVolume)} ${sub.unit.ifBlank { "шт" }}")
+                                                            Text("из ${SubtaskItem.formatVolumeNumber(itemTarget)} $itemUnit")
                                                         },
                                                         singleLine = true,
                                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                                        modifier = Modifier.weight(1f)
+                                                        modifier = Modifier
+                                                            .weight(1f)
+                                                            .testTag("subtask_volume_input_${sub.id}")
                                                     )
-                                                    OutlinedButton(
+                                                    Button(
                                                         onClick = {
                                                             val v = subVolInput.replace(",", ".").toDoubleOrNull() ?: 0.0
                                                             onUpdateSubtaskVolume(sub.id, v)
                                                         },
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                                        modifier = Modifier.testTag("subtask_save_volume_${sub.id}")
                                                     ) {
                                                         Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
                                                         Spacer(modifier = Modifier.width(4.dp))
                                                         Text("Факт", style = MaterialTheme.typography.labelSmall)
                                                     }
-                                                    TextButton(
-                                                        onClick = {
-                                                            subVolInput = SubtaskItem.formatVolumeNumber(sub.targetVolume)
-                                                            onUpdateSubtaskVolume(sub.id, sub.targetVolume)
-                                                        },
-                                                        contentPadding = PaddingValues(horizontal = 8.dp)
+                                                }
+
+                                                // Быстрые кнопки доли выполнения конкретного пункта чек-листа
+                                                FlowRow(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = 36.dp, top = 4.dp),
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    listOf(25, 50, 75, 100).forEach { pctStep ->
+                                                        val stepVal = (itemTarget * pctStep) / 100.0
+                                                        FilterChip(
+                                                            selected = sub.progressPercent == pctStep,
+                                                            onClick = {
+                                                                subVolInput = SubtaskItem.formatVolumeNumber(stepVal)
+                                                                onUpdateSubtaskVolume(sub.id, stepVal)
+                                                            },
+                                                            label = {
+                                                                Text("$pctStep% (${SubtaskItem.formatVolumeNumber(stepVal)} $itemUnit)")
+                                                            }
+                                                        )
+                                                    }
+                                                }
+
+                                                // Редактирование планового объёма и единицы измерения данного пункта чек-листа
+                                                AnimatedVisibility(visible = showEditPlanRow) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(start = 36.dp, top = 6.dp)
                                                     ) {
-                                                        Text("100%", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                                        Column(
+                                                            modifier = Modifier.padding(8.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "Изменить плановый объём и ед. изм. пункта:",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.SemiBold
+                                                            )
+                                                            Row(
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                OutlinedTextField(
+                                                                    value = editTargetInput,
+                                                                    onValueChange = { editTargetInput = it },
+                                                                    label = { Text("План") },
+                                                                    singleLine = true,
+                                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                                    modifier = Modifier.weight(1f)
+                                                                )
+                                                                OutlinedTextField(
+                                                                    value = editUnitInput,
+                                                                    onValueChange = { editUnitInput = it },
+                                                                    label = { Text("Ед. изм.") },
+                                                                    singleLine = true,
+                                                                    modifier = Modifier.weight(1f)
+                                                                )
+                                                                Button(
+                                                                    onClick = {
+                                                                        val newT = editTargetInput.replace(",", ".").toDoubleOrNull()
+                                                                            ?.takeIf { it > 0.0 } ?: itemTarget
+                                                                        val newC = subVolInput.replace(",", ".").toDoubleOrNull() ?: itemCompleted
+                                                                        val newU = editUnitInput.trim().ifBlank { "шт" }
+                                                                        onUpdateSubtaskDetails(sub.id, newT, newC, newU)
+                                                                        showEditPlanRow = false
+                                                                    },
+                                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                                                ) {
+                                                                    Text("ОК", style = MaterialTheme.typography.labelSmall)
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -847,73 +951,92 @@ fun TaskDetailDialog(
                             }
                         }
 
-                        // Добавление нового пункта в чек-лист (с возможностью указать объём и ед. изм.)
+                        // Добавление нового пункта в чек-лист (всегда с указанием объёма и ед. изм.)
                         if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                OutlinedTextField(
-                                    value = newSubtaskTitle,
-                                    onValueChange = { newSubtaskTitle = it },
-                                    placeholder = { Text("Новый пункт чек-листа...") },
-                                    singleLine = true,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("add_subtask_input")
-                                )
-                                IconButton(
-                                    onClick = { showAddSubtaskVolumeFields = !showAddSubtaskVolumeFields },
-                                    modifier = Modifier.size(36.dp)
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Straighten,
-                                        contentDescription = "Задать объём пункта",
-                                        tint = if (showAddSubtaskVolumeFields) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    Text(
+                                        text = "Добавить пункт в чек-лист (с плановым объёмом)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold
                                     )
-                                }
-                                IconButton(
-                                    onClick = {
-                                        if (newSubtaskTitle.isNotBlank()) {
-                                            val vol = newSubtaskTargetVolText.replace(",", ".").toDoubleOrNull() ?: 0.0
-                                            onAddSubtask(newSubtaskTitle, vol, if (vol > 0.0) newSubtaskUnit else "")
-                                            newSubtaskTitle = ""
-                                            newSubtaskTargetVolText = ""
+                                    OutlinedTextField(
+                                        value = newSubtaskTitle,
+                                        onValueChange = { newSubtaskTitle = it },
+                                        label = { Text("Наименование пункта чек-листа *") },
+                                        placeholder = { Text("Например: Монтаж кабельного лотка") },
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("add_subtask_input")
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedTextField(
+                                            value = newSubtaskTargetVolText,
+                                            onValueChange = { newSubtaskTargetVolText = it },
+                                            label = { Text("Плановый объём *") },
+                                            placeholder = { Text("10") },
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("add_subtask_volume_input")
+                                        )
+                                        OutlinedTextField(
+                                            value = newSubtaskUnit,
+                                            onValueChange = { newSubtaskUnit = it },
+                                            label = { Text("Ед. изм.") },
+                                            placeholder = { Text("шт, кг, м²") },
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("add_subtask_unit_input")
+                                        )
+                                        Button(
+                                            onClick = {
+                                                if (newSubtaskTitle.isNotBlank()) {
+                                                    val vol = (newSubtaskTargetVolText.replace(",", ".").toDoubleOrNull() ?: 1.0)
+                                                        .coerceAtLeast(0.1)
+                                                    val u = newSubtaskUnit.trim().ifBlank { "шт" }
+                                                    onAddSubtask(newSubtaskTitle.trim(), vol, u)
+                                                    newSubtaskTitle = ""
+                                                    newSubtaskTargetVolText = "1"
+                                                }
+                                            },
+                                            modifier = Modifier.testTag("add_subtask_button")
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = "Добавить пункт", modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Добавить")
                                         }
-                                    },
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .testTag("add_subtask_button")
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = "Добавить пункт")
-                                }
-                            }
-
-                            AnimatedVisibility(visible = showAddSubtaskVolumeFields) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 6.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    OutlinedTextField(
-                                        value = newSubtaskTargetVolText,
-                                        onValueChange = { newSubtaskTargetVolText = it },
-                                        label = { Text("Объём пункта") },
-                                        singleLine = true,
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    OutlinedTextField(
-                                        value = newSubtaskUnit,
-                                        onValueChange = { newSubtaskUnit = it },
-                                        label = { Text("Ед. изм. (шт, кг...)") },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        STANDARD_VOLUME_UNITS.forEach { uChip ->
+                                            FilterChip(
+                                                selected = newSubtaskUnit == uChip,
+                                                onClick = { newSubtaskUnit = uChip },
+                                                label = { Text(uChip) }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1592,6 +1715,12 @@ fun CreateTaskDialog(
     var requiresApproval by remember { mutableStateOf(true) }
     var selectedRecurrence by remember { mutableStateOf(RecurrenceRule.NONE) }
     var subtasksRaw by remember { mutableStateOf("") }
+    // Структурированный список пунктов чек-листа, где у каждого пункта свой объём и ед. изм.
+    val draftChecklistItems = remember { mutableStateListOf<SubtaskItem>() }
+    var draftItemTitle by remember { mutableStateOf("") }
+    var draftItemVolText by remember { mutableStateOf("10") }
+    var draftItemUnit by remember { mutableStateOf("шт") }
+
     var tagsRaw by remember { mutableStateOf("") }
     var geoLocation by remember { mutableStateOf(activeEmployee.siteName) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
@@ -1605,30 +1734,73 @@ fun CreateTaskDialog(
         } else {
             selectedAssignee.shortName
         }
-        val fallbackTitle = subtasksRaw.lines().map { it.trim() }.firstOrNull { it.isNotBlank() }
+
+        // Если пользователь ввёл текст в строку добавления пункта, но не нажал «+ Добавить пункт», сохраняем и его
+        val pendingDraftSubtasks = buildList {
+            addAll(draftChecklistItems)
+            if (draftItemTitle.isNotBlank()) {
+                val v = (draftItemVolText.replace(",", ".").toDoubleOrNull() ?: 1.0).coerceAtLeast(0.1)
+                add(
+                    SubtaskItem(
+                        id = "sub_${System.currentTimeMillis()}_${size + 1}",
+                        title = draftItemTitle.trim(),
+                        isDone = false,
+                        targetVolume = v,
+                        completedVolume = 0.0,
+                        unit = draftItemUnit.trim().ifBlank { "шт" }
+                    )
+                )
+            }
+        }
+
+        val fallbackTitle = pendingDraftSubtasks.firstOrNull()?.title
+            ?: subtasksRaw.lines().map { it.trim() }.firstOrNull { it.isNotBlank() }
             ?: description.lines().map { it.trim() }.firstOrNull { it.isNotBlank() }
             ?: ""
         val effectiveTitle = title.trim()
             .ifBlank { fallbackTitle }
             .ifBlank { "Задание — $assigneeLabel (${ReportDocumentGenerator.formatEpochDay(dueDay)})" }
 
-        val subtasks = subtasksRaw.lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        val tags = tagsRaw.split(",")
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        val resolvedMinPhotos = (minPhotoCountText.toIntOrNull() ?: 1).coerceAtLeast(1)
-        val resolvedTargetVol = if (hasVolumeRequirement) {
+        val resolvedUnitFromTask = if (hasVolumeRequirement) {
+            if (isCustomUnitSelected) customUnitText.trim().ifBlank { "шт" } else selectedUnit
+        } else {
+            pendingDraftSubtasks.firstOrNull()?.effectiveUnit ?: selectedUnit.ifBlank { "шт" }
+        }
+        val resolvedTargetVolFromTask = if (hasVolumeRequirement) {
             (targetVolumeText.replace(",", ".").toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
         } else {
             0.0
         }
-        val resolvedUnit = if (hasVolumeRequirement) {
-            if (isCustomUnitSelected) customUnitText.trim().ifBlank { "ед." } else selectedUnit
-        } else {
-            ""
+
+        val parsedFromRawLines = subtasksRaw.lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .mapIndexed { idx, line ->
+                SubtaskItem.parseFromRawLine(
+                    rawLine = line,
+                    index = pendingDraftSubtasks.size + idx + 1,
+                    defaultTargetVolume = if (resolvedTargetVolFromTask > 0.0 && pendingDraftSubtasks.isEmpty() && idx == 0) {
+                        resolvedTargetVolFromTask
+                    } else {
+                        1.0
+                    },
+                    defaultUnit = resolvedUnitFromTask
+                )
+            }
+
+        val allSubtaskObjects = pendingDraftSubtasks + parsedFromRawLines
+        val encodedSubtasks = allSubtaskObjects.map { it.encode() }
+
+        val resolvedTargetVol = when {
+            resolvedTargetVolFromTask > 0.0 -> resolvedTargetVolFromTask
+            allSubtaskObjects.isNotEmpty() -> allSubtaskObjects.sumOf { it.effectiveTargetVolume }
+            else -> 1.0
         }
+
+        val tags = tagsRaw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        val resolvedMinPhotos = (minPhotoCountText.toIntOrNull() ?: 1).coerceAtLeast(1)
 
         onCreate(
             TaskDraft(
@@ -1644,9 +1816,9 @@ fun CreateTaskDialog(
                 requiresApproval = requiresApproval,
                 recurrenceRule = selectedRecurrence,
                 targetVolume = resolvedTargetVol,
-                volumeUnit = resolvedUnit,
+                volumeUnit = resolvedUnitFromTask,
                 tags = tags,
-                subtasks = subtasks,
+                subtasks = encodedSubtasks,
                 geoLocation = geoLocation.trim()
             )
         )
@@ -2064,17 +2236,165 @@ fun CreateTaskDialog(
                             }
                         }
 
-                        // Чек-лист и описание
-                        OutlinedTextField(
-                            value = subtasksRaw,
-                            onValueChange = { subtasksRaw = it },
-                            label = { Text("Пункты чек-листа (каждый с новой строки)") },
-                            placeholder = { Text("Оставьте пустым для автоматического чек-листа по объёму") },
-                            maxLines = 3,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("create_task_subtasks_input")
-                        )
+                        // КОНСТРУКТОР ПУНКТОВ ЧЕК-ЛИСТА С ОБЪЁМОМ ПО КАЖДОМУ ПУНКТУ
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "Чек-лист с указанием объёма по каждому пункту",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Добавьте пункты работ и укажите плановый объём для каждого пункта (персонал отчитается по каждому пункту, а в отчёт попадёт конкретный выполненный объём).",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                if (draftChecklistItems.isNotEmpty()) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        draftChecklistItems.forEachIndexed { idx, item ->
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = MaterialTheme.colorScheme.surface,
+                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = "${idx + 1}. ${item.title}",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                        Text(
+                                                            text = "Плановый объём: ${SubtaskItem.formatVolumeNumber(item.effectiveTargetVolume)} ${item.effectiveUnit}",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.primary,
+                                                            fontWeight = FontWeight.Medium
+                                                        )
+                                                    }
+                                                    IconButton(
+                                                        onClick = { draftChecklistItems.removeAt(idx) },
+                                                        modifier = Modifier.size(32.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.DeleteOutline,
+                                                            contentDescription = "Удалить пункт",
+                                                            tint = MaterialTheme.colorScheme.error,
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                OutlinedTextField(
+                                    value = draftItemTitle,
+                                    onValueChange = { draftItemTitle = it },
+                                    label = { Text("Наименование пункта чек-листа") },
+                                    placeholder = { Text("Например: Укладка кабеля ВВГнг") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("draft_subtask_title_input")
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedTextField(
+                                        value = draftItemVolText,
+                                        onValueChange = { draftItemVolText = it },
+                                        label = { Text("Объём *") },
+                                        placeholder = { Text("50") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("draft_subtask_volume_input")
+                                    )
+                                    OutlinedTextField(
+                                        value = draftItemUnit,
+                                        onValueChange = { draftItemUnit = it },
+                                        label = { Text("Ед. изм.") },
+                                        placeholder = { Text("п.м., шт, кг") },
+                                        singleLine = true,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("draft_subtask_unit_input")
+                                    )
+                                    Button(
+                                        onClick = {
+                                            if (draftItemTitle.isNotBlank()) {
+                                                val v = (draftItemVolText.replace(",", ".").toDoubleOrNull() ?: 1.0)
+                                                    .coerceAtLeast(0.1)
+                                                val u = draftItemUnit.trim().ifBlank { "шт" }
+                                                draftChecklistItems.add(
+                                                    SubtaskItem(
+                                                        id = "sub_${System.currentTimeMillis()}_${draftChecklistItems.size + 1}",
+                                                        title = draftItemTitle.trim(),
+                                                        isDone = false,
+                                                        targetVolume = v,
+                                                        completedVolume = 0.0,
+                                                        unit = u
+                                                    )
+                                                )
+                                                draftItemTitle = ""
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("add_draft_subtask_button")
+                                    ) {
+                                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("В чек-лист")
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    STANDARD_VOLUME_UNITS.forEach { uItem ->
+                                        FilterChip(
+                                            selected = draftItemUnit == uItem,
+                                            onClick = { draftItemUnit = uItem },
+                                            label = { Text(uItem) }
+                                        )
+                                    }
+                                }
+
+                                OutlinedTextField(
+                                    value = subtasksRaw,
+                                    onValueChange = { subtasksRaw = it },
+                                    label = { Text("Быстрый ввод списком (Формат: Пункт : 50 кг)") },
+                                    placeholder = { Text("Например:\nМонтаж лотка : 40 п.м.\nКрепёж кронштейнов : 80 шт") },
+                                    maxLines = 3,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("create_task_subtasks_input")
+                                )
+                            }
+                        }
 
                         OutlinedTextField(
                             value = description,

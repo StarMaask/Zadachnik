@@ -32,6 +32,7 @@ data class ReportTableRow(
     val groupName: String,
     val taskTitle: String,
     val volumeInfo: String,
+    val checklistBreakdown: List<String> = emptyList(),
     val completionPercent: Int,
     val priorityLabel: String,
     val statusLabel: String,
@@ -254,6 +255,9 @@ object ReportDocumentGenerator {
                 sheet.rows.take(8).forEach { r ->
                     val phPart = if (includePhotos) ", фото: ${r.photoInfo}" else ""
                     appendLine("${r.index}. ${r.assigneeFio} — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel}$phPart")
+                    r.checklistBreakdown.forEach { subLine ->
+                        appendLine("   • Чек-лист: $subLine")
+                    }
                 }
             }
         }.trim()
@@ -369,6 +373,7 @@ object ReportDocumentGenerator {
                 "В срок"
             }
             val volumeSummary = task.formatVolumeSummaryForReport()
+            val checklistDetails = task.formatChecklistBreakdownForReport()
             val pct = task.completionPercent()
             val statusWithPct = if (task.hasVolumeTracking() && pct < 100 && task.taskStatus != TaskStatus.APPROVED) {
                 "${task.taskStatus.titleRu} ($pct%)"
@@ -387,6 +392,7 @@ object ReportDocumentGenerator {
                 groupName = task.groupName,
                 taskTitle = task.title,
                 volumeInfo = volumeSummary,
+                checklistBreakdown = checklistDetails,
                 completionPercent = pct,
                 priorityLabel = task.taskPriority.titleRu,
                 statusLabel = statusWithPct,
@@ -501,7 +507,14 @@ object ReportDocumentGenerator {
                     }
                 }
                 cellPaint.isStrikeThruText = false
-                y += 17f
+                y += 14f
+                row.checklistBreakdown.take(3).forEach { subLine ->
+                    if (y < pageHeight - 75f) {
+                        canvas.drawText("   • Чек-лист: ${subLine.take(92)}", colX[2], y + 9f, metaPaint)
+                        y += 12f
+                    }
+                }
+                y += 3f
                 canvas.drawLine(28f, y, pageWidth - 28f, y, linePaint)
             }
 
@@ -601,6 +614,9 @@ object ReportDocumentGenerator {
                     )
                 }
                 sb.appendLine(cells.joinToString(";") { escapeCsv(it) })
+                row.checklistBreakdown.forEach { subLine ->
+                    sb.appendLine(";;;\"Пункт чек-листа\";${escapeCsv(subLine)}")
+                }
             }
             sb.appendLine()
         }
@@ -727,6 +743,9 @@ object ReportDocumentGenerator {
                         )
                     }
                     appendStringRow(rowCells)
+                    r.checklistBreakdown.forEach { subLine ->
+                        appendStringRow(listOf("", r.assigneeFio, r.groupName, "   ↳ Пункт чек-листа", subLine))
+                    }
                 }
                 doc.signatureBlock.forEach { sig ->
                     appendStringRow(listOf(sig))
@@ -786,6 +805,9 @@ object ReportDocumentGenerator {
                     appendParagraph(
                         "${r.index}. ${r.assigneeFio} (${r.groupName}) — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel} | Срок: ${r.deadlineLabel}$photoSegment | ${r.carryoverInfo}"
                     )
+                    r.checklistBreakdown.forEach { subLine ->
+                        appendParagraph("   • Чек-лист: $subLine")
+                    }
                 }
                 if (doc.includePhotos && doc.attachedPhotos.isNotEmpty()) {
                     appendParagraph("--- Приложенные фотоотчёты (${doc.attachedPhotos.size} шт.) ---")

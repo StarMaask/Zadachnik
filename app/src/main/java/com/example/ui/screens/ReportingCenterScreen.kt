@@ -617,6 +617,34 @@ fun ReportPreviewDialog(
                                                     MaterialTheme.colorScheme.onSurface
                                                 }
                                             )
+                                            if (row.checklistBreakdown.isNotEmpty()) {
+                                                Spacer(modifier = Modifier.height(3.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "Выполненный объём по пунктам чек-листа:",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = MaterialTheme.colorScheme.primary
+                                                        )
+                                                        row.checklistBreakdown.forEach { subLine ->
+                                                            Text(
+                                                                text = "• $subLine",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = MaterialTheme.colorScheme.onSurface
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(2.dp))
                                             val metaLine = buildString {
                                                 append("${row.assigneeFio} • Срок: ${row.deadlineLabel}")
                                                 if (result.includePhotos) {

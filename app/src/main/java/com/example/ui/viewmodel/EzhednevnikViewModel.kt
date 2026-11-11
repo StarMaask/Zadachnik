@@ -1037,44 +1037,46 @@ class EzhednevnikViewModel(
 
         val taskId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
         val safeTargetVol = draft.targetVolume.coerceAtLeast(0.0)
-        val safeUnit = draft.volumeUnit.trim().ifBlank { if (safeTargetVol > 0.0) "шт" else "" }
+        val safeUnit = draft.volumeUnit.trim().ifBlank { "шт" }
 
         val rawSubtaskLines = draft.subtasks
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
-        val encodedSubtasks = if (rawSubtaskLines.isEmpty() && safeTargetVol > 0.0) {
+        val decodedInitialSubtasks: List<SubtaskItem> = if (rawSubtaskLines.isEmpty()) {
             listOf(
                 SubtaskItem(
                     id = "sub_vol_main",
                     title = cleanTitle,
                     isDone = false,
-                    targetVolume = safeTargetVol,
+                    targetVolume = if (safeTargetVol > 0.0) safeTargetVol else 1.0,
                     completedVolume = 0.0,
                     unit = safeUnit
-                ).encode()
+                )
             )
         } else {
-            rawSubtaskLines.mapIndexed { idx, s ->
-                if (s.contains("|")) {
-                    s
-                } else if (idx == 0 && safeTargetVol > 0.0) {
-                    SubtaskItem(
-                        id = "sub_${System.currentTimeMillis()}_${idx + 1}",
-                        title = s,
-                        isDone = false,
-                        targetVolume = safeTargetVol,
-                        completedVolume = 0.0,
-                        unit = safeUnit
-                    ).encode()
-                } else {
-                    SubtaskItem(
-                        id = "sub_${System.currentTimeMillis()}_${idx + 1}",
-                        title = s,
-                        isDone = false
-                    ).encode()
-                }
+            val perItemDefaultVol = if (safeTargetVol > 0.0 && rawSubtaskLines.size == 1) {
+                safeTargetVol
+            } else {
+                1.0
             }
+            rawSubtaskLines.mapIndexed { idx, s ->
+                SubtaskItem.parseFromRawLine(
+                    rawLine = s,
+                    index = idx + 1,
+                    defaultTargetVolume = if (idx == 0 && safeTargetVol > 0.0 && !s.contains("|")) safeTargetVol else perItemDefaultVol,
+                    defaultUnit = safeUnit
+                )
+            }
+        }
+
+        val encodedSubtasks = decodedInitialSubtasks.map { it.encode() }
+        val sumSubTargetVol = decodedInitialSubtasks.sumOf { it.effectiveTargetVolume }
+        val resolvedTaskTargetVol = if (safeTargetVol > 0.0) safeTargetVol else sumSubTargetVol
+        val resolvedTaskUnit = if (draft.volumeUnit.isNotBlank()) {
+            draft.volumeUnit.trim()
+        } else {
+            decodedInitialSubtasks.firstOrNull()?.effectiveUnit ?: "шт"
         }
 
         val baseTask = TaskDocument(
@@ -1099,9 +1101,9 @@ class EzhednevnikViewModel(
             minPhotoCount = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L,
             requiresApproval = draft.requiresApproval,
             recurrenceRule = draft.recurrenceRule.code,
-            targetVolume = safeTargetVol,
+            targetVolume = resolvedTaskTargetVol,
             completedVolume = 0.0,
-            volumeUnit = safeUnit,
+            volumeUnit = resolvedTaskUnit,
             tags = draft.tags,
             subtaskItems = encodedSubtasks,
             photoItems = emptyList(),
@@ -1111,15 +1113,11 @@ class EzhednevnikViewModel(
                     nowText(),
                     actor.shortName,
                     TaskStatus.NEW.code,
-                    if (safeTargetVol > 0.0) {
-                        "Задача создана (плановый объём: ${SubtaskItem.formatVolumeNumber(safeTargetVol)} $safeUnit)"
-                    } else {
-                        "Задача создана"
-                    }
+                    "Задача создана (пунктов чек-листа: ${decodedInitialSubtasks.size}, план: ${SubtaskItem.formatVolumeNumber(resolvedTaskTargetVol)} $resolvedTaskUnit)"
                 ).encode()
             ),
             geoLocation = draft.geoLocation.ifBlank { _siteName.value }
-        ).withUpdatedVolume(safeTargetVol, 0.0, safeUnit)
+        ).withUpdatedVolume(resolvedTaskTargetVol, 0.0, resolvedTaskUnit)
 
         // Мгновенно сохраняем задачу локально
         upsertLocalTask(baseTask)
@@ -1161,6 +1159,8 @@ class EzhednevnikViewModel(
                     draft = draft.copy(
                         title = cleanTitle,
                         assigneeId = assignee.id,
+                        targetVolume = resolvedTaskTargetVol,
+                        volumeUnit = resolvedTaskUnit,
                         subtasks = encodedSubtasks,
                         tags = baseTask.tags
                     ),
@@ -1245,37 +1245,52 @@ class EzhednevnikViewModel(
         }
     }
 
+    private fun syncTaskVolumeFromChecklist(
+        currentTask: TaskDocument,
+        updatedSubtasks: List<SubtaskItem>
+    ): Triple<Double, Double, String> {
+        if (updatedSubtasks.isEmpty()) {
+            return Triple(
+                currentTask.effectiveTargetVolume,
+                currentTask.effectiveCompletedVolume,
+                currentTask.effectiveVolumeUnit
+            )
+        }
+        val distinctUnits = updatedSubtasks.map { it.effectiveUnit.lowercase() }.distinct()
+        return if (distinctUnits.size == 1) {
+            val totalTarget = updatedSubtasks.sumOf { it.effectiveTargetVolume }
+            val totalCompleted = updatedSubtasks.sumOf { it.effectiveCompletedVolume }.coerceIn(0.0, totalTarget)
+            val unit = updatedSubtasks.first().effectiveUnit
+            Triple(totalTarget, totalCompleted, unit)
+        } else {
+            val tVol = currentTask.effectiveTargetVolume.takeIf { it > 0.0 }
+                ?: updatedSubtasks.sumOf { it.effectiveTargetVolume }
+            val avgRatio = updatedSubtasks.sumOf { it.progressPercent } / (updatedSubtasks.size * 100.0)
+            val cVol = (tVol * avgRatio).coerceIn(0.0, tVol)
+            val unit = currentTask.effectiveVolumeUnit.ifBlank { updatedSubtasks.first().effectiveUnit }
+            Triple(tVol, cVol, unit)
+        }
+    }
+
     fun toggleSubtask(task: TaskDocument, subtaskId: String) {
         val currentTask = findTaskById(task.id) ?: task
         val decoded = currentTask.decodedSubtasks()
         val updatedDecoded = decoded.map { item ->
             if (item.id == subtaskId) {
                 val nextDone = !item.isDone
-                val nextCompletedVol = if (item.hasVolume) {
-                    if (nextDone) item.targetVolume else 0.0
-                } else {
-                    item.completedVolume
-                }
-                item.copy(isDone = nextDone, completedVolume = nextCompletedVol)
+                val nextCompletedVol = if (nextDone) item.effectiveTargetVolume else 0.0
+                item.copy(
+                    isDone = nextDone,
+                    targetVolume = item.effectiveTargetVolume,
+                    completedVolume = nextCompletedVol,
+                    unit = item.effectiveUnit
+                )
             } else {
                 item
             }
         }
         val updatedEncoded = updatedDecoded.map { it.encode() }
-
-        // Синхронизируем общий объём задачи с чек-листом, если объём ведётся по пунктам
-        val tVol = currentTask.effectiveTargetVolume
-        val nextTaskCompletedVol = if (tVol > 0.0 && updatedDecoded.isNotEmpty()) {
-            val volSubs = updatedDecoded.filter { it.hasVolume }
-            if (volSubs.size == 1 && volSubs.first().targetVolume == tVol) {
-                volSubs.first().completedVolume
-            } else {
-                val avgRatio = updatedDecoded.sumOf { it.progressPercent } / (updatedDecoded.size * 100.0)
-                (tVol * avgRatio).coerceIn(0.0, tVol)
-            }
-        } else {
-            currentTask.effectiveCompletedVolume
-        }
+        val (newTarget, newCompleted, newUnit) = syncTaskVolumeFromChecklist(currentTask, updatedDecoded)
 
         val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW && updatedDecoded.any { it.progressPercent > 0 }) {
             TaskStatus.IN_PROGRESS.code
@@ -1285,7 +1300,7 @@ class EzhednevnikViewModel(
 
         val updatedTask = currentTask
             .copy(subtaskItems = updatedEncoded, status = nextStatus)
-            .withUpdatedVolume(tVol, nextTaskCompletedVol, currentTask.effectiveVolumeUnit)
+            .withUpdatedVolume(newTarget, newCompleted, newUnit)
 
         upsertLocalTask(updatedTask)
 
@@ -1300,39 +1315,36 @@ class EzhednevnikViewModel(
         val currentTask = findTaskById(task.id) ?: task
         val actor = activeEmployee.value
         val decoded = currentTask.decodedSubtasks()
+        var changedItem: SubtaskItem? = null
         val updatedDecoded = decoded.map { item ->
             if (item.id == subtaskId) {
-                val clamped = if (item.targetVolume > 0.0) {
-                    newCompletedVol.coerceIn(0.0, item.targetVolume)
-                } else {
-                    newCompletedVol.coerceAtLeast(0.0)
-                }
-                val isDoneNow = if (item.targetVolume > 0.0) clamped >= item.targetVolume else item.isDone
-                item.copy(completedVolume = clamped, isDone = isDoneNow)
+                val effTarget = item.effectiveTargetVolume
+                val clamped = newCompletedVol.coerceIn(0.0, effTarget)
+                val isDoneNow = clamped >= effTarget
+                val updatedItem = item.copy(
+                    targetVolume = effTarget,
+                    completedVolume = clamped,
+                    isDone = isDoneNow,
+                    unit = item.effectiveUnit
+                )
+                changedItem = updatedItem
+                updatedItem
             } else {
                 item
             }
         }
         val updatedEncoded = updatedDecoded.map { it.encode() }
-
-        val tVol = currentTask.effectiveTargetVolume
-        val nextTaskCompletedVol = if (tVol > 0.0) {
-            val matchingVolSub = updatedDecoded.firstOrNull { it.id == subtaskId && it.targetVolume == tVol }
-            if (matchingVolSub != null) {
-                matchingVolSub.completedVolume
-            } else {
-                val avgRatio = updatedDecoded.sumOf { it.progressPercent } / (updatedDecoded.size.coerceAtLeast(1) * 100.0)
-                (tVol * avgRatio).coerceIn(0.0, tVol)
-            }
-        } else {
-            currentTask.effectiveCompletedVolume
-        }
+        val (newTarget, newCompleted, newUnit) = syncTaskVolumeFromChecklist(currentTask, updatedDecoded)
 
         val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW && newCompletedVol > 0.0) {
             TaskStatus.IN_PROGRESS.code
         } else {
             currentTask.status
         }
+
+        val itemLog = changedItem?.let {
+            "Пункт «${it.title}»: выполнено ${SubtaskItem.formatVolumeNumber(it.effectiveCompletedVolume)} из ${SubtaskItem.formatVolumeNumber(it.effectiveTargetVolume)} ${it.effectiveUnit} (${it.progressPercent}%)"
+        } ?: "Обновлён объём по чек-листу"
 
         val updatedTask = currentTask
             .copy(
@@ -1342,13 +1354,77 @@ class EzhednevnikViewModel(
                     nowText(),
                     actor.shortName,
                     nextStatus,
-                    "Отчёт по чек-листу: выполнено ${SubtaskItem.formatVolumeNumber(newCompletedVol)} (${updatedDecoded.firstOrNull { it.id == subtaskId }?.progressPercent ?: 0}%)"
+                    itemLog
                 ).encode()
             )
-            .withUpdatedVolume(tVol, nextTaskCompletedVol, currentTask.effectiveVolumeUnit)
+            .withUpdatedVolume(newTarget, newCompleted, newUnit)
 
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Объём по пункту чек-листа сохранён (${updatedTask.completionPercent()}%)"
+        _bannerMessage.value = itemLog
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+            }
+        }
+    }
+
+    fun updateSubtaskDetails(
+        task: TaskDocument,
+        subtaskId: String,
+        newTargetVol: Double,
+        newCompletedVol: Double,
+        newUnit: String
+    ) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val safeTarget = newTargetVol.takeIf { it > 0.0 } ?: 1.0
+        val safeCompleted = newCompletedVol.coerceIn(0.0, safeTarget)
+        val safeUnit = newUnit.trim().ifBlank { "шт" }
+        var changedItem: SubtaskItem? = null
+
+        val updatedDecoded = currentTask.decodedSubtasks().map { item ->
+            if (item.id == subtaskId) {
+                val updatedItem = item.copy(
+                    targetVolume = safeTarget,
+                    completedVolume = safeCompleted,
+                    isDone = safeCompleted >= safeTarget,
+                    unit = safeUnit
+                )
+                changedItem = updatedItem
+                updatedItem
+            } else {
+                item
+            }
+        }
+        val updatedEncoded = updatedDecoded.map { it.encode() }
+        val (taskTarget, taskCompleted, taskUnit) = syncTaskVolumeFromChecklist(currentTask, updatedDecoded)
+
+        val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW && safeCompleted > 0.0) {
+            TaskStatus.IN_PROGRESS.code
+        } else {
+            currentTask.status
+        }
+
+        val itemLog = changedItem?.let {
+            "Пункт «${it.title}»: выполнено ${SubtaskItem.formatVolumeNumber(it.effectiveCompletedVolume)} из ${SubtaskItem.formatVolumeNumber(it.effectiveTargetVolume)} ${it.effectiveUnit} (${it.progressPercent}%)"
+        } ?: "Обновлены параметры пункта чек-листа"
+
+        val updatedTask = currentTask
+            .copy(
+                subtaskItems = updatedEncoded,
+                status = nextStatus,
+                historyItems = currentTask.historyItems + StatusHistoryEntry(
+                    nowText(),
+                    actor.shortName,
+                    nextStatus,
+                    itemLog
+                ).encode()
+            )
+            .withUpdatedVolume(taskTarget, taskCompleted, taskUnit)
+
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = itemLog
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -1365,24 +1441,24 @@ class EzhednevnikViewModel(
 
         val clamped = newCompletedVol.coerceIn(0.0, tVol)
         val unit = currentTask.effectiveVolumeUnit.ifBlank { "шт" }
-        val pct = ((clamped / tVol) * 100.0).toInt().coerceIn(0, 100)
+        val ratio = (clamped / tVol).coerceIn(0.0, 1.0)
+        val pct = (ratio * 100.0).toInt().coerceIn(0, 100)
 
-        // Синхронизируем с подзадачей объёма в чек-листе
+        // Пропорционально синхронизируем выполненный объём по пунктам чек-листа
         val decoded = currentTask.decodedSubtasks()
         val updatedDecoded = decoded.map { sub ->
-            if (sub.id == "sub_vol_main" || sub.targetVolume == tVol) {
-                sub.copy(
-                    completedVolume = clamped,
-                    isDone = clamped >= tVol
-                )
-            } else if (pct == 100) {
-                sub.copy(
-                    isDone = true,
-                    completedVolume = if (sub.hasVolume) sub.targetVolume else sub.completedVolume
-                )
+            val subTarget = sub.effectiveTargetVolume
+            val subCompleted = if (decoded.size == 1) {
+                clamped.coerceIn(0.0, subTarget)
             } else {
-                sub
+                (subTarget * ratio).coerceIn(0.0, subTarget)
             }
+            sub.copy(
+                targetVolume = subTarget,
+                completedVolume = subCompleted,
+                isDone = subCompleted >= subTarget,
+                unit = sub.effectiveUnit
+            )
         }
         val updatedEncoded = updatedDecoded.map { it.encode() }
 
@@ -1418,25 +1494,32 @@ class EzhednevnikViewModel(
     fun addSubtaskToTask(
         task: TaskDocument,
         title: String,
-        targetVolume: Double = 0.0,
-        unit: String = ""
+        targetVolume: Double = 1.0,
+        unit: String = "шт"
     ) {
         val clean = title.trim()
         if (clean.isBlank()) return
         val currentTask = findTaskById(task.id) ?: task
+        val resolvedTarget = targetVolume.takeIf { it > 0.0 } ?: 1.0
+        val resolvedUnit = unit.trim().ifBlank { currentTask.effectiveVolumeUnit.ifBlank { "шт" } }
         val newItem = SubtaskItem(
             id = "sub_${System.currentTimeMillis()}",
             title = clean,
             isDone = false,
-            targetVolume = targetVolume.coerceAtLeast(0.0),
+            targetVolume = resolvedTarget,
             completedVolume = 0.0,
-            unit = unit.trim()
-        ).encode()
-        val updatedEncoded = currentTask.subtaskItems + newItem
-        val updatedTask = currentTask.copy(
-            subtaskItems = updatedEncoded
+            unit = resolvedUnit
         )
+        val updatedDecoded = currentTask.decodedSubtasks() + newItem
+        val updatedEncoded = updatedDecoded.map { it.encode() }
+        val (taskTarget, taskCompleted, taskUnit) = syncTaskVolumeFromChecklist(currentTask, updatedDecoded)
+
+        val updatedTask = currentTask
+            .copy(subtaskItems = updatedEncoded)
+            .withUpdatedVolume(taskTarget, taskCompleted, taskUnit)
+
         upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Добавлен пункт чек-листа «$clean» (план: ${SubtaskItem.formatVolumeNumber(resolvedTarget)} $resolvedUnit)"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {

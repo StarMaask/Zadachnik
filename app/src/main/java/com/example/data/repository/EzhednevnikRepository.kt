@@ -303,21 +303,21 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             .take(120)
             .ifBlank { "usr_${System.currentTimeMillis()}" }
         val normalizedEmail = email.trim().lowercase().ifBlank { "$safeMemberId@site1.ru" }
-        val isAutoHead = forceHeadActivation || SiteMemberDocument.isRootHeadEmail(normalizedEmail)
+        val isAutoAdmin = forceHeadActivation || SiteMemberDocument.isRootAdminEmail(normalizedEmail)
 
-        val resolvedRole = if (isAutoHead) CorporateRole.HEAD.code else "PENDING"
-        val resolvedStatus = if (isAutoHead) {
+        val resolvedRole = if (isAutoAdmin) CorporateRole.ADMIN.code else "PENDING"
+        val resolvedStatus = if (isAutoAdmin) {
             MemberApprovalStatus.APPROVED.code
         } else {
             MemberApprovalStatus.PENDING.code
         }
-        val resolvedGroup = if (isAutoHead) {
+        val resolvedGroup = if (isAutoAdmin) {
             CorporateSeedData.workGroups.last()
         } else {
             requestedGroup
         }
-        val resolvedPosition = if (isAutoHead) {
-            "Начальник строительного участка"
+        val resolvedPosition = if (isAutoAdmin) {
+            "Администратор системы"
         } else {
             position.ifBlank { "Специалист участка" }
         }
@@ -343,20 +343,23 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
                 )
                 if (existingObj != null) {
-                    if (isAutoHead && existingObj.role != CorporateRole.HEAD.code) {
-                        existingDoc.reference.update(
-                            mapOf(
-                                "role" to CorporateRole.HEAD.code,
-                                "approvalStatus" to MemberApprovalStatus.APPROVED.code,
-                                "position" to "Начальник строительного участка",
-                                "approvedByName" to "Система (Автоопределение руководителя)",
-                                "updatedAt" to FieldValue.serverTimestamp()
-                            )
-                        ).await()
+                    if (isAutoAdmin && existingObj.parsedRoleOrNull != CorporateRole.ADMIN) {
+                        runCatching {
+                            existingDoc.reference.update(
+                                mapOf(
+                                    "role" to CorporateRole.HEAD.code,
+                                    "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                                    "position" to "Администратор системы",
+                                    "approvedByName" to "Администратор||adm:1",
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            ).await()
+                        }
                         return@runCatching existingObj.copy(
-                            role = CorporateRole.HEAD.code,
+                            role = CorporateRole.ADMIN.code,
                             approvalStatus = MemberApprovalStatus.APPROVED.code,
-                            position = "Начальник строительного участка"
+                            position = "Администратор системы",
+                            approvedByName = "Администратор||adm:1"
                         )
                     }
                     return@runCatching existingObj
@@ -381,20 +384,21 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 }
             }
 
+            val firestoreSafeRole = if (isAutoAdmin) CorporateRole.HEAD.code else resolvedRole
             val payload = mutableMapOf<String, Any>(
                 "memberId" to safeMemberId,
                 "email" to normalizedEmail.take(160),
                 "fullName" to fullName.ifBlank { "Сотрудник участка" }.take(120),
                 "position" to resolvedPosition.take(120),
-                "role" to resolvedRole,
+                "role" to firestoreSafeRole,
                 "approvalStatus" to resolvedStatus,
                 "groupId" to resolvedGroup.id.take(64),
                 "groupName" to resolvedGroup.name.take(120),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            if (isAutoHead) {
-                payload["approvedByName"] = "Система (Владелец / Код руководителя)"
+            if (isAutoAdmin) {
+                payload["approvedByName"] = "Администратор||adm:1"
             }
             try {
                 docRef.set(payload).await()
@@ -415,7 +419,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             approvalStatus = resolvedStatus,
             groupId = resolvedGroup.id,
             groupName = resolvedGroup.name,
-            approvedByName = if (isAutoHead) "Система (Владелец / Код руководителя)" else null
+            approvedByName = if (isAutoAdmin) "Администратор||adm:1" else null
         )
     }
 
@@ -426,8 +430,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         assignedGroup: WorkGroup,
         customPosition: String? = null
     ): Result<SiteMemberDocument> = runCatching {
-        if (actor.role != CorporateRole.HEAD) {
-            throw IllegalAccessException("Назначать роли пользователям может только Руководитель участка")
+        if (!actor.role.isAdminOrHead) {
+            throw IllegalAccessException("Назначать роли пользователям может только Администратор или Руководитель участка")
         }
         val safeId = targetMember.memberId.ifBlank { targetMember.id }
             .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
@@ -502,8 +506,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         actor: CorporateEmployee,
         targetMember: SiteMemberDocument
     ): Result<SiteMemberDocument> = runCatching {
-        if (actor.role != CorporateRole.HEAD) {
-            throw IllegalAccessException("Отклонять заявки на вход может только Руководитель участка")
+        if (!actor.role.isAdminOrHead) {
+            throw IllegalAccessException("Отклонять заявки на вход может только Администратор или Руководитель участка")
         }
         val safeId = targetMember.memberId.ifBlank { targetMember.id }
             .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
@@ -550,8 +554,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         siteName: String = "",
         phone: String = ""
     ): Result<SiteMemberDocument> = runCatching {
-        if (actor.role != CorporateRole.HEAD) {
-            throw IllegalAccessException("Регистрировать сотрудников и назначать роли может только Руководитель")
+        if (!actor.role.isAdminOrHead) {
+            throw IllegalAccessException("Регистрировать сотрудников и назначать роли может только Администратор или Руководитель")
         }
         require(fullName.isNotBlank()) { "Укажите ФИО сотрудника" }
 
@@ -663,9 +667,11 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 null
             }
             val safeEmail = normalizedMember.email.ifBlank { "$safeId@site1.ru" }.take(160)
-            val safeRole = normalizedMember.role.takeIf {
-                it in listOf("PENDING", "WORKER", "ITR", "HEAD")
-            } ?: CorporateRole.WORKER.code
+            val safeRole = when (normalizedMember.role) {
+                CorporateRole.ADMIN.code -> CorporateRole.HEAD.code
+                in listOf("PENDING", "WORKER", "ITR", "HEAD") -> normalizedMember.role
+                else -> CorporateRole.WORKER.code
+            }
             val safeStatus = normalizedMember.approvalStatus.takeIf {
                 it in listOf("PENDING", "APPROVED", "REJECTED")
             } ?: MemberApprovalStatus.APPROVED.code
@@ -775,8 +781,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         actor: CorporateEmployee,
         memberId: String
     ): Result<Unit> = runCatching {
-        if (actor.role != CorporateRole.HEAD) {
-            throw IllegalAccessException("Удалять учётные записи сотрудников может только Руководитель")
+        if (!actor.role.isAdminOrHead) {
+            throw IllegalAccessException("Удалять учётные записи сотрудников может только Администратор или Руководитель")
         }
         val safeId = memberId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
         if (auth.currentUser != null && safeId.isNotBlank()) {
@@ -1536,7 +1542,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         // - ITR: tasks of subordinate brigade & self
         // - WORKER: personal tasks + aggregated brigade stats
         val scopedTasks = when (actor.role) {
-            CorporateRole.HEAD -> allTasks
+            CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
             CorporateRole.ITR -> allTasks.filter {
                 it.groupId == actor.groupId || it.assigneeId == actor.id || it.creatorId == actor.id
             }
@@ -1544,6 +1550,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         }
 
         val scopeLabel = when (actor.role) {
+            CorporateRole.ADMIN -> "Полный доступ администратора (${actor.shortName})"
             CorporateRole.HEAD -> "Весь участок (${actor.shortName})"
             CorporateRole.ITR -> "Подчинённые и ${actor.groupName}"
             CorporateRole.WORKER -> "Личная статистика (${actor.shortName})"
@@ -1563,7 +1570,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
         val basePool = if (!customEmployees.isNullOrEmpty()) {
             when (actor.role) {
-                CorporateRole.HEAD -> customEmployees
+                CorporateRole.ADMIN, CorporateRole.HEAD -> customEmployees
                 CorporateRole.ITR -> customEmployees.filter {
                     it.groupId == actor.groupId || it.id == actor.id
                 }
@@ -1601,9 +1608,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             )
         }.sortedByDescending { it.disciplineScore }
 
-        // Group breakdown: Workers see their own group aggregate; ITR sees their group; Head sees all groups
+        // Group breakdown: Workers see their own group aggregate; ITR sees their group; Admin/Head sees all groups
         val visibleGroups = when (actor.role) {
-            CorporateRole.HEAD -> CorporateSeedData.workGroups
+            CorporateRole.ADMIN, CorporateRole.HEAD -> CorporateSeedData.workGroups
             CorporateRole.ITR, CorporateRole.WORKER -> CorporateSeedData.workGroups.filter {
                 it.id == actor.groupId
             }

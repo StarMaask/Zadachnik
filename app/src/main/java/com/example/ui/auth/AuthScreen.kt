@@ -3,15 +3,11 @@ package com.example.ui.auth
 import android.app.Activity
 import android.content.Context
 import android.util.Log
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -32,27 +28,32 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.CalendarToday
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassTop
-import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,7 +63,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -73,6 +73,7 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import com.example.R
+import com.example.data.local.LocalWorkspaceStore
 import com.example.data.model.SiteMemberDocument
 import com.example.data.model.WorkGroup
 import com.example.data.seed.CorporateSeedData
@@ -93,48 +94,67 @@ data class CorporateLoginSession(
     val userId: String,
     val email: String,
     val fullName: String,
-    val isHeadActivated: Boolean
+    val isHeadActivated: Boolean,
+    val requestedSubdivision: String = "",
+    val requestedSiteName: String = "",
+    val requestedPosition: String = ""
 )
 
 private const val PREFS_AUTH_NAME = "ezhednevnik_corporate_auth"
 private const val KEY_SAVED_USER_ID = "saved_user_id"
-private const val KEY_SAVED_EMAIL = "saved_email"
 private const val KEY_SAVED_NAME = "saved_name"
-private const val KEY_SAVED_HEAD_FLAG = "saved_head_flag"
+private const val KEY_SAVED_SUBDIVISION = "saved_subdivision"
+private const val KEY_SAVED_SITE = "saved_site"
+private const val KEY_SAVED_POSITION = "saved_position"
+private const val KEY_SAVED_ADMIN_FLAG = "saved_admin_flag"
 
 fun saveCorporateSession(context: Context, session: CorporateLoginSession) {
+    val isAdmin = session.isHeadActivated || SiteMemberDocument.isRootAdminEmail(session.email)
     context.applicationContext
         .getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_SAVED_USER_ID, session.userId)
-        .putString(KEY_SAVED_EMAIL, session.email)
         .putString(KEY_SAVED_NAME, session.fullName)
-        .putBoolean(KEY_SAVED_HEAD_FLAG, session.isHeadActivated)
+        .putString(KEY_SAVED_SUBDIVISION, session.requestedSubdivision)
+        .putString(KEY_SAVED_SITE, session.requestedSiteName)
+        .putString(KEY_SAVED_POSITION, session.requestedPosition)
+        .putBoolean(KEY_SAVED_ADMIN_FLAG, isAdmin)
         .apply()
 }
 
 fun loadSavedCorporateSession(context: Context): CorporateLoginSession? {
+    val prefs = context.applicationContext.getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
+    val savedSub = prefs.getString(KEY_SAVED_SUBDIVISION, "") ?: ""
+    val savedSite = prefs.getString(KEY_SAVED_SITE, "") ?: ""
+    val savedPos = prefs.getString(KEY_SAVED_POSITION, "") ?: ""
+
     val firebaseUser = Firebase.auth.currentUser
     if (firebaseUser != null) {
-        val email = firebaseUser.email ?: "m241185m@gmail.com"
-        val name = firebaseUser.displayName ?: "Руководитель участка"
+        val email = firebaseUser.email.orEmpty()
+        val isAdmin = SiteMemberDocument.isRootAdminEmail(email) || prefs.getBoolean(KEY_SAVED_ADMIN_FLAG, false)
+        val name = firebaseUser.displayName ?: prefs.getString(KEY_SAVED_NAME, null)
+            ?: if (isAdmin) "Администратор" else "Сотрудник участка"
         return CorporateLoginSession(
             userId = firebaseUser.uid,
             email = email,
             fullName = name,
-            isHeadActivated = SiteMemberDocument.isRootHeadEmail(email)
+            isHeadActivated = isAdmin,
+            requestedSubdivision = savedSub,
+            requestedSiteName = savedSite,
+            requestedPosition = savedPos
         )
     }
-    val prefs = context.applicationContext.getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
     val savedId = prefs.getString(KEY_SAVED_USER_ID, null) ?: return null
-    val savedEmail = prefs.getString(KEY_SAVED_EMAIL, "") ?: ""
     val savedName = prefs.getString(KEY_SAVED_NAME, "Сотрудник участка") ?: "Сотрудник участка"
-    val isHead = prefs.getBoolean(KEY_SAVED_HEAD_FLAG, false) || SiteMemberDocument.isRootHeadEmail(savedEmail)
+    val isAdmin = prefs.getBoolean(KEY_SAVED_ADMIN_FLAG, false)
     return CorporateLoginSession(
         userId = savedId,
-        email = savedEmail,
+        email = "",
         fullName = savedName,
-        isHeadActivated = isHead
+        isHeadActivated = isAdmin,
+        requestedSubdivision = savedSub,
+        requestedSiteName = savedSite,
+        requestedPosition = savedPos
     )
 }
 
@@ -189,12 +209,14 @@ fun attemptAutoSignIn(
                 val authResult = Firebase.auth.signInWithCredential(authCredential).await()
                 val user = authResult.user
                 val email = user?.email ?: tokenCred.id
-                val fullName = user?.displayName ?: tokenCred.displayName ?: "Сотрудник участка"
+                val isAdmin = SiteMemberDocument.isRootAdminEmail(email)
+                val fullName = user?.displayName ?: tokenCred.displayName
+                    ?: if (isAdmin) "Администратор" else "Сотрудник участка"
                 val session = CorporateLoginSession(
                     userId = user?.uid ?: "usr_${email.hashCode()}",
                     email = email,
                     fullName = fullName,
-                    isHeadActivated = SiteMemberDocument.isRootHeadEmail(email)
+                    isHeadActivated = isAdmin
                 )
                 saveCorporateSession(context, session)
                 onAuthSuccess(session)
@@ -210,6 +232,9 @@ fun attemptAutoSignIn(
 fun onGoogleSignInClicked(
     context: Context,
     credentialManager: CredentialManager,
+    selectedSubdivision: String = "",
+    selectedSiteName: String = "",
+    selectedPosition: String = "",
     onAuthSuccess: (CorporateLoginSession) -> Unit,
     onAuthError: (String) -> Unit,
     scope: CoroutineScope,
@@ -218,7 +243,7 @@ fun onGoogleSignInClicked(
     val clientId = try {
         context.getString(R.string.default_web_client_id)
     } catch (e: Exception) {
-        onAuthError("Конфигурация Google не найдена. Используйте вход по ФИО и Email ниже.")
+        onAuthError("Конфигурация Google не найдена. Используйте форму входа/регистрации ниже.")
         return
     }
 
@@ -235,16 +260,23 @@ fun onGoogleSignInClicked(
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val tokenCred = GoogleIdTokenCredential.createFrom(credential.data)
                 val email = tokenCred.id
-                val displayName = tokenCred.displayName ?: "Сотрудник участка"
+                val isAdmin = SiteMemberDocument.isRootAdminEmail(email)
+                val displayName = tokenCred.displayName
+                    ?: if (isAdmin) "Администратор" else "Сотрудник участка"
                 try {
                     val authCredential = GoogleAuthProvider.getCredential(tokenCred.idToken, null)
                     val authResult = Firebase.auth.signInWithCredential(authCredential).await()
                     val fbUser = authResult.user
+                    val resolvedEmail = fbUser?.email ?: email
+                    val resolvedAdmin = SiteMemberDocument.isRootAdminEmail(resolvedEmail)
                     val session = CorporateLoginSession(
-                        userId = fbUser?.uid ?: "usr_${email.replace(Regex("[^a-zA-Z0-9]"), "_")}",
-                        email = fbUser?.email ?: email,
+                        userId = fbUser?.uid ?: "usr_${resolvedEmail.replace(Regex("[^a-zA-Z0-9]"), "_")}",
+                        email = resolvedEmail,
                         fullName = fbUser?.displayName ?: displayName,
-                        isHeadActivated = SiteMemberDocument.isRootHeadEmail(email)
+                        isHeadActivated = resolvedAdmin,
+                        requestedSubdivision = selectedSubdivision,
+                        requestedSiteName = selectedSiteName,
+                        requestedPosition = selectedPosition
                     )
                     saveCorporateSession(context, session)
                     onAuthSuccess(session)
@@ -254,20 +286,23 @@ fun onGoogleSignInClicked(
                         userId = safeId,
                         email = email,
                         fullName = displayName,
-                        isHeadActivated = SiteMemberDocument.isRootHeadEmail(email)
+                        isHeadActivated = isAdmin,
+                        requestedSubdivision = selectedSubdivision,
+                        requestedSiteName = selectedSiteName,
+                        requestedPosition = selectedPosition
                     )
                     saveCorporateSession(context, session)
                     onAuthSuccess(session)
                 }
             } else {
-                onAuthError("Не удалось получить токен Google. Воспользуйтесь входом по Email ниже.")
+                onAuthError("Не удалось получить токен Google. Воспользуйтесь формой входа ниже.")
             }
         } catch (e: GetCredentialCancellationException) {
             Log.w("Auth", "Google Sign-In cancelled: ${e.message}")
             onAuthCancelled()
         } catch (e: Exception) {
             Log.e("Auth", "Google Sign-In failed", e)
-            onAuthError("Сервисы Google недоступны или заблокированы. Войдите по Email ниже.")
+            onAuthError("Сервисы Google недоступны. Воспользуйтесь формой входа по учётной записи ниже.")
         }
     }
 }
@@ -293,6 +328,7 @@ fun signOut(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuthScreen(
     onAuthSuccess: (CorporateLoginSession) -> Unit
@@ -303,10 +339,26 @@ fun AuthScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    val availableSubdivisions = remember(context) {
+        LocalWorkspaceStore.loadSubdivisions(context)
+    }
+    val availableSites = remember(context) {
+        LocalWorkspaceStore.loadSites(context)
+    }
+
     var fullNameInput by remember { mutableStateOf("") }
     var emailInput by remember { mutableStateOf("") }
-    var headCodeInput by remember { mutableStateOf("") }
-    var showHeadCodeField by remember { mutableStateOf(false) }
+    var positionInput by remember { mutableStateOf("") }
+
+    var selectedSubdivision by remember(availableSubdivisions) {
+        mutableStateOf(availableSubdivisions.firstOrNull() ?: "Основное подразделение")
+    }
+    var subdivisionDropdownExpanded by remember { mutableStateOf(false) }
+
+    var selectedSite by remember(availableSites) {
+        mutableStateOf(availableSites.firstOrNull() ?: CorporateSeedData.DEFAULT_SITE_NAME)
+    }
+    var showSitePickerDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         attemptAutoSignIn(
@@ -334,22 +386,21 @@ fun AuthScreen(
                     .fillMaxWidth()
                     .widthIn(max = 460.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Minimalist App Brand Header
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier.size(52.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.CalendarToday,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                     }
                 }
@@ -357,14 +408,14 @@ fun AuthScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = "Ежедневник",
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Управление задачами, фотоотчёты и отчётность",
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "Учёт выполнения объёмов работ, чек-листы и фотоотчёты",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -384,7 +435,6 @@ fun AuthScreen(
                     }
                 }
 
-                // Card with Login Form
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -392,8 +442,8 @@ fun AuthScreen(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Column(
-                        modifier = Modifier.padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
                             onClick = {
@@ -402,6 +452,9 @@ fun AuthScreen(
                                 onGoogleSignInClicked(
                                     context = context,
                                     credentialManager = credentialManager,
+                                    selectedSubdivision = selectedSubdivision,
+                                    selectedSiteName = selectedSite,
+                                    selectedPosition = positionInput.trim(),
                                     onAuthSuccess = { session ->
                                         isLoading = false
                                         onAuthSuccess(session)
@@ -452,7 +505,7 @@ fun AuthScreen(
                         ) {
                             HorizontalDivider(modifier = Modifier.weight(1f))
                             Text(
-                                text = "или по ФИО и Email",
+                                text = "Регистрация и вход по учётной записи",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -462,7 +515,7 @@ fun AuthScreen(
                         OutlinedTextField(
                             value = fullNameInput,
                             onValueChange = { fullNameInput = it },
-                            label = { Text("ФИО сотрудника") },
+                            label = { Text("ФИО пользователя") },
                             placeholder = { Text("Например: Иванов И.И.") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
@@ -474,8 +527,8 @@ fun AuthScreen(
                         OutlinedTextField(
                             value = emailInput,
                             onValueChange = { emailInput = it },
-                            label = { Text("Электронная почта (Email)") },
-                            placeholder = { Text("user@company.ru") },
+                            label = { Text("Учётная запись (Email) *") },
+                            placeholder = { Text("Введите вашу эл. почту") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
@@ -483,56 +536,117 @@ fun AuthScreen(
                                 .testTag("login_email_input")
                         )
 
-                        // Submenu toggle for Head Activation Code
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { showHeadCodeField = !showHeadCodeField }
-                                .padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Key,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Код Руководителя (для администратора)",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                            Icon(
-                                imageVector = if (showHeadCodeField) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                        val isRootAdmin = SiteMemberDocument.isRootAdminEmail(emailInput)
 
-                        AnimatedVisibility(visible = showHeadCodeField) {
+                        if (!isRootAdmin) {
                             OutlinedTextField(
-                                value = headCodeInput,
-                                onValueChange = { headCodeInput = it },
-                                label = { Text("Код активации Руководителя (1001)") },
+                                value = positionInput,
+                                onValueChange = { positionInput = it },
+                                label = { Text("Должность / специальность") },
+                                placeholder = { Text("Например: Монтажник, Инженер ПТО") },
                                 singleLine = true,
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .testTag("login_head_code_input")
+                                    .testTag("login_position_input")
                             )
+
+                            // Выпадающий список выбора принадлежности к подразделению
+                            ExposedDropdownMenuBox(
+                                expanded = subdivisionDropdownExpanded,
+                                onExpandedChange = { subdivisionDropdownExpanded = !subdivisionDropdownExpanded },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = selectedSubdivision,
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("Принадлежность к подразделению") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Apartment,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = subdivisionDropdownExpanded)
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                        .fillMaxWidth()
+                                        .testTag("registration_subdivision_dropdown")
+                                )
+                                ExposedDropdownMenu(
+                                    expanded = subdivisionDropdownExpanded,
+                                    onDismissRequest = { subdivisionDropdownExpanded = false }
+                                ) {
+                                    availableSubdivisions.forEach { subdiv ->
+                                        DropdownMenuItem(
+                                            text = { Text(subdiv) },
+                                            onClick = {
+                                                selectedSubdivision = subdiv
+                                                subdivisionDropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Окно выбора принадлежности к участку
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showSitePickerDialog = true }
+                                    .testTag("registration_site_selector_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.LocationOn,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column {
+                                            Text(
+                                                text = "Принадлежность к участку (нажмите для выбора)",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = selectedSite,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = "Выбрать",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
                         }
 
-                        val isAutoHeadByEmail = SiteMemberDocument.isRootHeadEmail(emailInput)
-                        val isHeadByCode = headCodeInput.trim() == SiteMemberDocument.DEFAULT_HEAD_ACTIVATION_CODE
-                        val willEnterAsHead = isAutoHeadByEmail || isHeadByCode
-
-                        if (emailInput.isNotBlank() || headCodeInput.isNotBlank()) {
+                        if (emailInput.isNotBlank()) {
                             Surface(
-                                color = if (willEnterAsHead) {
+                                color = if (isRootAdmin) {
                                     MaterialTheme.colorScheme.primaryContainer
                                 } else {
                                     MaterialTheme.colorScheme.surfaceVariant
@@ -545,17 +659,17 @@ fun AuthScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = if (willEnterAsHead) Icons.Default.AdminPanelSettings else Icons.Default.HourglassTop,
+                                        imageVector = if (isRootAdmin) Icons.Default.AdminPanelSettings else Icons.Default.HourglassTop,
                                         contentDescription = null,
-                                        tint = if (willEnterAsHead) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        tint = if (isRootAdmin) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = if (willEnterAsHead) {
-                                            "Вход с правами Руководителя участка"
+                                        text = if (isRootAdmin) {
+                                            "Вход под Администратором: все права управления без ограничений"
                                         } else {
-                                            "После входа заявка поступит Руководителю на утверждение роли"
+                                            "Подразделение: $selectedSubdivision • Участок: $selectedSite"
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -566,21 +680,28 @@ fun AuthScreen(
 
                         OutlinedButton(
                             onClick = {
-                                val cleanEmail = emailInput.trim().lowercase().ifBlank { "m241185m@gmail.com" }
+                                val cleanEmail = emailInput.trim().lowercase()
+                                if (cleanEmail.isBlank()) {
+                                    errorMessage = "Укажите адрес электронной почты учётной записи для входа"
+                                    return@OutlinedButton
+                                }
+                                val adminActive = SiteMemberDocument.isRootAdminEmail(cleanEmail)
                                 val cleanName = fullNameInput.trim().ifBlank {
-                                    if (SiteMemberDocument.isRootHeadEmail(cleanEmail) || isHeadByCode) {
-                                        "Руководитель участка"
+                                    if (adminActive) {
+                                        "Администратор"
                                     } else {
-                                        "Сотрудник участка"
+                                        cleanEmail.substringBefore("@").ifBlank { "Сотрудник участка" }
                                     }
                                 }
-                                val headActive = SiteMemberDocument.isRootHeadEmail(cleanEmail) || isHeadByCode
                                 val safeId = "usr_${cleanEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
                                 val session = CorporateLoginSession(
                                     userId = safeId,
                                     email = cleanEmail,
                                     fullName = cleanName,
-                                    isHeadActivated = headActive
+                                    isHeadActivated = adminActive,
+                                    requestedSubdivision = selectedSubdivision,
+                                    requestedSiteName = selectedSite,
+                                    requestedPosition = positionInput.trim()
                                 )
                                 saveCorporateSession(context, session)
                                 onAuthSuccess(session)
@@ -592,13 +713,13 @@ fun AuthScreen(
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Badge,
+                                imageVector = if (isRootAdmin) Icons.Default.AdminPanelSettings else Icons.Default.Badge,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Войти по учётной записи",
+                                text = if (isRootAdmin) "Войти как Администратор" else "Войти / Зарегистрироваться",
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -607,27 +728,111 @@ fun AuthScreen(
             }
         }
     }
+
+    if (showSitePickerDialog) {
+        SiteSelectionDialog(
+            availableSites = availableSites,
+            selectedSite = selectedSite,
+            onSelectSite = { chosen ->
+                selectedSite = chosen
+                showSitePickerDialog = false
+            },
+            onDismiss = { showSitePickerDialog = false }
+        )
+    }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun SiteSelectionDialog(
+    availableSites: List<String>,
+    selectedSite: String,
+    onSelectSite: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Выбор принадлежности к участку",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                availableSites.forEach { siteOption ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (siteOption == selectedSite) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectSite(siteOption) }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = siteOption == selectedSite,
+                                onClick = { onSelectSite(siteOption) }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = siteOption,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (siteOption == selectedSite) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Закрыть")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PendingRoleApprovalScreen(
     member: SiteMemberDocument,
     bannerMessage: String?,
-    onUpdateRequestDetails: (position: String, group: WorkGroup) -> Unit,
+    availableSubdivisions: List<String> = LocalWorkspaceStore.DEFAULT_SUBDIVISIONS,
+    availableSites: List<String> = LocalWorkspaceStore.DEFAULT_SITES,
+    onUpdateRequestDetails: (position: String, group: WorkGroup, siteName: String) -> Unit,
     onRefreshStatus: () -> Unit,
-    onActivateHeadWithCode: (code: String) -> Boolean,
     onSignOut: () -> Unit
 ) {
     var positionText by remember(member.position) { mutableStateOf(member.position) }
-    var selectedGroup by remember(member.groupId) {
+    var selectedSubdivision by remember(member.groupName, availableSubdivisions) {
         mutableStateOf(
-            CorporateSeedData.workGroups.firstOrNull { it.id == member.groupId }
-                ?: CorporateSeedData.workGroups.first()
+            member.groupName.ifBlank {
+                availableSubdivisions.firstOrNull() ?: "Основное подразделение"
+            }
         )
     }
-    var headActivationCode by remember { mutableStateOf("") }
-    var showHeadCodeSection by remember { mutableStateOf(false) }
+    var subdivisionExpanded by remember { mutableStateOf(false) }
+
+    var selectedSite by remember(member.effectiveSiteName, availableSites) {
+        mutableStateOf(
+            member.effectiveSiteName.ifBlank {
+                availableSites.firstOrNull() ?: CorporateSeedData.DEFAULT_SITE_NAME
+            }
+        )
+    }
+    var showSiteDialog by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -674,7 +879,7 @@ fun PendingRoleApprovalScreen(
 
                 Text(
                     text = if (member.isRejected) {
-                        "Доступ отклонён руководителем"
+                        "Доступ отклонён"
                     } else {
                         "Ожидание назначения роли"
                     },
@@ -683,7 +888,7 @@ fun PendingRoleApprovalScreen(
                 )
 
                 Text(
-                    text = "Ваша учётная запись отправлена Руководителю участка для назначения роли (Рабочий, ИТР или Руководитель).",
+                    text = "Ваша учётная запись зарегистрирована. Администратор или Руководитель назначит вам роль в системе.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -735,20 +940,72 @@ fun PendingRoleApprovalScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
 
-                        Text(
-                            text = "Подразделение:",
-                            style = MaterialTheme.typography.labelMedium
-                        )
-
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        // Выпадающий список подразделения
+                        ExposedDropdownMenuBox(
+                            expanded = subdivisionExpanded,
+                            onExpandedChange = { subdivisionExpanded = !subdivisionExpanded },
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            CorporateSeedData.workGroups.forEach { grp ->
-                                FilterChip(
-                                    selected = selectedGroup.id == grp.id,
-                                    onClick = { selectedGroup = grp },
-                                    label = { Text(grp.name) }
+                            OutlinedTextField(
+                                value = selectedSubdivision,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Подразделение") },
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = subdivisionExpanded)
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                    .fillMaxWidth()
+                            )
+                            ExposedDropdownMenu(
+                                expanded = subdivisionExpanded,
+                                onDismissRequest = { subdivisionExpanded = false }
+                            ) {
+                                availableSubdivisions.forEach { subdiv ->
+                                    DropdownMenuItem(
+                                        text = { Text(subdiv) },
+                                        onClick = {
+                                            selectedSubdivision = subdiv
+                                            subdivisionExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        // Окно выбора принадлежности к участку
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showSiteDialog = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Принадлежность к участку",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = selectedSite,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Text(
+                                    text = "Изменить",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
@@ -758,7 +1015,20 @@ fun PendingRoleApprovalScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             OutlinedButton(
-                                onClick = { onUpdateRequestDetails(positionText, selectedGroup) },
+                                onClick = {
+                                    val resolvedGroup = CorporateSeedData.workGroups.firstOrNull {
+                                        it.name.equals(selectedSubdivision, ignoreCase = true)
+                                    } ?: WorkGroup(
+                                        id = "grp_${selectedSubdivision.hashCode()}",
+                                        name = selectedSubdivision,
+                                        siteId = "site_1",
+                                        siteName = selectedSite,
+                                        supervisorId = "emp_head_1",
+                                        supervisorName = "Руководитель",
+                                        specialization = selectedSubdivision
+                                    )
+                                    onUpdateRequestDetails(positionText, resolvedGroup, selectedSite)
+                                },
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Text("Сохранить")
@@ -777,66 +1047,6 @@ fun PendingRoleApprovalScreen(
                     }
                 }
 
-                // Collapsible Head Activation Code section
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { showHeadCodeSection = !showHeadCodeSection },
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Key,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Я Руководитель участка (ввести код)",
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                            Icon(
-                                imageVector = if (showHeadCodeSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null
-                            )
-                        }
-
-                        if (showHeadCodeSection) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            OutlinedTextField(
-                                value = headActivationCode,
-                                onValueChange = { headActivationCode = it },
-                                label = { Text("Код Руководителя (1001)") },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("pending_head_code_input")
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = { onActivateHeadWithCode(headActivationCode) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("activate_head_role_button")
-                            ) {
-                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Подтвердить права Руководителя")
-                            }
-                        }
-                    }
-                }
-
                 OutlinedButton(
                     onClick = onSignOut,
                     modifier = Modifier.fillMaxWidth()
@@ -847,5 +1057,17 @@ fun PendingRoleApprovalScreen(
                 }
             }
         }
+    }
+
+    if (showSiteDialog) {
+        SiteSelectionDialog(
+            availableSites = availableSites,
+            selectedSite = selectedSite,
+            onSelectSite = { chosen ->
+                selectedSite = chosen
+                showSiteDialog = false
+            },
+            onDismiss = { showSiteDialog = false }
+        )
     }
 }

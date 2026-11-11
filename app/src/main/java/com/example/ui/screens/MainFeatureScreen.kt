@@ -139,8 +139,8 @@ fun MainFeatureScreen(
     MainFeatureScreen(
         session = CorporateLoginSession(
             userId = currentUserId,
-            email = "m241185m@gmail.com",
-            fullName = "Руководитель",
+            email = "",
+            fullName = "Администратор",
             isHeadActivated = true
         ),
         onSignOutComplete = {}
@@ -172,6 +172,9 @@ fun MainFeatureScreen(
                     currentUserEmail = session.email,
                     currentUserName = session.fullName,
                     initialHeadActivated = session.isHeadActivated,
+                    initialSubdivision = session.requestedSubdivision,
+                    initialSiteName = session.requestedSiteName,
+                    initialPosition = session.requestedPosition,
                     appContext = app.applicationContext
                 )
             }
@@ -197,6 +200,8 @@ fun MainFeatureScreen(
     val autoReportNight by viewModel.autoScheduleReportNight.collectAsStateWithLifecycle()
     val organizationName by viewModel.organizationName.collectAsStateWithLifecycle()
     val siteName by viewModel.siteName.collectAsStateWithLifecycle()
+    val subdivisionsList by viewModel.subdivisionsList.collectAsStateWithLifecycle()
+    val sitesList by viewModel.sitesList.collectAsStateWithLifecycle()
 
     // Экран ожидания назначения роли для новых сотрудников
     val member = currentMemberRecord
@@ -204,9 +209,10 @@ fun MainFeatureScreen(
         PendingRoleApprovalScreen(
             member = member,
             bannerMessage = bannerMessage,
+            availableSubdivisions = subdivisionsList,
+            availableSites = sitesList,
             onUpdateRequestDetails = viewModel::updateMyPendingRequestDetails,
             onRefreshStatus = viewModel::refreshMyRoleAssignmentStatus,
-            onActivateHeadWithCode = viewModel::activateHeadAccessWithCode,
             onSignOut = {
                 signOut(context, credentialManager, scope, onSignOutComplete)
             }
@@ -234,7 +240,7 @@ fun MainFeatureScreen(
     // Role-based task visibility filter
     val roleVisibleTasks = remember(allTasksRaw, activeEmployee) {
         when (activeEmployee.role) {
-            CorporateRole.HEAD -> allTasksRaw
+            CorporateRole.ADMIN, CorporateRole.HEAD -> allTasksRaw
             CorporateRole.ITR -> allTasksRaw.filter {
                 it.groupId == activeEmployee.groupId ||
                     it.assigneeId == activeEmployee.id ||
@@ -577,6 +583,8 @@ fun MainFeatureScreen(
                                 auditLogs = logs,
                                 organizationName = organizationName,
                                 siteName = siteName,
+                                availableSubdivisions = subdivisionsList,
+                                availableSites = sitesList,
                                 onOpenOrganizationSettings = { showOrgSettingsDialog = true },
                                 onAssignRoleToMember = viewModel::assignRoleToMember,
                                 onEditEmployeeDetails = viewModel::updateEmployeeDetails,
@@ -599,9 +607,11 @@ fun MainFeatureScreen(
         OrganizationSettingsDialog(
             currentOrganizationName = organizationName,
             currentSiteName = siteName,
+            currentSubdivisions = subdivisionsList,
+            currentSites = sitesList,
             onDismiss = { showOrgSettingsDialog = false },
-            onSave = { newOrg, newSite ->
-                viewModel.updateOrganizationAndSite(newOrg, newSite)
+            onSave = { newOrg, newSite, newSubdivisions, newSites ->
+                viewModel.updateAdminSettings(newOrg, newSite, newSubdivisions, newSites)
                 showOrgSettingsDialog = false
             }
         )
@@ -632,8 +642,12 @@ fun MainFeatureScreen(
             },
             onUpdateTaskVolume = { vol -> viewModel.updateTaskVolumeProgress(task, vol) },
             onAddSubtask = { title, vol, unit -> viewModel.addSubtaskToTask(task, title, vol, unit) },
+            onDeleteSubtask = { subId -> viewModel.deleteSubtaskFromTask(task, subId) },
             onAddComment = { txt, mention -> viewModel.addComment(task, txt, mention) },
             onSubmitCompletion = { note -> viewModel.submitCompletion(task, note) },
+            onSubmitWorkerVolumeReport = { manualVol, note ->
+                viewModel.submitWorkerReportWithVolume(task, manualVol, note)
+            },
             onApproveReport = { note -> viewModel.approveReport(task, note) },
             onRejectReport = { reason -> viewModel.rejectReport(task, reason) },
             onArchiveTask = { viewModel.archiveTask(task) },
@@ -705,8 +719,8 @@ private fun TodayTasksContent(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Компактное уведомление для Руководителя при наличии новых заявок
-        if (activeEmployee.role == CorporateRole.HEAD && pendingMembersCount > 0) {
+        // Компактное уведомление для Администратора / Руководителя при наличии новых заявок
+        if (activeEmployee.role.isAdminOrHead && pendingMembersCount > 0) {
             item {
                 Surface(
                     shape = RoundedCornerShape(12.dp),

@@ -75,6 +75,9 @@ class EzhednevnikViewModel(
     private val currentUserEmail: String = "",
     private val currentUserName: String = "",
     private val initialHeadActivated: Boolean = false,
+    private val initialSubdivision: String = "",
+    private val initialSiteName: String = "",
+    private val initialPosition: String = "",
     private val appContext: Context? = null
 ) : ViewModel() {
 
@@ -118,7 +121,17 @@ class EzhednevnikViewModel(
     )
     val siteName: StateFlow<String> = _siteName.asStateFlow()
 
-    // Чистое локальное состояние без фейковых задач и фейковых сотрудников
+    private val _subdivisionsList = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadSubdivisions(it) } ?: LocalWorkspaceStore.DEFAULT_SUBDIVISIONS
+    )
+    val subdivisionsList: StateFlow<List<String>> = _subdivisionsList.asStateFlow()
+
+    private val _sitesList = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadSites(it) } ?: LocalWorkspaceStore.DEFAULT_SITES
+    )
+    val sitesList: StateFlow<List<String>> = _sitesList.asStateFlow()
+
+    // Чистое локальное состояние без фейковых задач, фейковых сотрудников и дублирующих пунктов sub_vol_main
     private val _deletedTaskIds = MutableStateFlow(
         appContext?.let { LocalWorkspaceStore.loadDeletedTaskIds(it) } ?: emptySet()
     )
@@ -127,9 +140,19 @@ class EzhednevnikViewModel(
     )
     private val _localTasks = MutableStateFlow(
         appContext?.let { ctx ->
-            LocalWorkspaceStore.loadTasks(ctx).filterNot {
-                CorporateSeedData.isLegacyFakeSeedTaskId(it.id)
-            }
+            LocalWorkspaceStore.loadTasks(ctx)
+                .filterNot { CorporateSeedData.isLegacyFakeSeedTaskId(it.id) }
+                .map { task ->
+                    val cleanSubtasks = task.decodedSubtasks()
+                    val cleanEncoded = cleanSubtasks.map { it.encode() }
+                    if (cleanEncoded != task.subtaskItems) {
+                        val newT = if (cleanSubtasks.isNotEmpty()) cleanSubtasks.sumOf { it.effectiveTargetVolume } else task.effectiveTargetVolume
+                        val newC = if (cleanSubtasks.isNotEmpty()) cleanSubtasks.sumOf { it.effectiveCompletedVolume }.coerceIn(0.0, newT) else task.effectiveCompletedVolume
+                        task.copy(subtaskItems = cleanEncoded).withUpdatedVolume(newT, newC, task.effectiveVolumeUnit)
+                    } else {
+                        task
+                    }
+                }
         } ?: emptyList()
     )
     private val _localSiteMembers = MutableStateFlow(
@@ -250,19 +273,21 @@ class EzhednevnikViewModel(
         if (matched != null) {
             matched.toCorporateEmployee(defaultSiteName = currentSiteName)
         } else {
+            val isRootAdmin = initialHeadActivated || SiteMemberDocument.isRootAdminEmail(currentUserEmail)
+            val fallbackRole = if (isRootAdmin) CorporateRole.ADMIN else CorporateRole.HEAD
             val defaultName = currentUserName.ifBlank {
-                currentUserEmail.substringBefore("@").ifBlank { "Руководитель" }
+                currentUserEmail.substringBefore("@").ifBlank { fallbackRole.titleRu }
             }
             CorporateEmployee(
                 id = currentUserId,
                 fullName = defaultName,
                 shortName = defaultName,
-                position = "Руководитель",
-                role = CorporateRole.HEAD,
+                position = fallbackRole.titleRu,
+                role = fallbackRole,
                 groupId = "grp_control",
-                groupName = "Основное подразделение",
+                groupName = initialSubdivision.ifBlank { "АУП и управление участком" },
                 siteId = CorporateSeedData.DEFAULT_SITE_ID,
-                siteName = currentSiteName,
+                siteName = initialSiteName.ifBlank { currentSiteName },
                 supervisorId = null,
                 phone = "",
                 email = currentUserEmail
@@ -273,14 +298,18 @@ class EzhednevnikViewModel(
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
         initialValue = CorporateEmployee(
             id = currentUserId,
-            fullName = currentUserName.ifBlank { "Руководитель" },
-            shortName = currentUserName.ifBlank { "Руководитель" },
-            position = "Руководитель",
-            role = CorporateRole.HEAD,
+            fullName = currentUserName.ifBlank { "Администратор" },
+            shortName = currentUserName.ifBlank { "Администратор" },
+            position = "Администратор",
+            role = if (initialHeadActivated || SiteMemberDocument.isRootAdminEmail(currentUserEmail)) {
+                CorporateRole.ADMIN
+            } else {
+                CorporateRole.HEAD
+            },
             groupId = "grp_control",
-            groupName = "Основное подразделение",
+            groupName = initialSubdivision.ifBlank { "АУП и управление участком" },
             siteId = CorporateSeedData.DEFAULT_SITE_ID,
-            siteName = _siteName.value,
+            siteName = initialSiteName.ifBlank { _siteName.value },
             supervisorId = null,
             phone = "",
             email = currentUserEmail
@@ -455,16 +484,14 @@ class EzhednevnikViewModel(
     private fun initializeUserAndRoleStatus() {
         viewModelScope.launch {
             val cleanName = currentUserName.ifBlank {
-                currentUserEmail.substringBefore("@").ifBlank { "Руководитель" }
+                currentUserEmail.substringBefore("@").ifBlank { "Администратор" }
             }
             if (isCloudAuthenticated) {
                 repository.ensureWorkspaceSeeded(cleanName)
             }
 
             val normalizedEmail = currentUserEmail.trim().lowercase()
-            val isRootHead = initialHeadActivated ||
-                SiteMemberDocument.isRootHeadEmail(normalizedEmail) ||
-                normalizedEmail.isBlank()
+            val isRootAdmin = initialHeadActivated || SiteMemberDocument.isRootAdminEmail(normalizedEmail)
 
             val existingLocal = _localSiteMembers.value.firstOrNull { m ->
                 val mNorm = normalizeMemberKey(m.memberId.ifBlank { m.id })
@@ -475,62 +502,102 @@ class EzhednevnikViewModel(
             }
 
             val resolvedMember = if (existingLocal != null) {
-                // Сохраняем все отредактированные пользователем данные (ФИО, должность, таб. №, участок и т.д.)
-                val preserved = if (isRootHead && existingLocal.isPendingRole) {
-                    existingLocal.copy(
-                        role = CorporateRole.HEAD.code,
-                        approvalStatus = MemberApprovalStatus.APPROVED.code
+                val preserved = if (isRootAdmin && (existingLocal.isPendingRole || existingLocal.parsedRoleOrNull != CorporateRole.ADMIN)) {
+                    val baseAdmin = existingLocal.copy(
+                        role = CorporateRole.ADMIN.code,
+                        approvalStatus = MemberApprovalStatus.APPROVED.code,
+                        position = existingLocal.position.ifBlank { "Администратор" }
+                    )
+                    baseAdmin.copy(
+                        approvedByName = baseAdmin.encodeApprovedByForFirestore(
+                            approverName = "Администратор",
+                            isAdminRole = true
+                        )
                     )
                 } else {
                     existingLocal
                 }
                 upsertLocalMember(preserved)
                 preserved
-            } else if (isRootHead) {
-                val headDoc = SiteMemberDocument(
+            } else if (isRootAdmin) {
+                val resolvedSubdivision = initialSubdivision.ifBlank { "АУП и управление участком" }
+                val resolvedSite = initialSiteName.ifBlank { _siteName.value }
+                val baseAdminDoc = SiteMemberDocument(
                     id = normalizedCurrentUserId,
                     memberId = normalizedCurrentUserId,
-                    email = normalizedEmail.ifBlank { "m241185m@gmail.com" },
+                    email = normalizedEmail,
                     fullName = cleanName,
-                    position = "Руководитель участка",
-                    role = CorporateRole.HEAD.code,
+                    position = initialPosition.ifBlank { "Администратор" },
+                    role = CorporateRole.ADMIN.code,
                     approvalStatus = MemberApprovalStatus.APPROVED.code,
                     groupId = "grp_control",
-                    groupName = "Основное подразделение",
-                    approvedByName = "Владелец",
-                    siteName = _siteName.value
+                    groupName = resolvedSubdivision,
+                    approvedByName = "Администратор",
+                    siteName = resolvedSite
                 )
-                upsertLocalMember(headDoc)
+                val adminDoc = baseAdminDoc.copy(
+                    approvedByName = baseAdminDoc.encodeApprovedByForFirestore(
+                        approverName = "Администратор",
+                        explicitSiteName = resolvedSite,
+                        isAdminRole = true
+                    )
+                )
+                upsertLocalMember(adminDoc)
                 if (isCloudAuthenticated) {
                     repository.registerOrResolveSiteMember(
                         rawMemberId = normalizedCurrentUserId,
-                        email = headDoc.email,
-                        fullName = headDoc.fullName,
-                        position = headDoc.position,
-                        requestedGroup = CorporateSeedData.workGroups.last(),
+                        email = adminDoc.email,
+                        fullName = adminDoc.fullName,
+                        position = adminDoc.position,
+                        requestedGroup = CorporateSeedData.workGroups.last().copy(name = resolvedSubdivision),
                         forceHeadActivation = true
                     )
                 }
-                headDoc
+                adminDoc
             } else {
+                val resolvedSubdivision = initialSubdivision.ifBlank {
+                    _subdivisionsList.value.firstOrNull() ?: CorporateSeedData.workGroups.first().name
+                }
+                val resolvedSite = initialSiteName.ifBlank { _siteName.value }
+                val resolvedPos = initialPosition.ifBlank { "Специалист" }
+                val matchedGroup = CorporateSeedData.workGroups.firstOrNull {
+                    it.name.equals(resolvedSubdivision, ignoreCase = true)
+                } ?: CorporateSeedData.workGroups.first().copy(name = resolvedSubdivision)
+
+                if (resolvedSite.isNotBlank() && resolvedSite !in _sitesList.value) {
+                    val updatedSites = (_sitesList.value + resolvedSite).distinct()
+                    _sitesList.value = updatedSites
+                    appContext?.let { LocalWorkspaceStore.saveSites(it, updatedSites) }
+                }
+                if (resolvedSubdivision.isNotBlank() && resolvedSubdivision !in _subdivisionsList.value) {
+                    val updatedSubdivisions = (_subdivisionsList.value + resolvedSubdivision).distinct()
+                    _subdivisionsList.value = updatedSubdivisions
+                    appContext?.let { LocalWorkspaceStore.saveSubdivisions(it, updatedSubdivisions) }
+                }
+
                 val created = repository.registerOrResolveSiteMember(
                     rawMemberId = normalizedCurrentUserId,
                     email = normalizedEmail,
                     fullName = cleanName,
-                    position = "Специалист",
-                    requestedGroup = CorporateSeedData.workGroups.first(),
+                    position = resolvedPos,
+                    requestedGroup = matchedGroup.copy(name = resolvedSubdivision),
                     forceHeadActivation = false
-                ).getOrNull() ?: SiteMemberDocument(
+                ).getOrNull()?.let { remoteMember ->
+                    remoteMember.copy(
+                        groupName = remoteMember.groupName.ifBlank { resolvedSubdivision },
+                        siteName = remoteMember.effectiveSiteName.ifBlank { resolvedSite }
+                    )
+                } ?: SiteMemberDocument(
                     id = normalizedCurrentUserId,
                     memberId = normalizedCurrentUserId,
                     email = normalizedEmail,
                     fullName = cleanName,
-                    position = "Специалист",
+                    position = resolvedPos,
                     role = "PENDING",
                     approvalStatus = MemberApprovalStatus.PENDING.code,
-                    groupId = "grp_monolith",
-                    groupName = CorporateSeedData.workGroups.first().name,
-                    siteName = _siteName.value
+                    groupId = matchedGroup.id,
+                    groupName = resolvedSubdivision,
+                    siteName = resolvedSite
                 )
                 upsertLocalMember(created)
                 created
@@ -566,50 +633,21 @@ class EzhednevnikViewModel(
         return fromState ?: _localTasks.value.firstOrNull { it.id == taskId }
     }
 
-    fun activateHeadAccessWithCode(code: String): Boolean {
-        if (code.trim() != SiteMemberDocument.DEFAULT_HEAD_ACTIVATION_CODE) {
-            _bannerMessage.value = "Неверный код руководителя (используйте 1001)"
-            return false
-        }
-        viewModelScope.launch {
-            val email = currentUserEmail.ifBlank { "m241185m@gmail.com" }
-            val name = currentUserName.ifBlank { "Руководитель" }
-            val headMember = SiteMemberDocument(
-                id = normalizedCurrentUserId,
-                memberId = normalizedCurrentUserId,
-                email = email,
-                fullName = name,
-                position = "Руководитель участка",
-                role = CorporateRole.HEAD.code,
-                approvalStatus = MemberApprovalStatus.APPROVED.code,
-                groupId = "grp_control",
-                groupName = "Основное подразделение",
-                approvedByName = "Код руководителя (1001)",
-                siteName = _siteName.value
-            )
-            _currentMemberRecord.value = headMember
-            upsertLocalMember(headMember, previousKey = currentUserId)
-            if (isCloudAuthenticated) {
-                repository.registerOrResolveSiteMember(
-                    rawMemberId = normalizedCurrentUserId,
-                    email = email,
-                    fullName = name,
-                    position = "Руководитель участка",
-                    requestedGroup = CorporateSeedData.workGroups.last(),
-                    forceHeadActivation = true
-                )
-            }
-            _bannerMessage.value = "Статус Руководителя подтверждён"
-        }
-        return true
-    }
-
-    fun updateMyPendingRequestDetails(position: String, group: WorkGroup) {
+    fun updateMyPendingRequestDetails(
+        position: String,
+        group: WorkGroup,
+        siteName: String = _siteName.value
+    ) {
         val current = _currentMemberRecord.value ?: return
-        val updated = current.copy(
+        val cleanSite = siteName.trim().ifBlank { _siteName.value }
+        val draftUpdated = current.copy(
             position = position.ifBlank { "Специалист" },
             groupId = group.id,
-            groupName = group.name
+            groupName = group.name,
+            siteName = cleanSite
+        )
+        val updated = draftUpdated.copy(
+            approvedByName = draftUpdated.encodeApprovedByForFirestore(explicitSiteName = cleanSite)
         )
         _currentMemberRecord.value = updated
         upsertLocalMember(updated)
@@ -624,7 +662,7 @@ class EzhednevnikViewModel(
                     forceHeadActivation = false
                 )
             }
-            _bannerMessage.value = "Данные заявки обновлены"
+            _bannerMessage.value = "Данные заявки обновлены (подразделение: ${group.name}, участок: $cleanSite)"
         }
     }
 
@@ -879,7 +917,10 @@ class EzhednevnikViewModel(
                         userId = currentUserId,
                         email = cleanEmail,
                         fullName = cleanName,
-                        isHeadActivated = role == CorporateRole.HEAD || initialHeadActivated
+                        isHeadActivated = role.isAdminOrHead || initialHeadActivated,
+                        requestedSubdivision = resolvedGroupName,
+                        requestedSiteName = resolvedSite,
+                        requestedPosition = resolvedPosition
                     )
                 )
             }
@@ -916,11 +957,37 @@ class EzhednevnikViewModel(
     }
 
     fun updateOrganizationAndSite(newOrgName: String, newSiteName: String) {
+        updateAdminSettings(
+            newOrgName = newOrgName,
+            newSiteName = newSiteName,
+            newSubdivisions = _subdivisionsList.value,
+            newSites = _sitesList.value
+        )
+    }
+
+    fun updateAdminSettings(
+        newOrgName: String,
+        newSiteName: String,
+        newSubdivisions: List<String>,
+        newSites: List<String>
+    ) {
         val cleanOrg = newOrgName.trim().ifBlank { CorporateSeedData.DEFAULT_ORG_NAME }
         val cleanSite = newSiteName.trim().ifBlank { CorporateSeedData.DEFAULT_SITE_NAME }
+        val cleanSubdivisions = newSubdivisions.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            .ifEmpty { LocalWorkspaceStore.DEFAULT_SUBDIVISIONS }
+        val cleanSites = (newSites.map { it.trim() }.filter { it.isNotBlank() } + cleanSite).distinct()
+            .ifEmpty { LocalWorkspaceStore.DEFAULT_SITES }
+
         _organizationName.value = cleanOrg
         _siteName.value = cleanSite
-        appContext?.let { LocalWorkspaceStore.saveOrganizationAndSite(it, cleanOrg, cleanSite) }
+        _subdivisionsList.value = cleanSubdivisions
+        _sitesList.value = cleanSites
+
+        appContext?.let { ctx ->
+            LocalWorkspaceStore.saveOrganizationAndSite(ctx, cleanOrg, cleanSite)
+            LocalWorkspaceStore.saveSubdivisions(ctx, cleanSubdivisions)
+            LocalWorkspaceStore.saveSites(ctx, cleanSites)
+        }
 
         val newHeader = "$cleanOrg • $cleanSite"
         _localTemplates.value = _localTemplates.value.map { it.copy(orgHeader = newHeader) }
@@ -939,9 +1006,9 @@ class EzhednevnikViewModel(
             actionType = "UPDATE_ORG_SETTINGS",
             targetType = "SITE",
             targetId = "site_1",
-            details = "Обновлены реквизиты: организация «$cleanOrg», участок «$cleanSite»"
+            details = "Обновлены настройки администратора: организация «$cleanOrg», участок «$cleanSite», подразделений: ${cleanSubdivisions.size}, участков: ${cleanSites.size}"
         )
-        _bannerMessage.value = "Сохранено: $cleanOrg • $cleanSite"
+        _bannerMessage.value = "Настройки сохранены: $cleanOrg • $cleanSite"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -1030,8 +1097,7 @@ class EzhednevnikViewModel(
         }
 
         val cleanTitle = draft.title.trim().ifBlank {
-            draft.subtasks.firstOrNull { it.isNotBlank() }?.trim()
-                ?: draft.description.lines().firstOrNull { it.isNotBlank() }?.trim()
+            draft.description.lines().firstOrNull { it.isNotBlank() }?.trim()
                 ?: "Задание — ${assignee.shortName} (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)})"
         }
 
@@ -1043,17 +1109,9 @@ class EzhednevnikViewModel(
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
+        // Не создаём фиктивный пункт из наименования задачи (sub_vol_main), в чек-лист входят только реальные пункты
         val decodedInitialSubtasks: List<SubtaskItem> = if (rawSubtaskLines.isEmpty()) {
-            listOf(
-                SubtaskItem(
-                    id = "sub_vol_main",
-                    title = cleanTitle,
-                    isDone = false,
-                    targetVolume = if (safeTargetVol > 0.0) safeTargetVol else 1.0,
-                    completedVolume = 0.0,
-                    unit = safeUnit
-                )
-            )
+            emptyList()
         } else {
             val perItemDefaultVol = if (safeTargetVol > 0.0 && rawSubtaskLines.size == 1) {
                 safeTargetVol
@@ -1067,12 +1125,16 @@ class EzhednevnikViewModel(
                     defaultTargetVolume = if (idx == 0 && safeTargetVol > 0.0 && !s.contains("|")) safeTargetVol else perItemDefaultVol,
                     defaultUnit = safeUnit
                 )
-            }
+            }.filterNot { it.id == "sub_vol_main" }
         }
 
         val encodedSubtasks = decodedInitialSubtasks.map { it.encode() }
         val sumSubTargetVol = decodedInitialSubtasks.sumOf { it.effectiveTargetVolume }
-        val resolvedTaskTargetVol = if (safeTargetVol > 0.0) safeTargetVol else sumSubTargetVol
+        val resolvedTaskTargetVol = when {
+            sumSubTargetVol > 0.0 -> sumSubTargetVol
+            safeTargetVol > 0.0 -> safeTargetVol
+            else -> 0.0
+        }
         val resolvedTaskUnit = if (draft.volumeUnit.isNotBlank()) {
             draft.volumeUnit.trim()
         } else {
@@ -1528,6 +1590,30 @@ class EzhednevnikViewModel(
         }
     }
 
+    fun deleteSubtaskFromTask(task: TaskDocument, subtaskId: String) {
+        val currentTask = findTaskById(task.id) ?: task
+        val updatedDecoded = currentTask.decodedSubtasks().filterNot { it.id == subtaskId }
+        val updatedEncoded = updatedDecoded.map { it.encode() }
+        val (taskTarget, taskCompleted, taskUnit) = if (updatedDecoded.isNotEmpty()) {
+            syncTaskVolumeFromChecklist(currentTask, updatedDecoded)
+        } else {
+            Triple(0.0, 0.0, currentTask.effectiveVolumeUnit)
+        }
+
+        val updatedTask = currentTask
+            .copy(subtaskItems = updatedEncoded)
+            .withUpdatedVolume(taskTarget, taskCompleted, taskUnit)
+
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Пункт чек-листа удалён"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+            }
+        }
+    }
+
     fun addComment(task: TaskDocument, text: String, mentionedUser: String) {
         if (text.isBlank()) return
         val currentTask = findTaskById(task.id) ?: task
@@ -1554,18 +1640,69 @@ class EzhednevnikViewModel(
         }
     }
 
-    fun submitCompletion(task: TaskDocument, note: String) {
-        val currentTask = findTaskById(task.id) ?: task
+    fun submitWorkerReportWithVolume(
+        task: TaskDocument,
+        manualCompletedVolume: Double?,
+        note: String
+    ) {
+        var currentTask = findTaskById(task.id) ?: task
         val actor = activeEmployee.value
+
         if (currentTask.requiresPhotoReport && currentTask.photoItems.size < currentTask.minPhotoCount) {
             _bannerMessage.value = "Прикрепите минимум ${currentTask.minPhotoCount} фото (сейчас: ${currentTask.photoItems.size})"
             return
         }
-        if (currentTask.hasVolumeTracking() && !currentTask.isVolumeCompleted100Percent()) {
-            _bannerMessage.value = "Задача считается выполненной при 100% объёма в чек-листе (сейчас: ${currentTask.completionPercent()}%)"
-            return
+
+        // Если работник вручную вбил выполненный объём от всего объёма, применяем его перед отправкой отчёта
+        val targetVol = currentTask.effectiveTargetVolume
+        val unitLabel = currentTask.effectiveVolumeUnit.ifBlank { "шт" }
+        if (manualCompletedVolume != null && targetVol > 0.0) {
+            val clamped = manualCompletedVolume.coerceIn(0.0, targetVol)
+            val ratio = (clamped / targetVol).coerceIn(0.0, 1.0)
+            val decoded = currentTask.decodedSubtasks()
+            val updatedDecoded = decoded.map { sub ->
+                val subTarget = sub.effectiveTargetVolume
+                val subCompleted = if (decoded.size == 1) {
+                    clamped.coerceIn(0.0, subTarget)
+                } else {
+                    (subTarget * ratio).coerceIn(0.0, subTarget)
+                }
+                sub.copy(
+                    targetVolume = subTarget,
+                    completedVolume = subCompleted,
+                    isDone = subCompleted >= subTarget,
+                    unit = sub.effectiveUnit
+                )
+            }
+            val updatedEncoded = updatedDecoded.map { it.encode() }
+            currentTask = currentTask
+                .copy(subtaskItems = updatedEncoded)
+                .withUpdatedVolume(targetVol, clamped, unitLabel)
         }
-        val nextStatus = if (currentTask.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
+
+        val finalCompleted = currentTask.effectiveCompletedVolume
+        val finalTarget = currentTask.effectiveTargetVolume
+        val pct = currentTask.completionPercent()
+        val is100 = !currentTask.hasVolumeTracking() || currentTask.isVolumeCompleted100Percent()
+
+        val nextStatus = when {
+            is100 && currentTask.requiresApproval -> TaskStatus.ON_REVIEW
+            is100 && !currentTask.requiresApproval -> TaskStatus.APPROVED
+            currentTask.requiresApproval -> TaskStatus.ON_REVIEW
+            else -> TaskStatus.IN_PROGRESS
+        }
+
+        val reportLogNote = buildString {
+            if (finalTarget > 0.0) {
+                append("Отчёт работника: выполнено ${SubtaskItem.formatVolumeNumber(finalCompleted)} из ${SubtaskItem.formatVolumeNumber(finalTarget)} $unitLabel ($pct%)")
+            } else {
+                append("Отчёт работника ($pct%)")
+            }
+            if (note.isNotBlank()) {
+                append(" • ${note.trim()}")
+            }
+        }
+
         val updatedTask = currentTask.copy(
             status = nextStatus.code,
             rejectionReason = null,
@@ -1573,21 +1710,22 @@ class EzhednevnikViewModel(
                 nowText(),
                 actor.shortName,
                 nextStatus.code,
-                note.ifBlank { "Отправлено на проверку (выполнено 100%)" }
+                reportLogNote
             ).encode()
         )
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = if (nextStatus == TaskStatus.ON_REVIEW) {
-            "Задача (100%) отправлена на проверку"
-        } else {
-            "Задача выполнена на 100%"
-        }
+        _bannerMessage.value = reportLogNote
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.submitTaskCompletion(actor, currentTask, note)
+                repository.updateSubtasksList(updatedTask, updatedTask.subtaskItems, updatedTask.tags)
+                repository.submitTaskCompletion(actor, updatedTask, reportLogNote)
             }
         }
+    }
+
+    fun submitCompletion(task: TaskDocument, note: String) {
+        submitWorkerReportWithVolume(task = task, manualCompletedVolume = null, note = note)
     }
 
     fun approveReport(task: TaskDocument, comment: String) {

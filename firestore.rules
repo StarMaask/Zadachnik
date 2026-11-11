@@ -251,7 +251,7 @@ service cloud.firestore {
       return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
              data.actorId is string && data.actorId.size() >= 1 && data.actorId.size() <= 64 &&
              data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
-             data.actorRole is string && data.actorRole in ['WORKER', 'ITR', 'HEAD'] &&
+             data.actorRole is string && data.actorRole in ['WORKER', 'ITR', 'HEAD', 'ADMIN'] &&
              data.actionType is string && data.actionType.size() >= 1 && data.actionType.size() <= 64 &&
              data.targetType is string && data.targetType.size() >= 1 && data.targetType.size() <= 64 &&
              data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
@@ -284,7 +284,7 @@ service cloud.firestore {
              data.email is string && data.email.size() >= 1 && data.email.size() <= 160 &&
              data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
              data.position is string && data.position.size() <= 120 &&
-             data.role is string && data.role in ['PENDING', 'WORKER', 'ITR', 'HEAD'] &&
+             data.role is string && data.role in ['PENDING', 'WORKER', 'ITR', 'HEAD', 'ADMIN'] &&
              data.approvalStatus is string && data.approvalStatus in ['PENDING', 'APPROVED', 'REJECTED'] &&
              data.groupId is string && data.groupId.size() <= 64 &&
              data.groupName is string && data.groupName.size() <= 120 &&

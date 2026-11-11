@@ -121,7 +121,7 @@ object ReportDocumentGenerator {
 
         // Scope tasks by role hierarchy
         val roleScopedTasks = when (actor.role) {
-            CorporateRole.HEAD -> allTasks
+            CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
             CorporateRole.ITR -> allTasks.filter {
                 it.groupId == actor.groupId || it.assigneeId == actor.id || it.creatorId == actor.id
             }
@@ -129,6 +129,7 @@ object ReportDocumentGenerator {
         }
 
         val roleScopeLabel = when (actor.role) {
+            CorporateRole.ADMIN -> "Полный доступ администратора (${actor.siteName})"
             CorporateRole.HEAD -> "Сводный по всему персоналу участка (${actor.siteName})"
             CorporateRole.ITR -> "Сводный по подчинённому персоналу (${actor.groupName})"
             CorporateRole.WORKER -> "Личная отчётность исполнителя (${actor.fullName})"

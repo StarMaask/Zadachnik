@@ -4,6 +4,7 @@ import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentId
 import com.google.firebase.firestore.IgnoreExtraProperties
 import com.google.firebase.firestore.ServerTimestamp
+import java.security.MessageDigest
 import java.util.Locale
 
 enum class CorporateRole(
@@ -16,42 +17,62 @@ enum class CorporateRole(
         code = "WORKER",
         titleRu = "Рабочий",
         hierarchyLevel = 1,
-        badgeDescription = "Личные задачи, фотоотчёты, статистика группы"
+        badgeDescription = "Личные задачи, фотоотчёты, отчёт по выполненному объёму"
     ),
     ITR(
         code = "ITR",
         titleRu = "ИТР (Прораб / Инженер)",
         hierarchyLevel = 2,
-        badgeDescription = "Постановка задач рабочим, приёмка фотоотчётов, сводный отчёт по бригаде"
+        badgeDescription = "Постановка задач рабочим, приёмка фотоотчётов, сводный отчёт по подразделению"
     ),
     HEAD(
         code = "HEAD",
         titleRu = "Руководитель участка",
         hierarchyLevel = 3,
-        badgeDescription = "Полный доступ по участку, контроль ИТР и рабочих, аудит и шаблоны"
+        badgeDescription = "Управление участком, контроль ИТР и рабочих, утверждение ролей"
+    ),
+    ADMIN(
+        code = "ADMIN",
+        titleRu = "Администратор",
+        hierarchyLevel = 4,
+        badgeDescription = "Полные права администратора системы без ограничений"
     );
+
+    val isAdmin: Boolean
+        get() = this == ADMIN
+
+    val isAdminOrHead: Boolean
+        get() = this == ADMIN || this == HEAD
+
+    val shortTitleRu: String
+        get() = when (this) {
+            WORKER -> "Рабочий"
+            ITR -> "ИТР"
+            HEAD -> "Руководитель"
+            ADMIN -> "Администратор"
+        }
 
     fun canAssignTo(targetRole: CorporateRole): Boolean {
         return when (this) {
-            HEAD -> true
+            ADMIN, HEAD -> true
             ITR -> targetRole == ITR || targetRole == WORKER
             WORKER -> targetRole == WORKER
         }
     }
 
-    fun canAssignToOtherEmployees(): Boolean = this == HEAD || this == ITR
+    fun canAssignToOtherEmployees(): Boolean = this == ADMIN || this == HEAD || this == ITR
 
     fun canApproveReportOf(assigneeRole: CorporateRole): Boolean {
         return when (this) {
-            HEAD -> true
+            ADMIN, HEAD -> true
             ITR -> assigneeRole == WORKER
             WORKER -> false
         }
     }
 
-    fun canExportConsolidatedPersonnelReport(): Boolean = this == HEAD || this == ITR
+    fun canExportConsolidatedPersonnelReport(): Boolean = this == ADMIN || this == HEAD || this == ITR
 
-    fun canManageTemplatesAndGroups(): Boolean = this == HEAD
+    fun canManageTemplatesAndGroups(): Boolean = this == ADMIN || this == HEAD
 
     companion object {
         fun fromCode(code: String): CorporateRole =
@@ -607,16 +628,26 @@ data class TaskDocument(
         return Triple(t, c, u)
     }
 
+    private val hasLegacyAutoMainSubtask: Boolean
+        get() = subtaskItems.any { it.startsWith("sub_vol_main|") }
+
     val effectiveTargetVolume: Double
         get() {
+            val subs = decodedSubtasks()
+            if (hasLegacyAutoMainSubtask && subs.isNotEmpty()) {
+                return subs.sumOf { it.effectiveTargetVolume }
+            }
             val explicit = if (targetVolume > 0.0) targetVolume else (parsedVolumeTag()?.first ?: 0.0)
             if (explicit > 0.0) return explicit
-            val subs = decodedSubtasks()
             return if (subs.isNotEmpty()) subs.sumOf { it.effectiveTargetVolume } else 0.0
         }
 
     val effectiveCompletedVolume: Double
         get() {
+            val subs = decodedSubtasks()
+            if (hasLegacyAutoMainSubtask && subs.isNotEmpty()) {
+                return subs.sumOf { it.effectiveCompletedVolume }
+            }
             val explicitTarget = if (targetVolume > 0.0) targetVolume else (parsedVolumeTag()?.first ?: 0.0)
             if (explicitTarget > 0.0) {
                 return if (targetVolume > 0.0 || completedVolume > 0.0) {
@@ -625,7 +656,6 @@ data class TaskDocument(
                     parsedVolumeTag()?.second ?: 0.0
                 }
             }
-            val subs = decodedSubtasks()
             return if (subs.isNotEmpty()) subs.sumOf { it.effectiveCompletedVolume } else 0.0
         }
 
@@ -655,7 +685,18 @@ data class TaskDocument(
         )
     }
 
-    fun decodedSubtasks(): List<SubtaskItem> = subtaskItems.map { SubtaskItem.decode(it) }
+    /**
+     * Возвращает список пунктов чек-листа без служебного дубликата наименования задачи (sub_vol_main).
+     */
+    fun decodedSubtasks(): List<SubtaskItem> {
+        val all = subtaskItems.map { SubtaskItem.decode(it) }
+        val cleanTaskTitle = title.trim()
+        return all.filterNot { item ->
+            item.id == "sub_vol_main" ||
+                (all.size > 1 && cleanTaskTitle.isNotBlank() && item.title.trim().equals(cleanTaskTitle, ignoreCase = true) && item.id.startsWith("sub_vol"))
+        }
+    }
+
     fun decodedPhotos(): List<PhotoReportItem> = photoItems.map { PhotoReportItem.decode(it) }
     fun decodedComments(): List<TaskCommentItem> = commentItems.map { TaskCommentItem.decode(it) }
     fun decodedHistory(): List<StatusHistoryEntry> = historyItems.map { StatusHistoryEntry.decode(it) }
@@ -925,7 +966,11 @@ data class SiteMemberDocument(
         get() = approvalStatus == MemberApprovalStatus.REJECTED.code
 
     val parsedRoleOrNull: CorporateRole?
-        get() = if (role == "PENDING" || isPendingRole) null else CorporateRole.fromCode(role)
+        get() = when {
+            role == "PENDING" || isPendingRole -> null
+            extractMetaValue("adm") == "1" || isRootAdminEmail(email) -> CorporateRole.ADMIN
+            else -> CorporateRole.fromCode(role)
+        }
 
     private fun extractMetaValue(prefix: String): String {
         val raw = approvedByName ?: return ""
@@ -949,20 +994,22 @@ data class SiteMemberDocument(
         get() = phone.ifBlank { extractMetaValue("tel") }
 
     fun encodeApprovedByForFirestore(
-        approverName: String = cleanApprovedByName.ifBlank { "Руководитель" },
+        approverName: String = cleanApprovedByName.ifBlank { "Администратор" },
         explicitPersonnelNumber: String? = null,
         explicitSiteName: String? = null,
-        explicitPhone: String? = null
+        explicitPhone: String? = null,
+        isAdminRole: Boolean = (role == CorporateRole.ADMIN.code || extractMetaValue("adm") == "1")
     ): String {
-        val base = approverName.substringBefore("||").replace("|", "/").trim().take(28)
-        val tabPart = (explicitPersonnelNumber ?: effectivePersonnelNumber).replace("|", "/").trim().take(16)
-        val sitePart = (explicitSiteName ?: effectiveSiteName).replace("|", "/").trim().take(28)
-        val telPart = (explicitPhone ?: effectivePhone).replace("|", "/").trim().take(16)
+        val base = approverName.substringBefore("||").replace("|", "/").trim().take(24)
+        val tabPart = (explicitPersonnelNumber ?: effectivePersonnelNumber).replace("|", "/").trim().take(14)
+        val sitePart = (explicitSiteName ?: effectiveSiteName).replace("|", "/").trim().take(26)
+        val telPart = (explicitPhone ?: effectivePhone).replace("|", "/").trim().take(14)
         return buildString {
-            append(base.ifBlank { "Руководитель" })
+            append(base.ifBlank { "Администратор" })
             if (tabPart.isNotBlank()) append("||tab:$tabPart")
             if (sitePart.isNotBlank()) append("||site:$sitePart")
             if (telPart.isNotBlank()) append("||tel:$telPart")
+            if (isAdminRole) append("||adm:1")
         }.take(100)
     }
 
@@ -983,10 +1030,10 @@ data class SiteMemberDocument(
             position = position.ifBlank { resolvedRole.titleRu },
             role = resolvedRole,
             groupId = groupId.ifBlank { "grp_monolith" },
-            groupName = groupName.ifBlank { "Бригада №1 • Монолит и ЖБК" },
+            groupName = groupName.ifBlank { "Основное подразделение" },
             siteId = "site_1",
             siteName = resolvedSite,
-            supervisorId = if (resolvedRole == CorporateRole.HEAD) null else "emp_head_1",
+            supervisorId = if (resolvedRole.isAdminOrHead) null else "emp_head_1",
             phone = effectivePhone,
             email = email,
             personnelNumber = effectivePersonnelNumber
@@ -994,16 +1041,21 @@ data class SiteMemberDocument(
     }
 
     companion object {
-        const val DEFAULT_HEAD_ACTIVATION_CODE = "1001"
+        // SHA-256 хеш учётной записи администратора (без хранения паролей и учётных данных в открытом виде)
+        private const val ROOT_ADMIN_SHA256 = "cc6a70cd225a870b4731bbd77b3979cdc7f878ca1bb8c09a91d3987e97a3f1b6"
 
-        private val rootHeadEmails = setOf(
-            "m241185m@gmail.com",
-            "kovalev.ds@glavstroy.ru"
-        )
-
-        fun isRootHeadEmail(email: String?): Boolean {
-            if (email.isNullOrBlank()) return false
-            return rootHeadEmails.contains(email.trim().lowercase())
+        private fun sha256Hex(input: String): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val bytes = digest.digest(input.toByteArray(Charsets.UTF_8))
+            return bytes.joinToString("") { "%02x".format(it) }
         }
+
+        fun isRootAdminEmail(email: String?): Boolean {
+            if (email.isNullOrBlank()) return false
+            val normalized = email.trim().lowercase()
+            return sha256Hex(normalized) == ROOT_ADMIN_SHA256
+        }
+
+        fun isRootHeadEmail(email: String?): Boolean = isRootAdminEmail(email)
     }
 }

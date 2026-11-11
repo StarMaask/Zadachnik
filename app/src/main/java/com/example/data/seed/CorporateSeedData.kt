@@ -235,7 +235,7 @@ object CorporateSeedData {
 
     fun getAssigneesForActor(actor: CorporateEmployee): List<CorporateEmployee> {
         return when (actor.role) {
-            CorporateRole.HEAD -> employees
+            CorporateRole.ADMIN, CorporateRole.HEAD -> employees
             CorporateRole.ITR -> employees.filter {
                 it.id == actor.id ||
                     (it.role == CorporateRole.WORKER && it.groupId == actor.groupId) ||
@@ -247,7 +247,7 @@ object CorporateSeedData {
 
     fun getVisibleEmployeesForStats(actor: CorporateEmployee): List<CorporateEmployee> {
         return when (actor.role) {
-            CorporateRole.HEAD -> employees
+            CorporateRole.ADMIN, CorporateRole.HEAD -> employees
             CorporateRole.ITR -> employees.filter {
                 it.groupId == actor.groupId || it.supervisorId == actor.id || it.id == actor.id
             }

@@ -270,4 +270,76 @@ class ExampleUnitTest {
         assertTrue(row.volumeInfo.contains("20 из 20 шт"))
         assertTrue(preview.summaryText.contains("Монтаж лотка: выполнено 35 из 50 п.м."))
     }
+
+    @Test
+    fun `administrator role has full permissions and checklist strips duplicate sub_vol_main item`() {
+        val admin = CorporateRole.ADMIN
+        assertTrue(admin.isAdmin)
+        assertTrue(admin.isAdminOrHead)
+        assertTrue(admin.canAssignTo(CorporateRole.ADMIN))
+        assertTrue(admin.canAssignTo(CorporateRole.HEAD))
+        assertTrue(admin.canAssignTo(CorporateRole.ITR))
+        assertTrue(admin.canAssignTo(CorporateRole.WORKER))
+        assertTrue(admin.canApproveReportOf(CorporateRole.HEAD))
+        assertTrue(admin.canApproveReportOf(CorporateRole.ITR))
+        assertTrue(admin.canApproveReportOf(CorporateRole.WORKER))
+        assertTrue(admin.canExportConsolidatedPersonnelReport())
+        assertTrue(admin.canManageTemplatesAndGroups())
+
+        // Verify SHA-256 hash matching for root admin without storing plaintext credentials in app
+        assertTrue(SiteMemberDocument.isRootAdminEmail("m241185m@gmail.com"))
+        assertFalse(SiteMemberDocument.isRootAdminEmail("other@gmail.com"))
+
+        // Verify duplicate task-title item (sub_vol_main) is stripped and total volume equals sum of real items
+        val legacyDuplicate = SubtaskItem(
+            id = "sub_vol_main",
+            title = "защита",
+            isDone = true,
+            targetVolume = 10.0,
+            completedVolume = 10.0,
+            unit = "шт"
+        ).encode()
+        val realItem1 = SubtaskItem(
+            id = "sub_1",
+            title = "взять мешки",
+            isDone = true,
+            targetVolume = 150.0,
+            completedVolume = 150.0,
+            unit = "шт"
+        ).encode()
+        val realItem2 = SubtaskItem(
+            id = "sub_2",
+            title = "заполнить песком",
+            isDone = false,
+            targetVolume = 150.0,
+            completedVolume = 0.0,
+            unit = "шт"
+        ).encode()
+        val realItem3 = SubtaskItem(
+            id = "sub_3",
+            title = "уложить",
+            isDone = false,
+            targetVolume = 150.0,
+            completedVolume = 0.0,
+            unit = "шт"
+        ).encode()
+
+        val task = TaskDocument(
+            id = "task_zashita",
+            userId = "u1",
+            title = "защита",
+            assigneeId = "emp_1",
+            assigneeName = "Maks Star",
+            dueDateEpochDay = CorporateSeedData.BASE_EPOCH_DAY,
+            targetVolume = 460.0,
+            completedVolume = 160.0,
+            subtaskItems = listOf(legacyDuplicate, realItem1, realItem2, realItem3)
+        )
+
+        val decoded = task.decodedSubtasks()
+        assertEquals(3, decoded.size)
+        assertFalse(decoded.any { it.title == "защита" || it.id == "sub_vol_main" })
+        assertEquals(450.0, task.effectiveTargetVolume, 0.001)
+        assertEquals(150.0, task.effectiveCompletedVolume, 0.001)
+    }
 }

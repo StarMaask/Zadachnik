@@ -1,5 +1,6 @@
 package com.example.domain.reporting
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Canvas
@@ -7,7 +8,14 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
+import android.os.Build
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
+import android.widget.Toast
 import androidx.core.content.FileProvider
+import java.time.LocalDate
 import com.example.data.model.CorporateEmployee
 import com.example.data.model.CorporateRole
 import com.example.data.model.ExportFormat
@@ -94,16 +102,21 @@ data class GeneratedDocumentResult(
     val attachedPhotos: List<ReportAttachedPhoto> = emptyList(),
     val sheets: List<ReportSheetPreview>,
     val signatureBlock: List<String>,
-    val summaryText: String
+    val summaryText: String,
+    val downloadedToPath: String = ""
 )
 
 object ReportDocumentGenerator {
 
     fun formatEpochDay(epochDay: Long): String {
-        val baseDay = 20768L // 10.11.2026
-        val diff = (epochDay - baseDay).toInt()
-        val dayOfMonth = (10 + diff).coerceIn(1, 30)
-        return String.format(Locale.US, "%02d.11.2026", dayOfMonth)
+        val date = LocalDate.ofEpochDay(epochDay)
+        return String.format(
+            Locale.US,
+            "%02d.%02d.%04d",
+            date.dayOfMonth,
+            date.monthValue,
+            date.year
+        )
     }
 
     fun resolveTemplateDisplayName(template: ReportTemplateDocument, currentEpochDay: Long): String {
@@ -410,7 +423,8 @@ object ReportDocumentGenerator {
         currentEpochDay: Long,
         overrideLayout: SheetLayout? = null,
         overrideFormat: ExportFormat? = null,
-        includePhotos: Boolean = true
+        includePhotos: Boolean = true,
+        saveToDownloads: Boolean = false
     ): GeneratedDocumentResult {
         val preview = buildPreview(
             actor = actor,
@@ -435,7 +449,105 @@ object ReportDocumentGenerator {
             ExportFormat.CSV -> writeCsvFile(outFile, preview)
         }
 
-        return preview.copy(file = outFile)
+        val withLocalFile = preview.copy(file = outFile)
+        return if (saveToDownloads) {
+            val savedDownloadLocation = saveFileToPhoneDownloads(
+                context = context,
+                sourceFile = outFile,
+                mimeType = preview.exportFormat.mimeType,
+                showToast = true
+            ).getOrDefault("Загрузки/${outFile.name}")
+            withLocalFile.copy(downloadedToPath = savedDownloadLocation)
+        } else {
+            withLocalFile
+        }
+    }
+
+    /**
+     * Сохраняет сформированный файл отчёта непосредственно в системную папку «Загрузки» (Downloads) телефона
+     * через MediaStore.Downloads (Android 10+) или Environment.DIRECTORY_DOWNLOADS.
+     */
+    fun saveFileToPhoneDownloads(
+        context: Context,
+        sourceFile: File,
+        mimeType: String,
+        showToast: Boolean = true
+    ): Result<String> = runCatching {
+        require(sourceFile.exists() && sourceFile.length() > 0L) {
+            "Исходный файл отчёта не найден"
+        }
+        val displayLocation: String = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, sourceFile.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Не удалось создать запись в папке Загрузки")
+            resolver.openOutputStream(uri)?.use { outStream ->
+                sourceFile.inputStream().use { inStream ->
+                    inStream.copyTo(outStream)
+                }
+            } ?: throw IllegalStateException("Не удалось записать данные в папку Загрузки")
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            "Загрузки/${sourceFile.name}"
+        } else {
+            @Suppress("DEPRECATION")
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                .apply { mkdirs() }
+            val targetFile = File(downloadsDir, sourceFile.name)
+            sourceFile.copyTo(targetFile, overwrite = true)
+            targetFile.absolutePath
+        }
+
+        if (showToast) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(
+                    context,
+                    "Скачано в папку «Загрузки»: ${sourceFile.name}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        displayLocation
+    }
+
+    fun saveReportToPhoneDownloads(
+        context: Context,
+        result: GeneratedDocumentResult,
+        showToast: Boolean = true
+    ): Result<String> = saveFileToPhoneDownloads(
+        context = context,
+        sourceFile = result.file,
+        mimeType = result.exportFormat.mimeType,
+        showToast = showToast
+    )
+
+    fun openGeneratedReport(
+        context: Context,
+        result: GeneratedDocumentResult
+    ) {
+        runCatching {
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                result.file
+            )
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, result.exportFormat.mimeType)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(viewIntent, "Открыть отчёт (${result.exportFormat.code})").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
+        }.onFailure {
+            shareGeneratedReport(context, result, "SHARE")
+        }
     }
 
     fun shareGeneratedReport(

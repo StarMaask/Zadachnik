@@ -34,7 +34,23 @@ object CorporateSeedData {
     const val DEFAULT_ORG_NAME = "ООО «ГлавСтройИнжиниринг»"
     const val DEFAULT_SITE_ID = "site_1"
     const val DEFAULT_SITE_NAME = "Участок №1 — ПГС и Инженерные сети"
-    const val BASE_EPOCH_DAY = 20768L // 2026-11-10
+
+    fun currentDeviceEpochDay(): Long {
+        val sysZone = java.time.ZoneId.systemDefault()
+        val effectiveZone = if (
+            sysZone.id == "UTC" ||
+            sysZone.id.startsWith("America/") ||
+            sysZone.id.startsWith("Etc/")
+        ) {
+            java.time.ZoneId.of("Europe/Moscow")
+        } else {
+            sysZone
+        }
+        return java.time.LocalDate.now(effectiveZone).toEpochDay()
+    }
+
+    val BASE_EPOCH_DAY: Long
+        get() = currentDeviceEpochDay()
 
     val workGroups: List<WorkGroup> = listOf(
         WorkGroup(
@@ -656,7 +672,9 @@ object CorporateSeedData {
 
     fun buildInitialReportTemplates(
         userId: String,
-        dateLabel: String = "10.11.2026",
+        dateLabel: String = java.time.LocalDate.ofEpochDay(BASE_EPOCH_DAY).let { d ->
+            String.format(java.util.Locale.US, "%02d.%02d.%04d", d.dayOfMonth, d.monthValue, d.year)
+        },
         orgName: String = DEFAULT_ORG_NAME,
         siteName: String = DEFAULT_SITE_NAME
     ): List<ReportTemplateDocument> = listOf(

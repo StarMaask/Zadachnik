@@ -429,5 +429,31 @@ class ExampleUnitTest {
             adminModes
         )
     }
+
+    @Test
+    fun `formatEpochDay and currentDeviceEpochDay match exact LocalDate calendar day without drift`() {
+        // 20769L == 2026-11-12
+        val nov12Epoch = java.time.LocalDate.of(2026, 11, 12).toEpochDay()
+        assertEquals(20769L, nov12Epoch)
+        assertEquals("12.11.2026", ReportDocumentGenerator.formatEpochDay(nov12Epoch))
+
+        // 20768L == 2026-11-11
+        val nov11Epoch = java.time.LocalDate.of(2026, 11, 11).toEpochDay()
+        assertEquals(20768L, nov11Epoch)
+        assertEquals("11.11.2026", ReportDocumentGenerator.formatEpochDay(nov11Epoch))
+
+        // Verify currentDeviceEpochDay matches formatted LocalDate.ofEpochDay
+        val todayEpoch = CorporateSeedData.currentDeviceEpochDay()
+        val expectedDate = java.time.LocalDate.ofEpochDay(todayEpoch)
+        val expectedText = String.format(
+            java.util.Locale.US,
+            "%02d.%02d.%04d",
+            expectedDate.dayOfMonth,
+            expectedDate.monthValue,
+            expectedDate.year
+        )
+        assertEquals(expectedText, ReportDocumentGenerator.formatEpochDay(todayEpoch))
+    }
 }
+
 

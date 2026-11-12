@@ -87,10 +87,10 @@ class EzhednevnikViewModel(
     private val effectiveUserId: String
         get() = Firebase.auth.currentUser?.uid?.takeIf { it.isNotBlank() } ?: currentUserId
 
-    private val _currentEpochDay = MutableStateFlow(CorporateSeedData.BASE_EPOCH_DAY)
+    private val _currentEpochDay = MutableStateFlow(CorporateSeedData.currentDeviceEpochDay())
     val currentEpochDay: StateFlow<Long> = _currentEpochDay.asStateFlow()
 
-    private val _selectedCalendarEpochDay = MutableStateFlow(CorporateSeedData.BASE_EPOCH_DAY)
+    private val _selectedCalendarEpochDay = MutableStateFlow(CorporateSeedData.currentDeviceEpochDay())
     val selectedCalendarEpochDay: StateFlow<Long> = _selectedCalendarEpochDay.asStateFlow()
 
     private val _selectedFilter = MutableStateFlow(TaskFilterTab.ALL)
@@ -140,17 +140,23 @@ class EzhednevnikViewModel(
     )
     private val _localTasks = MutableStateFlow(
         appContext?.let { ctx ->
+            val todayReal = CorporateSeedData.currentDeviceEpochDay()
             LocalWorkspaceStore.loadTasks(ctx)
                 .filterNot { CorporateSeedData.isLegacyFakeSeedTaskId(it.id) }
                 .map { task ->
                     val cleanSubtasks = task.decodedSubtasks()
                     val cleanEncoded = cleanSubtasks.map { it.encode() }
-                    if (cleanEncoded != task.subtaskItems) {
-                        val newT = if (cleanSubtasks.isNotEmpty()) cleanSubtasks.sumOf { it.effectiveTargetVolume } else task.effectiveTargetVolume
-                        val newC = if (cleanSubtasks.isNotEmpty()) cleanSubtasks.sumOf { it.effectiveCompletedVolume }.coerceIn(0.0, newT) else task.effectiveCompletedVolume
-                        task.copy(subtaskItems = cleanEncoded).withUpdatedVolume(newT, newC, task.effectiveVolumeUnit)
+                    val normalizedDateTask = if (task.dueDateEpochDay == 20768L && todayReal > 20768L) {
+                        task.copy(dueDateEpochDay = todayReal, originalDueDateEpochDay = todayReal)
                     } else {
                         task
+                    }
+                    if (cleanEncoded != normalizedDateTask.subtaskItems) {
+                        val newT = if (cleanSubtasks.isNotEmpty()) cleanSubtasks.sumOf { it.effectiveTargetVolume } else normalizedDateTask.effectiveTargetVolume
+                        val newC = if (cleanSubtasks.isNotEmpty()) cleanSubtasks.sumOf { it.effectiveCompletedVolume }.coerceIn(0.0, newT) else normalizedDateTask.effectiveCompletedVolume
+                        normalizedDateTask.copy(subtaskItems = cleanEncoded).withUpdatedVolume(newT, newC, normalizedDateTask.effectiveVolumeUnit)
+                    } else {
+                        normalizedDateTask
                     }
                 }
         } ?: emptyList()
@@ -2195,6 +2201,10 @@ class EzhednevnikViewModel(
         includePhotos: Boolean = true
     ) {
         viewModelScope.launch {
+            val todayReal = CorporateSeedData.currentDeviceEpochDay()
+            if (_currentEpochDay.value != todayReal) {
+                _currentEpochDay.value = todayReal
+            }
             val actor = activeEmployee.value
             val allTasks = (tasksState.value as? UiState.Success)?.data ?: emptyList()
             val day = _currentEpochDay.value
@@ -2212,7 +2222,8 @@ class EzhednevnikViewModel(
                         currentEpochDay = day,
                         overrideLayout = sheetLayout,
                         overrideFormat = exportFormat,
-                        includePhotos = includePhotos
+                        includePhotos = includePhotos,
+                        saveToDownloads = saveToHistory
                     )
                 }
             }
@@ -2225,7 +2236,7 @@ class EzhednevnikViewModel(
                         id = "rep_${System.currentTimeMillis()}",
                         userId = effectiveUserId,
                         templateId = template.id.ifBlank { "tpl_custom" },
-                        templateName = "${template.name} (${if (includePhotos) "с фото" else "без фото"})",
+                        templateName = "${normalizedTemplate.name} (${sheetLayout.shortRu}, ${if (includePhotos) "с фото" else "без фото"})",
                         reportType = template.reportType,
                         authorName = actor.fullName,
                         periodLabel = generated.periodLabel,
@@ -2242,7 +2253,7 @@ class EzhednevnikViewModel(
                     if (isCloudAuthenticated) {
                         repository.recordGeneratedReport(actor, record)
                     }
-                    _bannerMessage.value = "Сформирован файл: ${generated.file.name}"
+                    _bannerMessage.value = "Скачано в папку «Загрузки» телефона: ${generated.file.name}"
                 }
             } else {
                 _bannerMessage.value = result.exceptionOrNull()?.localizedMessage ?: "Ошибка формирования отчёта"

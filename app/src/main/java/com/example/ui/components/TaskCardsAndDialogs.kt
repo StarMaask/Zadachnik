@@ -3057,8 +3057,8 @@ fun CreateTaskDialog(
                                 val stripDays = remember(currentEpochDay) {
                                     (-1L..12L).map { currentEpochDay + it }
                                 }
-                                val dayNamesShort = remember {
-                                    listOf("Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб")
+                                val dayNamesMondayFirst = remember {
+                                    listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
                                 }
                                 Row(
                                     modifier = Modifier
@@ -3069,11 +3069,11 @@ fun CreateTaskDialog(
                                     stripDays.forEach { dayEpoch ->
                                         val isSelected = dayEpoch == selectedDueEpochDay
                                         val isToday = dayEpoch == currentEpochDay
-                                        val cal = remember(dayEpoch) {
-                                            Calendar.getInstance().apply { timeInMillis = dayEpoch * 86_400_000L }
+                                        val localDate = remember(dayEpoch) {
+                                            java.time.LocalDate.ofEpochDay(dayEpoch)
                                         }
-                                        val dayOfMonth = cal.get(Calendar.DAY_OF_MONTH)
-                                        val dow = dayNamesShort[cal.get(Calendar.DAY_OF_WEEK) - 1]
+                                        val dayOfMonth = localDate.dayOfMonth
+                                        val dow = dayNamesMondayFirst[(localDate.dayOfWeek.value - 1).coerceIn(0, 6)]
                                         val tasksCountOnDay = remember(existingTasks, dayEpoch) {
                                             existingTasks.count { it.dueDateEpochDay == dayEpoch }
                                         }
@@ -3135,21 +3135,22 @@ fun CreateTaskDialog(
 
                                 // Развёрнутый календарь месяца со списком задач на выбранную дату
                                 AnimatedVisibility(visible = calendarExpanded) {
-                                    val monthCal = remember(currentEpochDay, displayedMonthOffset) {
-                                        Calendar.getInstance().apply {
-                                            timeInMillis = currentEpochDay * 86_400_000L
-                                            set(Calendar.DAY_OF_MONTH, 1)
-                                            add(Calendar.MONTH, displayedMonthOffset)
-                                        }
+                                    val displayedYearMonth = remember(currentEpochDay, displayedMonthOffset) {
+                                        val baseDate = java.time.LocalDate.ofEpochDay(currentEpochDay)
+                                        java.time.YearMonth.of(baseDate.year, baseDate.monthValue)
+                                            .plusMonths(displayedMonthOffset.toLong())
                                     }
-                                    val monthTitle = remember(monthCal.timeInMillis) {
-                                        java.text.SimpleDateFormat("LLLL yyyy", Locale.forLanguageTag("ru"))
-                                            .format(monthCal.time)
-                                            .replaceFirstChar { it.titlecase(Locale.forLanguageTag("ru")) }
+                                    val ruLocale = remember { Locale.forLanguageTag("ru-RU") }
+                                    val monthTitle = remember(displayedYearMonth, ruLocale) {
+                                        val mName = displayedYearMonth.month
+                                            .getDisplayName(java.time.format.TextStyle.FULL_STANDALONE, ruLocale)
+                                            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(ruLocale) else it.toString() }
+                                        "$mName ${displayedYearMonth.year}"
                                     }
-                                    val daysInMonth = monthCal.getActualMaximum(Calendar.DAY_OF_MONTH)
-                                    val firstDayWeekOffset = ((monthCal.get(Calendar.DAY_OF_WEEK) + 5) % 7)
-                                    val baseMonthStartEpochDay = monthCal.timeInMillis / 86_400_000L
+                                    val daysInMonth = displayedYearMonth.lengthOfMonth()
+                                    val firstOfMonth = displayedYearMonth.atDay(1)
+                                    val firstDayWeekOffset = firstOfMonth.dayOfWeek.value - 1
+                                    val baseMonthStartEpochDay = firstOfMonth.toEpochDay()
                                     val tasksForSelectedDate = remember(existingTasks, selectedDueEpochDay) {
                                         existingTasks.filter { it.dueDateEpochDay == selectedDueEpochDay }
                                     }
@@ -3209,6 +3210,7 @@ fun CreateTaskDialog(
                                                         if (dayNum in 1..daysInMonth) {
                                                             val cellEpochDay = baseMonthStartEpochDay + (dayNum - 1)
                                                             val isSel = cellEpochDay == selectedDueEpochDay
+                                                            val isTodayCell = cellEpochDay == currentEpochDay
                                                             val countOnCell = existingTasks.count { it.dueDateEpochDay == cellEpochDay }
                                                             Box(
                                                                 contentAlignment = Alignment.Center,
@@ -3218,8 +3220,11 @@ fun CreateTaskDialog(
                                                                     .padding(2.dp)
                                                                     .clip(RoundedCornerShape(8.dp))
                                                                     .background(
-                                                                        if (isSel) MaterialTheme.colorScheme.primary
-                                                                        else Color.Transparent
+                                                                        when {
+                                                                            isSel -> MaterialTheme.colorScheme.primary
+                                                                            isTodayCell -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                                                            else -> Color.Transparent
+                                                                        }
                                                                     )
                                                                     .clickable { selectedDueEpochDay = cellEpochDay }
                                                             ) {
@@ -3227,7 +3232,7 @@ fun CreateTaskDialog(
                                                                     Text(
                                                                         text = dayNum.toString(),
                                                                         style = MaterialTheme.typography.labelMedium,
-                                                                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                                                                        fontWeight = if (isSel || isTodayCell) FontWeight.Bold else FontWeight.Normal,
                                                                         color = if (isSel) MaterialTheme.colorScheme.onPrimary
                                                                         else MaterialTheme.colorScheme.onSurface
                                                                     )

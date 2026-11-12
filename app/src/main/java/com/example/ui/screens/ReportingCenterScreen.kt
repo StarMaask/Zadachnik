@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,17 +29,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.HideImage
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Preview
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import java.io.File
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -104,11 +109,13 @@ fun ReportingCenterScreen(
     ) -> Unit,
     onSaveCustomTemplate: (ReportTemplateDocument) -> Unit
 ) {
+    val context = LocalContext.current
     var selectedLayout by remember { mutableStateOf(SheetLayout.SPLIT_SHEETS) }
     var selectedFormat by remember { mutableStateOf(ExportFormat.PDF) }
     var includePhotosInReport by remember { mutableStateOf(true) }
     var showSettingsSubmenu by remember { mutableStateOf(false) }
     var showCustomTemplateDialog by remember { mutableStateOf(false) }
+    var lastDownloadedNotice by remember { mutableStateOf<String?>(null) }
 
     val todayFormatted = remember(currentEpochDay) {
         ReportDocumentGenerator.formatEpochDay(currentEpochDay)
@@ -191,36 +198,97 @@ fun ReportingCenterScreen(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // 1. ЯВНЫЙ ВЫБОР КОМПОНОВКИ ЛИСТОВ (На раздельных листах ИЛИ На одном листе)
+                    // 1. ЯВНЫЙ ВЫБОР КОМПОНОВКИ ЛИСТОВ (2 КНОПКИ РЯДОМ БЕЗ ПРОКРУТКИ: НА РАЗДЕЛЬНЫХ СТРАНИЦАХ ИЛИ НА ОДНОЙ)
                     Text(
-                        text = "1. Компоновка «Отчёт за день ($todayFormatted)» и «План на следующий день ($tomorrowFormatted)»:",
+                        text = "1. Размещение плана и отчёта в документе (выберите режим):",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        FilterChip(
-                            selected = selectedLayout == SheetLayout.SPLIT_SHEETS,
-                            onClick = { selectedLayout = SheetLayout.SPLIT_SHEETS },
-                            label = {
-                                Text("На раздельных листах (Лист 1: Отчёт / Лист 2: План)")
+                        val isSplit = selectedLayout == SheetLayout.SPLIT_SHEETS
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSplit) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                             },
-                            modifier = Modifier.testTag("sheet_layout_SPLIT_SHEETS")
-                        )
-                        FilterChip(
-                            selected = selectedLayout == SheetLayout.SINGLE_SHEET,
-                            onClick = { selectedLayout = SheetLayout.SINGLE_SHEET },
-                            label = {
-                                Text("На одном листе (Блок 1: Отчёт + Блок 2: План)")
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (isSplit) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { selectedLayout = SheetLayout.SPLIT_SHEETS }
+                                .testTag("sheet_layout_SPLIT_SHEETS")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = "На раздельных страницах",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSplit) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Стр. 1: Отчёт • Стр. 2: План",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isSplit) {
+                                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.88f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        }
+
+                        val isSingle = selectedLayout == SheetLayout.SINGLE_SHEET
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSingle) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                             },
-                            modifier = Modifier.testTag("sheet_layout_SINGLE_SHEET")
-                        )
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (isSingle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { selectedLayout = SheetLayout.SINGLE_SHEET }
+                                .testTag("sheet_layout_SINGLE_SHEET")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = "На одной странице",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSingle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Блок 1: Отчёт + Блок 2: План",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isSingle) {
+                                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.88f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        }
                     }
 
                     // Пояснение выбранного режима компоновки в PDF
@@ -229,13 +297,13 @@ fun ReportingCenterScreen(
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp)
+                            .padding(vertical = 6.dp)
                     ) {
                         Text(
                             text = if (selectedLayout == SheetLayout.SPLIT_SHEETS) {
-                                "В PDF/XLSX будет 2 отдельных листа: Страница 1 — зелёная шапка «ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayFormatted)»; Страница 2 — синяя шапка «ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowFormatted)»."
+                                "Выбрано: НА РАЗДЕЛЬНЫХ СТРАНИЦАХ — Страница 1: зелёная шапка «ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayFormatted)»; Страница 2: синяя шапка «ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowFormatted)»."
                             } else {
-                                "В PDF/XLSX на ОДНОМ листе будут 2 раздельные таблицы с крупными заголовками: сверху — «БЛОК 1. ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayFormatted)», снизу — «БЛОК 2. ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowFormatted)»."
+                                "Выбрано: НА ОДНОЙ СТРАНИЦЕ — На одном общем листе сверху «БЛОК 1. ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayFormatted)», снизу «БЛОК 2. ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowFormatted)»."
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -350,43 +418,69 @@ fun ReportingCenterScreen(
             }
         }
 
-        // Лаконичный табличный список видов отчётов
+        // Уведомление об успешном скачивании в папку «Загрузки» телефона
+        lastDownloadedNotice?.let { noticeText ->
+            item {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF10B981).copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF059669),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = noticeText,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        IconButton(
+                            onClick = { lastDownloadedNotice = null },
+                            modifier = Modifier.size(26.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Закрыть", modifier = Modifier.size(15.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Лаконичный табличный список видов отчётов с прямым выбором компоновки и скачиванием в «Загрузки» телефона
         items(allReportCatalog, key = { it.id.ifBlank { it.name } }) { tpl ->
             val rType = tpl.parsedReportType
             val displayName = ReportDocumentGenerator.resolveTemplateDisplayName(tpl, currentEpochDay)
             val isLockedForWorker = rType.isConsolidatedOnly && !activeEmployee.role.canExportConsolidatedPersonnelReport()
 
             Surface(
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = displayName,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
-                        ) {
-                            Text(
-                                text = selectedLayout.shortRu,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = displayName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = rType.subtitleRu,
@@ -396,6 +490,72 @@ fun ReportingCenterScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+
+                    // Быстрый переключатель режима страниц прямо внутри карточки отчёта
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val isSplit = selectedLayout == SheetLayout.SPLIT_SHEETS
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSplit) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                shadowElevation = if (isSplit) 1.dp else 0.dp,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { selectedLayout = SheetLayout.SPLIT_SHEETS }
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "На 2 страницах (Отчёт / План)",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = if (isSplit) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSplit) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            val isSingle = selectedLayout == SheetLayout.SINGLE_SHEET
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSingle) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                shadowElevation = if (isSingle) 1.dp else 0.dp,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { selectedLayout = SheetLayout.SINGLE_SHEET }
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "На 1 странице (Отчёт + План)",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = if (isSingle) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSingle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     if (isLockedForWorker) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -428,7 +588,7 @@ fun ReportingCenterScreen(
                                     )
                                 },
                                 modifier = Modifier
-                                    .weight(1f)
+                                    .weight(0.95f)
                                     .testTag("preview_report_${rType.code}"),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                             ) {
@@ -450,17 +610,19 @@ fun ReportingCenterScreen(
                                         true,
                                         includePhotosInReport
                                     )
+                                    lastDownloadedNotice = "Файл «$displayName» (${selectedFormat.code}, ${selectedLayout.shortRu}) сохранён в папку «Загрузки» телефона."
                                 },
                                 modifier = Modifier
-                                    .weight(1f)
+                                    .weight(1.15f)
                                     .testTag("generate_report_${rType.code}"),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                             ) {
                                 Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "Скачать ${selectedFormat.code}",
+                                    text = "Скачать ${selectedFormat.code} в Загрузки",
                                     style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -475,7 +637,7 @@ fun ReportingCenterScreen(
             item {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Сформированные файлы (${generatedReports.size})",
+                    text = "Сформированные файлы в памяти и Загрузках (${generatedReports.size})",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
@@ -501,17 +663,35 @@ fun ReportingCenterScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "${rep.periodLabel} • ${rep.filePath.substringAfterLast('/')}",
+                                text = "${rep.periodLabel} • Папка «Загрузки» / ${rep.filePath.substringAfterLast('/')}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Text(
-                            text = rep.exportFormat,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val srcFile = File(rep.filePath)
+                                val fmt = ExportFormat.entries.firstOrNull {
+                                    it.code.equals(rep.exportFormat, ignoreCase = true)
+                                } ?: ExportFormat.PDF
+                                val savedRes = ReportDocumentGenerator.saveFileToPhoneDownloads(
+                                    context = context,
+                                    sourceFile = srcFile,
+                                    mimeType = fmt.mimeType,
+                                    showToast = true
+                                )
+                                if (savedRes.isSuccess) {
+                                    lastDownloadedNotice = "Повторно сохранено в «Загрузки»: ${srcFile.name}"
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("download_history_file_${rep.id}")
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("В Загрузки (${rep.exportFormat})", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
             }
@@ -866,47 +1046,101 @@ fun ReportPreviewDialog(
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-                    // Закрепленная нижняя панель отправки/экспорта
-                    Row(
+                    // Закрепленная нижняя панель: Скачать в папку «Загрузки» телефона + Открыть + Поделиться
+                    var downloadedBannerInDialog by remember(result.downloadedToPath) {
+                        mutableStateOf(
+                            if (result.downloadedToPath.isNotBlank()) {
+                                "✓ Файл скачан в папку «Загрузки» телефона: ${result.file.name}"
+                            } else {
+                                null
+                            }
+                        )
+                    }
+
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Button(
-                            onClick = {
-                                ReportDocumentGenerator.shareGeneratedReport(context, result, "SHARE")
-                            },
-                            modifier = Modifier
-                                .weight(1.2f)
-                                .testTag("share_report_button"),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Поделиться", style = MaterialTheme.typography.labelMedium)
+                        downloadedBannerInDialog?.let { msg ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF10B981).copy(alpha = 0.15f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = msg,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF059669),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
                         }
-                        OutlinedButton(
-                            onClick = {
-                                ReportDocumentGenerator.shareGeneratedReport(context, result, "EMAIL")
-                            },
-                            modifier = Modifier.weight(0.9f),
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Почта", style = MaterialTheme.typography.labelMedium)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                ReportDocumentGenerator.shareGeneratedReport(context, result, "MESSENGER")
-                            },
-                            modifier = Modifier.weight(0.9f),
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Чат", style = MaterialTheme.typography.labelMedium)
+                            Button(
+                                onClick = {
+                                    val saved = ReportDocumentGenerator.saveReportToPhoneDownloads(
+                                        context = context,
+                                        result = result,
+                                        showToast = true
+                                    )
+                                    if (saved.isSuccess) {
+                                        downloadedBannerInDialog = "✓ Файл сохранён в папку «Загрузки» телефона: ${result.file.name}"
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF059669),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .testTag("download_to_phone_button"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Скачать в Загрузки",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    ReportDocumentGenerator.openGeneratedReport(context, result)
+                                },
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .testTag("open_report_file_button"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Открыть", style = MaterialTheme.typography.labelMedium)
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    ReportDocumentGenerator.shareGeneratedReport(context, result, "SHARE")
+                                },
+                                modifier = Modifier
+                                    .weight(0.95f)
+                                    .testTag("share_report_button"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Поделиться", style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                     }
                 }

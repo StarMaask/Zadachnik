@@ -108,6 +108,13 @@ private const val KEY_SAVED_SUBDIVISION = "saved_subdivision"
 private const val KEY_SAVED_SITE = "saved_site"
 private const val KEY_SAVED_POSITION = "saved_position"
 private const val KEY_SAVED_ADMIN_FLAG = "saved_admin_flag"
+private const val KEY_EXPLICIT_SIGNED_OUT = "explicit_signed_out"
+
+fun isExplicitlySignedOut(context: Context): Boolean {
+    return context.applicationContext
+        .getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
+        .getBoolean(KEY_EXPLICIT_SIGNED_OUT, false)
+}
 
 fun saveCorporateSession(context: Context, session: CorporateLoginSession) {
     val cleanEmail = session.email.trim().lowercase()
@@ -123,11 +130,15 @@ fun saveCorporateSession(context: Context, session: CorporateLoginSession) {
         .putString(KEY_SAVED_SITE, session.requestedSiteName)
         .putString(KEY_SAVED_POSITION, session.requestedPosition)
         .putBoolean(KEY_SAVED_ADMIN_FLAG, isAdmin)
+        .putBoolean(KEY_EXPLICIT_SIGNED_OUT, false)
         .apply()
 }
 
 fun loadSavedCorporateSession(context: Context): CorporateLoginSession? {
     val prefs = context.applicationContext.getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
+    if (prefs.getBoolean(KEY_EXPLICIT_SIGNED_OUT, false)) {
+        return null
+    }
     val savedId = prefs.getString(KEY_SAVED_USER_ID, null) ?: return null
     val savedEmail = prefs.getString(KEY_SAVED_EMAIL, "")?.trim()?.lowercase().orEmpty()
     val savedSub = prefs.getString(KEY_SAVED_SUBDIVISION, "") ?: ""
@@ -161,8 +172,15 @@ fun clearSavedCorporateSession(context: Context) {
     context.applicationContext
         .getSharedPreferences(PREFS_AUTH_NAME, Context.MODE_PRIVATE)
         .edit()
-        .clear()
-        .apply()
+        .remove(KEY_SAVED_USER_ID)
+        .remove(KEY_SAVED_EMAIL)
+        .remove(KEY_SAVED_NAME)
+        .remove(KEY_SAVED_SUBDIVISION)
+        .remove(KEY_SAVED_SITE)
+        .remove(KEY_SAVED_POSITION)
+        .remove(KEY_SAVED_ADMIN_FLAG)
+        .putBoolean(KEY_EXPLICIT_SIGNED_OUT, true)
+        .commit()
 }
 
 fun attemptAutoSignIn(
@@ -172,6 +190,10 @@ fun attemptAutoSignIn(
     onUnauthenticated: () -> Unit,
     scope: CoroutineScope
 ) {
+    if (isExplicitlySignedOut(context)) {
+        onUnauthenticated()
+        return
+    }
     val existing = loadSavedCorporateSession(context)
     if (existing != null) {
         onAuthSuccess(existing)
@@ -314,15 +336,14 @@ fun signOut(
     scope: CoroutineScope,
     onSignOutComplete: () -> Unit = {}
 ) {
+    clearSavedCorporateSession(context)
+    onSignOutComplete()
     scope.launch {
         withContext(NonCancellable) {
-            clearSavedCorporateSession(context)
             try {
                 credentialManager.clearCredentialState(ClearCredentialStateRequest())
             } catch (e: Exception) {
                 Log.w("Auth", "Failed to clear credential state: ${e.message}")
-            } finally {
-                onSignOutComplete()
             }
         }
     }
@@ -1049,11 +1070,15 @@ fun PendingRoleApprovalScreen(
 
                 OutlinedButton(
                     onClick = onSignOut,
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("pending_sign_out_button")
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Выйти из учётной записи")
+                    Text("Выйти из учётной записи (сменить аккаунт)", fontWeight = FontWeight.SemiBold)
                 }
             }
         }

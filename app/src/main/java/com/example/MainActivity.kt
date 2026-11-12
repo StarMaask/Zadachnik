@@ -59,37 +59,36 @@ fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
     }
 
     LaunchedEffect(currentUser) {
+        if (com.example.ui.auth.isExplicitlySignedOut(context)) {
+            return@LaunchedEffect
+        }
+        val saved = loadSavedCorporateSession(context)
+        if (saved != null) {
+            localCorporateSession = saved
+            return@LaunchedEffect
+        }
         val fbUser = currentUser
         if (fbUser != null) {
             val email = fbUser.email?.trim()?.lowercase() ?: ""
-            val saved = loadSavedCorporateSession(context)
+            val canonicalId = SiteMemberDocument.canonicalMemberId(fbUser.uid, email)
             val resolvedSession = CorporateLoginSession(
-                userId = fbUser.uid,
+                userId = canonicalId,
                 email = email,
                 fullName = fbUser.displayName?.takeIf { it.isNotBlank() }
-                    ?: saved?.fullName
                     ?: email.substringBefore("@").ifBlank { "Сотрудник участка" },
-                isHeadActivated = (saved?.isHeadActivated == true) ||
-                    SiteMemberDocument.isRootHeadEmail(email)
+                isHeadActivated = SiteMemberDocument.isRootHeadEmail(email)
             )
             saveCorporateSession(context, resolvedSession)
             localCorporateSession = resolvedSession
         }
     }
 
-    val activeSession = localCorporateSession ?: currentUser?.let { fbUser ->
-        val email = fbUser.email?.trim()?.lowercase() ?: ""
-        CorporateLoginSession(
-            userId = fbUser.uid,
-            email = email,
-            fullName = fbUser.displayName ?: "Сотрудник участка",
-            isHeadActivated = SiteMemberDocument.isRootHeadEmail(email)
-        )
-    }
+    val activeSession = localCorporateSession
 
     if (activeSession == null) {
         AuthScreen(
             onAuthSuccess = { newSession ->
+                saveCorporateSession(context, newSession)
                 localCorporateSession = newSession
             }
         )

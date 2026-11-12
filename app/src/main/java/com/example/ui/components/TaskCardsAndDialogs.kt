@@ -41,13 +41,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Remove
@@ -97,6 +104,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -109,9 +117,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import android.graphics.SurfaceTexture
+import android.view.TextureView
+import java.util.Calendar
+import java.util.Locale
 import com.example.data.model.CorporateEmployee
 import com.example.data.model.PhotoReportItem
 import com.example.data.model.RecurrenceRule
@@ -457,12 +471,11 @@ fun TaskDetailDialog(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showExtraSections by remember { mutableStateOf(false) }
 
-    // Серийная съёмка (непрерывная съёмка нескольких кадров подряд)
+    // Современная студия фотосъёмки СМР без промежуточного подтверждения каждого снимка
     var continuousShootingMode by remember { mutableStateOf(true) }
     var burstShotCount by remember { mutableIntStateOf(0) }
+    var showModernCameraDialog by remember { mutableStateOf(false) }
     var selectedPhotoForPreview by remember { mutableStateOf<PhotoReportItem?>(null) }
-
-    lateinit var launchCameraAgain: () -> Unit
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
@@ -482,40 +495,14 @@ fun TaskDetailDialog(
                 photoComment.ifBlank { "Снимок с камеры #${task.photoItems.size + 1}" }
             )
             burstShotCount++
-            if (continuousShootingMode) {
-                launchCameraAgain()
-            }
-        } else {
-            burstShotCount = 0
         }
-    }
-
-    launchCameraAgain = {
-        cameraLauncher.launch(null)
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            burstShotCount = 0
-            cameraLauncher.launch(null)
-        } else {
-            val savedPath = PhotoCaptureUtils.generatePhotoStampFile(
-                context = context,
-                taskTitle = task.title,
-                authorName = activeEmployee.shortName,
-                gpsCoords = photoGps,
-                comment = photoComment.ifBlank { "Фотофиксация выполнения" },
-                photoIndex = task.photoItems.size + 1
-            )
-            onAddPhoto(
-                savedPath,
-                photoGps,
-                photoComment.ifBlank { "Фотофиксация выполнения работ" }
-            )
-            photoComment = ""
-        }
+    ) { _ ->
+        // В любом случае открываем современное окно камеры СМР без промежуточных подтверждений
+        showModernCameraDialog = true
     }
 
     val tokens = LocalAppThemeTokens.current
@@ -1392,8 +1379,7 @@ fun TaskDetailDialog(
                                                 Manifest.permission.CAMERA
                                             ) == PackageManager.PERMISSION_GRANTED
                                             if (hasCamPerm) {
-                                                burstShotCount = 0
-                                                cameraLauncher.launch(null)
+                                                showModernCameraDialog = true
                                             } else {
                                                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                                             }
@@ -1732,6 +1718,28 @@ fun TaskDetailDialog(
         }
     }
 
+    if (showModernCameraDialog) {
+        ModernPhotoCaptureDialog(
+            taskTitle = task.title,
+            authorName = activeEmployee.shortName,
+            gpsCoords = photoGps,
+            initialComment = photoComment,
+            existingPhotoCount = task.photoItems.size,
+            minRequiredPhotos = task.minPhotoCount.toInt().coerceAtLeast(1),
+            onOpenSystemCamera = {
+                cameraLauncher.launch(null)
+            },
+            onSaveCapturedPhotos = { capturedItems ->
+                capturedItems.forEach { (savedPath, captionText) ->
+                    onAddPhoto(savedPath, photoGps, captionText)
+                }
+                photoComment = ""
+                showModernCameraDialog = false
+            },
+            onDismiss = { showModernCameraDialog = false }
+        )
+    }
+
     selectedPhotoForPreview?.let { photoItem ->
         FullScreenPhotoDialog(
             photo = photoItem,
@@ -1968,61 +1976,591 @@ fun FullScreenPhotoDialog(
 }
 
 /**
- * Диалог создания задачи:
- * - Полностью адаптируется под экран любого телефона (верхняя шапка и нижние кнопки всегда видны).
- * - Всегда отображает блок выбора исполнителя (чипы сотрудников + поле ввода ФИО исполнителя).
- * - Ручной ввод минимального количества фотографий для обязательного фотоотчёта.
- * - Постановка объёма выполнения задачи (при необходимости) с выбором единиц измерения (шт, кг, м² и др., включая ручной ввод своей единицы).
+ * Современная студия фотосъёмки СМР:
+ * - Снимает кадры мгновенно по нажатию на кнопку затвора (или касанием видоискателя) БЕЗ промежуточного диалога подтверждения каждого снимка.
+ * - Отображает живой видоискатель камеры (при наличии разрешения и камеры) с инженерным штампом СМР (дата/время, GPS, автор, задача).
+ * - Накапливает серию снимков в нижней ленте миниатюр с возможностью удалить лишний кадр.
+ * - Завершает фотосъёмку и прикрепляет все сделанные кадры по нажатию кнопки «Сохранить».
+ */
+@Suppress("DEPRECATION")
+@Composable
+fun ModernPhotoCaptureDialog(
+    taskTitle: String,
+    authorName: String,
+    gpsCoords: String,
+    initialComment: String,
+    existingPhotoCount: Int,
+    minRequiredPhotos: Int,
+    onOpenSystemCamera: () -> Unit,
+    onSaveCapturedPhotos: (List<Pair<String, String>>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val hasCameraPermission = remember {
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    val capturedSessionItems = remember { mutableStateListOf<Pair<String, String>>() }
+    var captionInput by remember { mutableStateOf(initialComment) }
+    var tapToShoot by remember { mutableStateOf(true) }
+    var lastShotFlashTrigger by remember { mutableIntStateOf(0) }
+    var liveTextureView by remember { mutableStateOf<TextureView?>(null) }
+
+    val takeInstantShot: () -> Unit = {
+        val shotNum = existingPhotoCount + capturedSessionItems.size + 1
+        val effectiveCaption = captionInput.trim().ifBlank { "Фотофиксация СМР #$shotNum" }
+        val liveBitmap = runCatching { liveTextureView?.bitmap }.getOrNull()
+        val savedPath = if (liveBitmap != null && liveBitmap.width > 32 && liveBitmap.height > 32) {
+            PhotoCaptureUtils.saveCameraBitmapWithStamp(
+                context = context,
+                sourceBitmap = liveBitmap,
+                taskTitle = taskTitle,
+                authorName = authorName,
+                gpsCoords = gpsCoords,
+                comment = effectiveCaption
+            )
+        } else {
+            PhotoCaptureUtils.generatePhotoStampFile(
+                context = context,
+                taskTitle = taskTitle,
+                authorName = authorName,
+                gpsCoords = gpsCoords,
+                comment = effectiveCaption,
+                photoIndex = shotNum
+            )
+        }
+        capturedSessionItems.add(savedPath to effectiveCaption)
+        lastShotFlashTrigger++
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                .imePadding(),
+            color = Color(0xFF090D16)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                // 1. ВЕРХНЯЯ ПАНЕЛЬ КАМЕРЫ СМР
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF10B981))
+                            )
+                            Text(
+                                text = "КАМЕРА СМР • МГНОВЕННАЯ СЪЁМКА",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF10B981),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = taskTitle.ifBlank { "Фотофиксация выполнения работ" },
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val totalWithSession = existingPhotoCount + capturedSessionItems.size
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (totalWithSession >= minRequiredPhotos) {
+                                Color(0xFF10B981).copy(alpha = 0.22f)
+                            } else {
+                                Color(0xFF3B82F6).copy(alpha = 0.22f)
+                            }
+                        ) {
+                            Text(
+                                text = "Кадров: $totalWithSession / $minRequiredPhotos",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (totalWithSession >= minRequiredPhotos) {
+                                    Color(0xFF34D399)
+                                } else {
+                                    Color(0xFF60A5FA)
+                                },
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.08f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Закрыть камеру",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 2. ОБЛАСТЬ ВИДОИСКАТЕЛЯ С ЖИВЫМ ШТАМПОМ СМР И ТАПОМ ДЛЯ СЪЁМКИ
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color(0xFF111827),
+                                    Color(0xFF1E293B),
+                                    Color(0xFF0F172A)
+                                )
+                            )
+                        )
+                        .clickable(enabled = tapToShoot) {
+                            takeInstantShot()
+                        }
+                        .testTag("camera_viewfinder_box")
+                ) {
+                    if (hasCameraPermission) {
+                        AndroidView(
+                            factory = { ctx ->
+                                TextureView(ctx).apply {
+                                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                        private var cameraInstance: android.hardware.Camera? = null
+
+                                        override fun onSurfaceTextureAvailable(
+                                            surface: SurfaceTexture,
+                                            width: Int,
+                                            height: Int
+                                        ) {
+                                            runCatching {
+                                                cameraInstance = android.hardware.Camera.open()?.apply {
+                                                    setDisplayOrientation(90)
+                                                    setPreviewTexture(surface)
+                                                    startPreview()
+                                                }
+                                            }
+                                        }
+
+                                        override fun onSurfaceTextureSizeChanged(
+                                            surface: SurfaceTexture,
+                                            width: Int,
+                                            height: Int
+                                        ) = Unit
+
+                                        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                                            runCatching {
+                                                cameraInstance?.stopPreview()
+                                                cameraInstance?.release()
+                                            }
+                                            cameraInstance = null
+                                            return true
+                                        }
+
+                                        override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+                                    }
+                                    liveTextureView = this
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    // Инженерная прицельная сетка и рамка фокуса
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(20.dp)
+                            .drawBehind {
+                                val stroke = 2.dp.toPx()
+                                val cornerLen = 28.dp.toPx()
+                                val bracketColor = Color.White.copy(alpha = 0.55f)
+                                // Верхний левый угол
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, 0f), androidx.compose.ui.geometry.Offset(cornerLen, 0f), stroke)
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, 0f), androidx.compose.ui.geometry.Offset(0f, cornerLen), stroke)
+                                // Верхний правый угол
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, 0f), androidx.compose.ui.geometry.Offset(size.width - cornerLen, 0f), stroke)
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, 0f), androidx.compose.ui.geometry.Offset(size.width, cornerLen), stroke)
+                                // Нижний левый угол
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, size.height), androidx.compose.ui.geometry.Offset(cornerLen, size.height), stroke)
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, size.height), androidx.compose.ui.geometry.Offset(0f, size.height - cornerLen), stroke)
+                                // Нижний правый угол
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, size.height), androidx.compose.ui.geometry.Offset(size.width - cornerLen, size.height), stroke)
+                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, size.height), androidx.compose.ui.geometry.Offset(size.width, size.height - cornerLen), stroke)
+                            }
+                    )
+
+                    // Верхний бейдж режима съёмки без подтверждения
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = Color.Black.copy(alpha = 0.55f)
+                        ) {
+                            Text(
+                                text = if (lastShotFlashTrigger > 0) {
+                                    "✓ Кадр #${capturedSessionItems.size} снят мгновенно — продолжайте съёмку или нажмите «Сохранить»"
+                                } else {
+                                    "Нажмите на затвор или экран для мгновенного снимка без подтверждения"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
+                    // Центральный индикатор видоискателя
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.08f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
+                            modifier = Modifier.size(64.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.PhotoCamera,
+                                    contentDescription = null,
+                                    tint = Color.White.copy(alpha = 0.75f),
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Нижний живой штамп СМР прямо на видоискателе
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF0F172A).copy(alpha = 0.82f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "ШТАМП СМР • ${PhotoCaptureUtils.nowStampText()}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF60A5FA),
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Исп.: $authorName • Участок: ${gpsCoords.ifBlank { "Участок №1" }}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFCBD5E1),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            TextButton(
+                                onClick = onOpenSystemCamera,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.testTag("system_camera_fallback_button")
+                            ) {
+                                Text(
+                                    text = "Сист. камера",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF93C5FD)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 3. ЛЕНТА ОТСНЯТЫХ КАДРОВ СЕССИИ + ПОДПИСЬ
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (capturedSessionItems.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            capturedSessionItems.forEachIndexed { idx, (path, cap) ->
+                                val thumb = remember(path) {
+                                    PhotoCaptureUtils.loadBitmapFromUriOrPath(path)
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF1E293B),
+                                    border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.5f)),
+                                    modifier = Modifier.size(width = 110.dp, height = 66.dp)
+                                ) {
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        if (thumb != null) {
+                                            Image(
+                                                bitmap = thumb.asImageBitmap(),
+                                                contentDescription = cap,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = Color.Black.copy(alpha = 0.65f),
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "#${idx + 1}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color.White,
+                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { capturedSessionItems.removeAt(idx) },
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(22.dp)
+                                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Удалить кадр",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    TextField(
+                        value = captionInput,
+                        onValueChange = { captionInput = it },
+                        placeholder = {
+                            Text(
+                                "Примечание на фотоштамп (необязательно)...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF94A3B8)
+                            )
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color(0xFF1E293B),
+                            unfocusedContainerColor = Color(0xFF1E293B).copy(alpha = 0.75f),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("camera_caption_input")
+                    )
+
+                    // 4. ПАНЕЛЬ ЗАТВОРА (БЕЗ ПОДТВЕРЖДЕНИЯ КАЖДОГО СНИМКА) + КНОПКА «СОХРАНИТЬ» ДЛЯ ЗАВЕРШЕНИЯ ФОТОСЪЁМКИ
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                            modifier = Modifier.height(48.dp)
+                        ) {
+                            Text("Отмена", color = Color.White)
+                        }
+
+                        // Кнопка мгновенного спуска затвора (можно нажимать многократно без подтверждений)
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(68.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.18f))
+                                .clickable { takeInstantShot() }
+                                .testTag("shutter_capture_button")
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.White,
+                                modifier = Modifier.size(54.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.CameraAlt,
+                                        contentDescription = "Сделать снимок",
+                                        tint = Color(0xFF0F172A),
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Кнопка «Сохранить» для завершения фотосъёмки
+                        Button(
+                            onClick = {
+                                if (capturedSessionItems.isEmpty()) {
+                                    takeInstantShot()
+                                }
+                                onSaveCapturedPhotos(capturedSessionItems.toList())
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF10B981),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("save_captured_photos_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (capturedSessionItems.isEmpty()) {
+                                    "Сохранить"
+                                } else {
+                                    "Сохранить (${capturedSessionItems.size})"
+                                },
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Премиальный экран «Постановка задачи» в стиле Linear / Notion / Apple:
+ * 1. Шапка: только заголовок «Постановка задачи» и крестик закрытия (без верхней кнопки сохранения).
+ * 2. Основная информация (всегда открыта):
+ *    - Большое текстовое поле «Название задачи» без жёсткой рамки (мягкая подложка со скруглениями).
+ *    - Компактный выпадающий список «Исполнитель» с круглым аватаром и опцией «+ Ввести ФИО вручную» (без сжатого вертикального текста).
+ *    - Элегантный селектор дат: горизонтальная лента дней + кнопка разворота полноценного календаря с задачами на выбранную дату.
+ * 3. Настройки выполнения (сворачиваемые аккордеоны):
+ *    - Уровень важности (Приоритет): компактный сегментированный контрол в одну строку с цветовой индикацией.
+ *    - Фотоотчёт: переключатель «Обязательный фотоотчёт» + плавно раскрывающийся компактный степпер (− / +) без лишних дублирующих чипов.
+ *    - Чек-лист: чистый список строк (название + компактное поле количества + интегрированный выпадающий список единиц измерения прямо в строке) и кнопка «+ Добавить пункт».
+ * 4. Дополнительно:
+ *    - Кнопка «+ Добавить описание», раскрывающая многострочное поле описания без жёсткой рамки.
+ *    - Блок «Продвинутые опции» в самом низу перед футером.
+ * 5. Футер: закреплённая нижняя панель с мягкой тенью и двумя кнопками: «Отмена» и «Создать задачу».
  */
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun CreateTaskDialog(
     activeEmployee: CorporateEmployee,
     availableEmployees: List<CorporateEmployee> = listOf(activeEmployee),
+    existingTasks: List<TaskDocument> = emptyList(),
     currentEpochDay: Long,
     initialDueDateEpochDay: Long = currentEpochDay,
     onDismiss: () -> Unit,
     onCreate: (TaskDraft) -> Unit
 ) {
+    val tokens = LocalAppThemeTokens.current
     val assignees = remember(availableEmployees, activeEmployee) {
         availableEmployees.ifEmpty { listOf(activeEmployee) }
     }
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
+    var showDescriptionInput by remember { mutableStateOf(false) }
 
-    // Выбор исполнителя: из выпадающего списка сотрудников или ввод ФИО вручную
+    // Выбор исполнителя: из компактного выпадающего списка с аватаром или ввод ФИО вручную
     var selectedAssignee by remember(assignees) { mutableStateOf(assignees.first()) }
     var useCustomAssigneeName by remember { mutableStateOf(false) }
     var customAssigneeName by remember { mutableStateOf("") }
     var assigneeDropdownExpanded by remember { mutableStateOf(false) }
 
     var selectedPriority by remember { mutableStateOf(TaskPriority.MEDIUM) }
+    var priorityAccordionExpanded by remember { mutableStateOf(true) }
+
     var selectedDueEpochDay by remember(initialDueDateEpochDay) { mutableStateOf(initialDueDateEpochDay) }
+    var calendarExpanded by remember { mutableStateOf(false) }
+    var displayedMonthOffset by remember { mutableIntStateOf(0) }
     var deadlineTime by remember { mutableStateOf("18:00") }
 
-    // Обязательный фотоотчёт с возможностью ручного ввода минимального числа фото
+    // Обязательный фотоотчёт с компактным степпером
     var requiresPhoto by remember { mutableStateOf(true) }
     var minPhotoCountText by remember { mutableStateOf("1") }
 
-    // Объём выполнения задачи с выбором единиц измерения (шт, кг и другое)
+    // Чек-лист (аккордеон)
+    var checklistAccordionExpanded by remember { mutableStateOf(true) }
+    val draftChecklistItems = remember { mutableStateListOf<SubtaskItem>() }
+    var draftItemTitle by remember { mutableStateOf("") }
+    var draftItemVolText by remember { mutableStateOf("10") }
+    var draftItemUnit by remember { mutableStateOf("шт") }
+    var draftUnitMenuExpanded by remember { mutableStateOf(false) }
+
+    // Продвинутые опции в самом низу
+    var showAdvancedOptions by remember { mutableStateOf(false) }
     var hasVolumeRequirement by remember { mutableStateOf(false) }
     var targetVolumeText by remember { mutableStateOf("") }
     var selectedUnit by remember { mutableStateOf("шт") }
     var isCustomUnitSelected by remember { mutableStateOf(false) }
     var customUnitText by remember { mutableStateOf("") }
-
     var requiresApproval by remember { mutableStateOf(true) }
     var selectedRecurrence by remember { mutableStateOf(RecurrenceRule.NONE) }
     var subtasksRaw by remember { mutableStateOf("") }
-    // Структурированный список пунктов чек-листа, где у каждого пункта свой объём и ед. изм.
-    val draftChecklistItems = remember { mutableStateListOf<SubtaskItem>() }
-    var draftItemTitle by remember { mutableStateOf("") }
-    var draftItemVolText by remember { mutableStateOf("10") }
-    var draftItemUnit by remember { mutableStateOf("шт") }
-
     var tagsRaw by remember { mutableStateOf("") }
     var geoLocation by remember { mutableStateOf(activeEmployee.siteName) }
-    var showAdvancedOptions by remember { mutableStateOf(false) }
 
     val formScrollState = rememberScrollState()
 
@@ -2034,7 +2572,7 @@ fun CreateTaskDialog(
             selectedAssignee.shortName
         }
 
-        // Если пользователь ввёл текст в строку добавления пункта, но не нажал «+», сохраняем и его
+        // Если пользователь ввёл текст в строку добавления пункта, но не нажал «+ Добавить пункт», сохраняем и его
         val pendingDraftSubtasks = buildList {
             addAll(draftChecklistItems)
             if (draftItemTitle.isNotBlank()) {
@@ -2052,7 +2590,6 @@ fun CreateTaskDialog(
             }
         }
 
-        // Наименование задачи не подтягивается из пунктов чек-листа и не создаёт дублирующий пункт в чек-листе
         val fallbackTitle = description.lines().map { it.trim() }.firstOrNull { it.isNotBlank() } ?: ""
         val effectiveTitle = title.trim()
             .ifBlank { fallbackTitle }
@@ -2122,6 +2659,13 @@ fun CreateTaskDialog(
         onDismiss()
     }
 
+    val softFieldBg = MaterialTheme.colorScheme.surfaceVariant.copy(
+        alpha = if (tokens.isDark) 0.42f else 0.55f
+    )
+    val softBlockBg = MaterialTheme.colorScheme.surfaceVariant.copy(
+        alpha = if (tokens.isDark) 0.26f else 0.35f
+    )
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -2134,86 +2678,752 @@ fun CreateTaskDialog(
                 .fillMaxSize()
                 .systemBarsPadding()
                 .imePadding()
-                .padding(horizontal = 18.dp, vertical = 28.dp),
+                .padding(horizontal = 12.dp, vertical = 16.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.84f),
-                shape = RoundedCornerShape(20.dp),
+                    .fillMaxHeight(0.92f),
+                shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                tonalElevation = 4.dp,
+                shadowElevation = 18.dp
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // 1. ЗАКРЕПЛЁННАЯ ВЕРХНЯЯ ПАНЕЛЬ С КНОПКОЙ СОХРАНЕНИЯ ЗАДАНИЯ
+                    // 1. ШАПКА: ТОЛЬКО ЗАГОЛОВОК «ПОСТАНОВКА ЗАДАЧИ» И КРЕСТИК ЗАКРЫТИЯ
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 18.dp, end = 12.dp, top = 10.dp, bottom = 8.dp),
+                            .padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Постановка задачи",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Постановка задачи",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Новое производственное задание СМР",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(softFieldBg)
                         ) {
-                            Button(
-                                onClick = saveTaskAction,
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                modifier = Modifier
-                                    .height(38.dp)
-                                    .testTag("top_save_task_button")
-                            ) {
-                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Сохранить", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                            }
-                            IconButton(
-                                onClick = onDismiss,
-                                modifier = Modifier.size(38.dp)
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "Закрыть")
-                            }
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Закрыть",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
 
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                    // 2. ПРОКРУЧИВАЕМАЯ ФОРМА
+                    // 2. ПРОКРУЧИВАЕМОЕ ТЕЛО ФОРМЫ (БЕЗ ПРОМЕЖУТОЧНЫХ КНОПОК СОХРАНЕНИЯ И ЖЁСТКИХ РАМОК)
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .verticalScroll(formScrollState)
-                            .padding(horizontal = 18.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        OutlinedTextField(
-                            value = title,
-                            onValueChange = { title = it },
-                            label = { Text("Наименование задачи *") },
-                            placeholder = { Text("Например: Монтаж опалубки перекрытия") },
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("create_task_title_input")
-                        )
+                        // БЛОК 2.1: НАЗВАНИЕ ЗАДАЧИ (Главный акцент, без жёсткой рамки, мягкая подложка)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Название задачи",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            TextField(
+                                value = title,
+                                onValueChange = { title = it },
+                                placeholder = {
+                                    Text(
+                                        text = "Например: Монтаж опалубки перекрытия...",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                                    )
+                                },
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                    unfocusedContainerColor = softFieldBg,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    disabledIndicatorColor = Color.Transparent
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("create_task_title_input")
+                            )
+                        }
 
-                        // БЛОК ВЫБОРА ИСПОЛНИТЕЛЯ: ВЫПАДАЮЩИЙ СПИСОК СОТРУДНИКОВ ИЛИ ВВОД ВРУЧНУЮ
+                        // БЛОК 2.2: ИСПОЛНИТЕЛЬ (Компактный выпадающий список с круглым аватаром + опция ручного ввода)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Исполнитель",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                TextButton(
+                                    onClick = { useCustomAssigneeName = !useCustomAssigneeName },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    modifier = Modifier
+                                        .height(28.dp)
+                                        .testTag(if (useCustomAssigneeName) "assignee_mode_dropdown_chip" else "custom_assignee_chip")
+                                ) {
+                                    Text(
+                                        text = if (useCustomAssigneeName) {
+                                            "Выбрать из списка (${assignees.size})"
+                                        } else {
+                                            "+ Ввести ФИО вручную"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
+                            if (!useCustomAssigneeName) {
+                                ExposedDropdownMenuBox(
+                                    expanded = assigneeDropdownExpanded,
+                                    onExpandedChange = { assigneeDropdownExpanded = !assigneeDropdownExpanded },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = softFieldBg,
+                                        modifier = Modifier
+                                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                            .fillMaxWidth()
+                                            .testTag("assignee_dropdown_field")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            // Круглый аватар с инициалами сотрудника
+                                            val initials = remember(selectedAssignee.fullName) {
+                                                selectedAssignee.fullName
+                                                    .split(" ")
+                                                    .filter { it.isNotBlank() }
+                                                    .take(2)
+                                                    .joinToString("") { it.take(1).uppercase() }
+                                                    .ifBlank { "ИС" }
+                                            }
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                                modifier = Modifier.size(38.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = initials,
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = selectedAssignee.fullName,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${selectedAssignee.position} • ${selectedAssignee.role.titleRu}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+
+                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = assigneeDropdownExpanded)
+                                        }
+                                    }
+
+                                    ExposedDropdownMenu(
+                                        expanded = assigneeDropdownExpanded,
+                                        onDismissRequest = { assigneeDropdownExpanded = false }
+                                    ) {
+                                        assignees.forEach { emp ->
+                                            val empInitials = emp.fullName
+                                                .split(" ")
+                                                .filter { it.isNotBlank() }
+                                                .take(2)
+                                                .joinToString("") { it.take(1).uppercase() }
+                                                .ifBlank { "ИС" }
+                                            DropdownMenuItem(
+                                                leadingIcon = {
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                                        modifier = Modifier.size(32.dp)
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Text(
+                                                                text = empInitials,
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = MaterialTheme.colorScheme.primary
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                                text = {
+                                                    Column {
+                                                        Text(
+                                                            text = emp.fullName,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                        Text(
+                                                            text = "${emp.position} (${emp.role.titleRu}) • ${emp.groupName}",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                },
+                                                onClick = {
+                                                    selectedAssignee = emp
+                                                    useCustomAssigneeName = false
+                                                    assigneeDropdownExpanded = false
+                                                },
+                                                modifier = Modifier.testTag("dropdown_assignee_${emp.id}")
+                                            )
+                                        }
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "+ Ввести ФИО исполнителя вручную...",
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            },
+                                            onClick = {
+                                                useCustomAssigneeName = true
+                                                assigneeDropdownExpanded = false
+                                            },
+                                            modifier = Modifier.testTag("dropdown_custom_assignee_option")
+                                        )
+                                    }
+                                }
+                            } else {
+                                TextField(
+                                    value = customAssigneeName,
+                                    onValueChange = { customAssigneeName = it },
+                                    placeholder = {
+                                        Text("Введите ФИО сотрудника или бригаду (напр. Петров А.С.)...")
+                                    },
+                                    trailingIcon = {
+                                        if (customAssigneeName.isNotBlank()) {
+                                            IconButton(onClick = { customAssigneeName = "" }) {
+                                                Icon(Icons.Default.Close, contentDescription = "Очистить")
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = TextFieldDefaults.colors(
+                                        focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                        unfocusedContainerColor = softFieldBg,
+                                        focusedIndicatorColor = Color.Transparent,
+                                        unfocusedIndicatorColor = Color.Transparent
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("custom_assignee_name_input")
+                                )
+                            }
+                        }
+
+                        // БЛОК 2.3: СРОКИ (ДАТА) — Горизонтальный скролл дат + кнопка разворота календаря с задачами
                         Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            shape = RoundedCornerShape(16.dp),
+                            color = softBlockBg,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Event,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Column {
+                                            Text(
+                                                text = "Срок выполнения",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = ReportDocumentGenerator.formatEpochDay(selectedDueEpochDay) +
+                                                    when (selectedDueEpochDay) {
+                                                        currentEpochDay -> " • Сегодня"
+                                                        currentEpochDay + 1L -> " • Завтра"
+                                                        else -> ""
+                                                    },
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+
+                                    // Кнопка разворота полного календаря с задачами
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (calendarExpanded) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                        } else {
+                                            softFieldBg
+                                        },
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { calendarExpanded = !calendarExpanded }
+                                            .testTag("create_task_calendar_expand_button")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CalendarMonth,
+                                                contentDescription = "Развернуть календарь",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = if (calendarExpanded) "Свернуть" else "Календарь",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                            Icon(
+                                                imageVector = if (calendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Горизонтальный скролл дат (пилюли дней с индикаторами задач)
+                                val stripDays = remember(currentEpochDay) {
+                                    (-1L..12L).map { currentEpochDay + it }
+                                }
+                                val dayNamesShort = remember {
+                                    listOf("Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб")
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    stripDays.forEach { dayEpoch ->
+                                        val isSelected = dayEpoch == selectedDueEpochDay
+                                        val isToday = dayEpoch == currentEpochDay
+                                        val cal = remember(dayEpoch) {
+                                            Calendar.getInstance().apply { timeInMillis = dayEpoch * 86_400_000L }
+                                        }
+                                        val dayOfMonth = cal.get(Calendar.DAY_OF_MONTH)
+                                        val dow = dayNamesShort[cal.get(Calendar.DAY_OF_WEEK) - 1]
+                                        val tasksCountOnDay = remember(existingTasks, dayEpoch) {
+                                            existingTasks.count { it.dueDateEpochDay == dayEpoch }
+                                        }
+
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = when {
+                                                isSelected -> MaterialTheme.colorScheme.primary
+                                                isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                                else -> MaterialTheme.colorScheme.surface
+                                            },
+                                            modifier = Modifier
+                                                .width(54.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .clickable { selectedDueEpochDay = dayEpoch }
+                                                .testTag("date_pill_$dayEpoch")
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = dow,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = if (isSelected) {
+                                                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    }
+                                                )
+                                                Text(
+                                                    text = dayOfMonth.toString(),
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isSelected) {
+                                                        MaterialTheme.colorScheme.onPrimary
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurface
+                                                    }
+                                                )
+                                                if (tasksCountOnDay > 0) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(5.dp)
+                                                            .clip(CircleShape)
+                                                            .background(
+                                                                if (isSelected) MaterialTheme.colorScheme.onPrimary
+                                                                else MaterialTheme.colorScheme.primary
+                                                            )
+                                                    )
+                                                } else {
+                                                    Spacer(modifier = Modifier.height(5.dp))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Развёрнутый календарь месяца со списком задач на выбранную дату
+                                AnimatedVisibility(visible = calendarExpanded) {
+                                    val monthCal = remember(currentEpochDay, displayedMonthOffset) {
+                                        Calendar.getInstance().apply {
+                                            timeInMillis = currentEpochDay * 86_400_000L
+                                            set(Calendar.DAY_OF_MONTH, 1)
+                                            add(Calendar.MONTH, displayedMonthOffset)
+                                        }
+                                    }
+                                    val monthTitle = remember(monthCal.timeInMillis) {
+                                        java.text.SimpleDateFormat("LLLL yyyy", Locale.forLanguageTag("ru"))
+                                            .format(monthCal.time)
+                                            .replaceFirstChar { it.titlecase(Locale.forLanguageTag("ru")) }
+                                    }
+                                    val daysInMonth = monthCal.getActualMaximum(Calendar.DAY_OF_MONTH)
+                                    val firstDayWeekOffset = ((monthCal.get(Calendar.DAY_OF_WEEK) + 5) % 7)
+                                    val baseMonthStartEpochDay = monthCal.timeInMillis / 86_400_000L
+                                    val tasksForSelectedDate = remember(existingTasks, selectedDueEpochDay) {
+                                        existingTasks.filter { it.dueDateEpochDay == selectedDueEpochDay }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = MaterialTheme.colorScheme.surface,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                IconButton(
+                                                    onClick = { displayedMonthOffset -= 1 },
+                                                    modifier = Modifier.size(30.dp)
+                                                ) {
+                                                    Icon(Icons.Default.ChevronLeft, contentDescription = "Предыдущий месяц")
+                                                }
+                                                Text(
+                                                    text = monthTitle,
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                IconButton(
+                                                    onClick = { displayedMonthOffset += 1 },
+                                                    modifier = Modifier.size(30.dp)
+                                                ) {
+                                                    Icon(Icons.Default.ChevronRight, contentDescription = "Следующий месяц")
+                                                }
+                                            }
+
+                                            Row(modifier = Modifier.fillMaxWidth()) {
+                                                listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс").forEach { dName ->
+                                                    Text(
+                                                        text = dName,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        textAlign = TextAlign.Center,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                            }
+
+                                            val totalCells = firstDayWeekOffset + daysInMonth
+                                            val rowsCount = (totalCells + 6) / 7
+                                            for (r in 0 until rowsCount) {
+                                                Row(modifier = Modifier.fillMaxWidth()) {
+                                                    for (c in 0 until 7) {
+                                                        val cellIdx = r * 7 + c
+                                                        val dayNum = cellIdx - firstDayWeekOffset + 1
+                                                        if (dayNum in 1..daysInMonth) {
+                                                            val cellEpochDay = baseMonthStartEpochDay + (dayNum - 1)
+                                                            val isSel = cellEpochDay == selectedDueEpochDay
+                                                            val countOnCell = existingTasks.count { it.dueDateEpochDay == cellEpochDay }
+                                                            Box(
+                                                                contentAlignment = Alignment.Center,
+                                                                modifier = Modifier
+                                                                    .weight(1f)
+                                                                    .height(36.dp)
+                                                                    .padding(2.dp)
+                                                                    .clip(RoundedCornerShape(8.dp))
+                                                                    .background(
+                                                                        if (isSel) MaterialTheme.colorScheme.primary
+                                                                        else Color.Transparent
+                                                                    )
+                                                                    .clickable { selectedDueEpochDay = cellEpochDay }
+                                                            ) {
+                                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                                    Text(
+                                                                        text = dayNum.toString(),
+                                                                        style = MaterialTheme.typography.labelMedium,
+                                                                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                                                                        color = if (isSel) MaterialTheme.colorScheme.onPrimary
+                                                                        else MaterialTheme.colorScheme.onSurface
+                                                                    )
+                                                                    if (countOnCell > 0) {
+                                                                        Box(
+                                                                            modifier = Modifier
+                                                                                .size(4.dp)
+                                                                                .clip(CircleShape)
+                                                                                .background(
+                                                                                    if (isSel) MaterialTheme.colorScheme.onPrimary
+                                                                                    else MaterialTheme.colorScheme.primary
+                                                                                )
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        } else {
+                                                            Spacer(modifier = Modifier.weight(1f).height(36.dp))
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Задачи на выбранную дату внутри календаря
+                                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                                            Text(
+                                                text = "Задачи на ${ReportDocumentGenerator.formatEpochDay(selectedDueEpochDay)} (${tasksForSelectedDate.size}):",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (tasksForSelectedDate.isEmpty()) {
+                                                Text(
+                                                    text = "На выбранную дату задач пока не назначено.",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                                                )
+                                            } else {
+                                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    tasksForSelectedDate.take(4).forEach { tItem ->
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clip(RoundedCornerShape(8.dp))
+                                                                .background(softBlockBg)
+                                                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Text(
+                                                                text = "• ${tItem.title}",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.Medium,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                modifier = Modifier.weight(1f)
+                                                            )
+                                                            Text(
+                                                                text = tItem.assigneeName,
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = MaterialTheme.colorScheme.primary
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. НАСТРОЙКИ ВЫПОЛНЕНИЯ (АККОРДЕОНЫ — СВОРАЧИВАЕМЫЕ БЛОКИ)
+
+                        // АККОРДЕОН 3.1: УРОВЕНЬ ВАЖНОСТИ (ПРИОРИТЕТ) — Компактный Segmented Control в одну строку
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = softBlockBg,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { priorityAccordionExpanded = !priorityAccordionExpanded },
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Flag,
+                                            contentDescription = null,
+                                            tint = priorityColor(selectedPriority),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = "Приоритет задачи",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(999.dp),
+                                            color = priorityColor(selectedPriority).copy(alpha = 0.14f)
+                                        ) {
+                                            Text(
+                                                text = selectedPriority.titleRu,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = priorityColor(selectedPriority),
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                                            )
+                                        }
+                                        Icon(
+                                            imageVector = if (priorityAccordionExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+
+                                AnimatedVisibility(visible = priorityAccordionExpanded) {
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = softFieldBg,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 10.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            TaskPriority.entries.forEach { prio ->
+                                                val isSel = selectedPriority == prio
+                                                val pColor = priorityColor(prio)
+                                                Surface(
+                                                    shape = RoundedCornerShape(9.dp),
+                                                    color = if (isSel) {
+                                                        MaterialTheme.colorScheme.surface
+                                                    } else {
+                                                        Color.Transparent
+                                                    },
+                                                    shadowElevation = if (isSel) 2.dp else 0.dp,
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .clip(RoundedCornerShape(9.dp))
+                                                        .clickable { selectedPriority = prio }
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                                        horizontalArrangement = Arrangement.Center,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(6.dp)
+                                                                .clip(CircleShape)
+                                                                .background(pColor)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text(
+                                                            text = prio.titleRu,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                                            color = if (isSel) pColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // АККОРДЕОН 3.2: ОБЯЗАТЕЛЬНЫЙ ФОТООТЧЁТ (Переключатель + компактный степпер без дублирующих чипов)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = softBlockBg,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Row(
@@ -2223,363 +3433,30 @@ fun CreateTaskDialog(
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.weight(1f)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.Person,
+                                            imageVector = Icons.Default.PhotoCamera,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(16.dp)
+                                            modifier = Modifier.size(18.dp)
                                         )
-                                        Text(
-                                            text = "Исполнитель задания:",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        FilterChip(
-                                            selected = !useCustomAssigneeName,
-                                            onClick = { useCustomAssigneeName = false },
-                                            label = { Text("Из списка (${assignees.size})") },
-                                            modifier = Modifier.testTag("assignee_mode_dropdown_chip")
-                                        )
-                                        FilterChip(
-                                            selected = useCustomAssigneeName,
-                                            onClick = { useCustomAssigneeName = true },
-                                            label = { Text("Ввод вручную") },
-                                            modifier = Modifier.testTag("custom_assignee_chip")
-                                        )
-                                    }
-                                }
-
-                                if (!useCustomAssigneeName) {
-                                    // 1. Выпадающий список всех сотрудников участка
-                                    ExposedDropdownMenuBox(
-                                        expanded = assigneeDropdownExpanded,
-                                        onExpandedChange = { assigneeDropdownExpanded = !assigneeDropdownExpanded },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        OutlinedTextField(
-                                            value = "${selectedAssignee.fullName} • ${selectedAssignee.position}",
-                                            onValueChange = {},
-                                            readOnly = true,
-                                            singleLine = true,
-                                            label = { Text("Выберите сотрудника из списка") },
-                                            trailingIcon = {
-                                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = assigneeDropdownExpanded)
-                                            },
-                                            modifier = Modifier
-                                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                                                .fillMaxWidth()
-                                                .testTag("assignee_dropdown_field")
-                                        )
-                                        ExposedDropdownMenu(
-                                            expanded = assigneeDropdownExpanded,
-                                            onDismissRequest = { assigneeDropdownExpanded = false }
-                                        ) {
-                                            assignees.forEach { emp ->
-                                                DropdownMenuItem(
-                                                    text = {
-                                                        Column {
-                                                            Text(
-                                                                text = emp.fullName,
-                                                                style = MaterialTheme.typography.bodyMedium,
-                                                                fontWeight = FontWeight.SemiBold
-                                                            )
-                                                            Text(
-                                                                text = "${emp.position} (${emp.role.titleRu}) • ${emp.groupName}",
-                                                                style = MaterialTheme.typography.labelSmall,
-                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                            )
-                                                        }
-                                                    },
-                                                    onClick = {
-                                                        selectedAssignee = emp
-                                                        useCustomAssigneeName = false
-                                                        assigneeDropdownExpanded = false
-                                                    },
-                                                    modifier = Modifier.testTag("dropdown_assignee_${emp.id}")
+                                        Column {
+                                            Text(
+                                                text = "Обязательный фотоотчёт",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            if (requiresPhoto) {
+                                                Text(
+                                                    text = "Минимум ${minPhotoCountText.ifBlank { "1" }} фото для сдачи на проверку",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
-                                            HorizontalDivider()
-                                            DropdownMenuItem(
-                                                text = {
-                                                    Text(
-                                                        text = "+ Ввести ФИО исполнителя вручную...",
-                                                        color = MaterialTheme.colorScheme.primary,
-                                                        fontWeight = FontWeight.SemiBold
-                                                    )
-                                                },
-                                                onClick = {
-                                                    useCustomAssigneeName = true
-                                                    assigneeDropdownExpanded = false
-                                                },
-                                                modifier = Modifier.testTag("dropdown_custom_assignee_option")
-                                            )
                                         }
                                     }
-
-                                    // Быстрые чипы для выбора в одно касание
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        assignees.forEach { emp ->
-                                            FilterChip(
-                                                selected = selectedAssignee.id == emp.id,
-                                                onClick = {
-                                                    useCustomAssigneeName = false
-                                                    selectedAssignee = emp
-                                                },
-                                                label = { Text("${emp.shortName} (${emp.role.titleRu})") },
-                                                modifier = Modifier.testTag("select_assignee_${emp.id}")
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    // 2. Поле ручного ввода ФИО исполнителя (или бригады / субподрядчика)
-                                    OutlinedTextField(
-                                        value = customAssigneeName,
-                                        onValueChange = { customAssigneeName = it },
-                                        label = { Text("Введите ФИО сотрудника или бригаду вручную *") },
-                                        placeholder = { Text("Например: Петров А.С. / Бригада монолитчиков") },
-                                        trailingIcon = {
-                                            if (customAssigneeName.isNotBlank()) {
-                                                IconButton(onClick = { customAssigneeName = "" }) {
-                                                    Icon(Icons.Default.Close, contentDescription = "Очистить")
-                                                }
-                                            }
-                                        },
-                                        singleLine = true,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .testTag("custom_assignee_name_input")
-                                    )
-                                    Text(
-                                        text = "Можно вписать любого сотрудника вручную или нажать на сотрудника из списка ниже для подстановки:",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        assignees.forEach { emp ->
-                                            FilterChip(
-                                                selected = customAssigneeName.equals(emp.fullName, ignoreCase = true),
-                                                onClick = {
-                                                    customAssigneeName = emp.fullName
-                                                    selectedAssignee = emp
-                                                },
-                                                label = { Text(emp.fullName) }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // БЛОК ОБЪЁМА ВЫПОЛНЕНИЯ ЗАДАЧИ С ВЫБОРЫМ ЕДИНИЦ ИЗМЕРЕНИЯ (шт, кг и другое)
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "Объём выполнения задачи",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = "Отчётность в чек-листе по объёму (100% = выполнено)",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Switch(
-                                        checked = hasVolumeRequirement,
-                                        onCheckedChange = { hasVolumeRequirement = it },
-                                        modifier = Modifier.testTag("toggle_volume_requirement_switch")
-                                    )
-                                }
-
-                                AnimatedVisibility(visible = hasVolumeRequirement) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedTextField(
-                                            value = targetVolumeText,
-                                            onValueChange = { targetVolumeText = it },
-                                            label = { Text("Плановый объём работ *") },
-                                            placeholder = { Text("Например: 150") },
-                                            singleLine = true,
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .testTag("create_task_target_volume_input")
-                                        )
-
-                                        Text(
-                                            text = "Единица измерения:",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.Medium
-                                        )
-
-                                        FlowRow(
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            STANDARD_VOLUME_UNITS.forEach { unitItem ->
-                                                FilterChip(
-                                                    selected = !isCustomUnitSelected && selectedUnit == unitItem,
-                                                    onClick = {
-                                                        isCustomUnitSelected = false
-                                                        selectedUnit = unitItem
-                                                    },
-                                                    label = { Text(unitItem) },
-                                                    modifier = Modifier.testTag("unit_chip_$unitItem")
-                                                )
-                                            }
-                                            FilterChip(
-                                                selected = isCustomUnitSelected,
-                                                onClick = { isCustomUnitSelected = true },
-                                                label = { Text("Другое...") },
-                                                modifier = Modifier.testTag("unit_chip_custom")
-                                            )
-                                        }
-
-                                        AnimatedVisibility(visible = isCustomUnitSelected) {
-                                            OutlinedTextField(
-                                                value = customUnitText,
-                                                onValueChange = { customUnitText = it },
-                                                label = { Text("Своя единица измерения") },
-                                                placeholder = { Text("Например: секц., рул., рейс, узел") },
-                                                singleLine = true,
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .testTag("custom_unit_input")
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Срок (выбор даты календаря) и приоритет
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "Дата выполнения: ${ReportDocumentGenerator.formatEpochDay(selectedDueEpochDay)}",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        OutlinedButton(
-                                            onClick = { selectedDueEpochDay -= 1L },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(30.dp)
-                                        ) {
-                                            Text("-1 дн.", style = MaterialTheme.typography.labelSmall)
-                                        }
-                                        OutlinedButton(
-                                            onClick = { selectedDueEpochDay += 1L },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(30.dp)
-                                        ) {
-                                            Text("+1 дн.", style = MaterialTheme.typography.labelSmall)
-                                        }
-                                    }
-                                }
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    FilterChip(
-                                        selected = selectedDueEpochDay == currentEpochDay,
-                                        onClick = { selectedDueEpochDay = currentEpochDay },
-                                        label = { Text("На сегодня (${ReportDocumentGenerator.formatEpochDay(currentEpochDay)})") }
-                                    )
-                                    FilterChip(
-                                        selected = selectedDueEpochDay == currentEpochDay + 1L,
-                                        onClick = { selectedDueEpochDay = currentEpochDay + 1L },
-                                        label = { Text("На завтра (${ReportDocumentGenerator.formatEpochDay(currentEpochDay + 1L)})") }
-                                    )
-                                    if (initialDueDateEpochDay != currentEpochDay && initialDueDateEpochDay != currentEpochDay + 1L) {
-                                        FilterChip(
-                                            selected = selectedDueEpochDay == initialDueDateEpochDay,
-                                            onClick = { selectedDueEpochDay = initialDueDateEpochDay },
-                                            label = { Text("Выбранная: ${ReportDocumentGenerator.formatEpochDay(initialDueDateEpochDay)}") }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            TaskPriority.entries.forEach { prio ->
-                                FilterChip(
-                                    selected = selectedPriority == prio,
-                                    onClick = { selectedPriority = prio },
-                                    label = { Text(prio.titleRu) }
-                                )
-                            }
-                        }
-
-                        // БЛОК ОБЯЗАТЕЛЬНОГО ФОТООТЧЁТА С РУЧНЫМ ВВОДОМ МИНИМАЛЬНОГО ЧИСЛА ФОТО
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "Обязательный фотоотчёт",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
                                     Switch(
                                         checked = requiresPhoto,
                                         onCheckedChange = { requiresPhoto = it }
@@ -2587,56 +3464,83 @@ fun CreateTaskDialog(
                                 }
 
                                 AnimatedVisibility(visible = requiresPhoto) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(softFieldBg)
+                                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Минимальное количество фото:",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            IconButton(
-                                                onClick = {
-                                                    val cur = minPhotoCountText.toIntOrNull() ?: 1
-                                                    minPhotoCountText = (cur - 1).coerceAtLeast(1).toString()
-                                                },
-                                                modifier = Modifier.size(36.dp)
-                                            ) {
-                                                Icon(Icons.Default.Remove, contentDescription = "Уменьшить")
-                                            }
-                                            OutlinedTextField(
-                                                value = minPhotoCountText,
-                                                onValueChange = { valDigits ->
-                                                    minPhotoCountText = valDigits.filter { it.isDigit() }
-                                                },
-                                                label = { Text("Мин. кол-во фото (вручную)") },
-                                                singleLine = true,
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .testTag("min_photo_manual_input")
-                                            )
-                                            IconButton(
-                                                onClick = {
-                                                    val cur = minPhotoCountText.toIntOrNull() ?: 1
-                                                    minPhotoCountText = (cur + 1).coerceAtMost(99).toString()
-                                                },
-                                                modifier = Modifier.size(36.dp)
-                                            ) {
-                                                Icon(Icons.Default.Add, contentDescription = "Увеличить")
-                                            }
-                                        }
-
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState()),
                                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
-                                            listOf(1, 2, 3, 5, 10).forEach { preset ->
-                                                FilterChip(
-                                                    selected = (minPhotoCountText.toIntOrNull() ?: 1) == preset,
-                                                    onClick = { minPhotoCountText = preset.toString() },
-                                                    label = { Text("$preset фото") }
-                                                )
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = MaterialTheme.colorScheme.surface,
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable {
+                                                        val cur = minPhotoCountText.toIntOrNull() ?: 1
+                                                        minPhotoCountText = (cur - 1).coerceAtLeast(1).toString()
+                                                    }
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Remove,
+                                                        contentDescription = "Уменьшить",
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            BasicTextField(
+                                                value = minPhotoCountText,
+                                                onValueChange = { valDigits ->
+                                                    minPhotoCountText = valDigits.filter { it.isDigit() }.take(2)
+                                                },
+                                                singleLine = true,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                textStyle = MaterialTheme.typography.titleSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    textAlign = TextAlign.Center,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                ),
+                                                modifier = Modifier
+                                                    .width(42.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(MaterialTheme.colorScheme.surface)
+                                                    .padding(vertical = 6.dp)
+                                                    .testTag("min_photo_manual_input")
+                                            )
+
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = MaterialTheme.colorScheme.surface,
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable {
+                                                        val cur = minPhotoCountText.toIntOrNull() ?: 1
+                                                        minPhotoCountText = (cur + 1).coerceAtMost(99).toString()
+                                                    }
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Add,
+                                                        contentDescription = "Увеличить",
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -2644,79 +3548,523 @@ fun CreateTaskDialog(
                             }
                         }
 
-                        // КОНСТРУКТОР ПУНКТОВ ЧЕК-ЛИСТА: ПОЛЕ ТЕКСТА + КНОПКА "+" И ЯЧЕЙКА КОЛИЧЕСТВА НАПРОТИВ КАЖДОЙ СТРОКИ
+                        // АККОРДЕОН 3.3: ЧЕК-ЛИСТ (Чистый список + интегрированный выбор единиц измерения прямо в строке)
                         Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            shape = RoundedCornerShape(16.dp),
+                            color = softBlockBg,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Text(
-                                    text = "Чек-лист задачи (пункт + количество напротив строки)",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = "Введите наименование пункта, укажите количество в ячейке напротив и нажмите «+» для добавления новой строки.",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { checklistAccordionExpanded = !checklistAccordionExpanded },
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.FormatListBulleted,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Column {
+                                            Text(
+                                                text = "Чек-лист работ и объёмы",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = if (draftChecklistItems.isEmpty()) {
+                                                    "Добавьте этапы работ с плановым количеством"
+                                                } else {
+                                                    "Пунктов: ${draftChecklistItems.size}"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Icon(
+                                        imageVector = if (checklistAccordionExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
 
-                                // Список добавленных строк чек-листа: наименование слева и ячейка количества прямо напротив строки
-                                if (draftChecklistItems.isNotEmpty()) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                AnimatedVisibility(visible = checklistAccordionExpanded) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        // Добавленные строки чек-листа
                                         draftChecklistItems.forEachIndexed { idx, item ->
                                             var rowQtyText by remember(item.id) {
                                                 mutableStateOf(SubtaskItem.formatVolumeNumber(item.effectiveTargetVolume))
                                             }
+                                            var rowUnitExpanded by remember(item.id) { mutableStateOf(false) }
+
                                             Surface(
-                                                shape = RoundedCornerShape(8.dp),
+                                                shape = RoundedCornerShape(12.dp),
                                                 color = MaterialTheme.colorScheme.surface,
-                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                                 modifier = Modifier.fillMaxWidth()
                                             ) {
                                                 Row(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                        .padding(horizontal = 10.dp, vertical = 6.dp),
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Text(
-                                                        text = "${idx + 1}. ${item.title}",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        fontWeight = FontWeight.SemiBold,
+                                                        text = "${idx + 1}.",
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                    BasicTextField(
+                                                        value = item.title,
+                                                        onValueChange = { newTitle ->
+                                                            draftChecklistItems[idx] = item.copy(title = newTitle)
+                                                        },
+                                                        singleLine = true,
+                                                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = MaterialTheme.colorScheme.onSurface
+                                                        ),
                                                         modifier = Modifier.weight(1f)
                                                     )
-                                                    OutlinedTextField(
-                                                        value = rowQtyText,
-                                                        onValueChange = { newVal ->
-                                                            rowQtyText = newVal
-                                                            val parsed = newVal.replace(",", ".").toDoubleOrNull()
-                                                            if (parsed != null && parsed > 0.0) {
-                                                                draftChecklistItems[idx] = item.copy(targetVolume = parsed)
-                                                            }
-                                                        },
-                                                        label = { Text("Кол-во (${item.effectiveUnit})") },
-                                                        singleLine = true,
-                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+
+                                                    // Компактное поле количества с интегрированным выбором единицы измерения
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
                                                         modifier = Modifier
-                                                            .width(102.dp)
-                                                            .testTag("draft_subtask_qty_row_$idx")
-                                                    )
+                                                            .clip(RoundedCornerShape(9.dp))
+                                                            .background(softFieldBg)
+                                                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                                                    ) {
+                                                        BasicTextField(
+                                                            value = rowQtyText,
+                                                            onValueChange = { newVal ->
+                                                                rowQtyText = newVal
+                                                                val parsed = newVal.replace(",", ".").toDoubleOrNull()
+                                                                if (parsed != null && parsed > 0.0) {
+                                                                    draftChecklistItems[idx] = item.copy(targetVolume = parsed)
+                                                                }
+                                                            },
+                                                            singleLine = true,
+                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                            textStyle = MaterialTheme.typography.labelLarge.copy(
+                                                                fontWeight = FontWeight.Bold,
+                                                                textAlign = TextAlign.End,
+                                                                color = MaterialTheme.colorScheme.onSurface
+                                                            ),
+                                                            modifier = Modifier
+                                                                .width(44.dp)
+                                                                .testTag("draft_subtask_qty_row_$idx")
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Box {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                modifier = Modifier
+                                                                    .clip(RoundedCornerShape(6.dp))
+                                                                    .clickable { rowUnitExpanded = true }
+                                                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = item.effectiveUnit,
+                                                                    style = MaterialTheme.typography.labelSmall,
+                                                                    fontWeight = FontWeight.SemiBold,
+                                                                    color = MaterialTheme.colorScheme.primary
+                                                                )
+                                                                Icon(
+                                                                    imageVector = Icons.Default.ExpandMore,
+                                                                    contentDescription = "Единица измерения",
+                                                                    tint = MaterialTheme.colorScheme.primary,
+                                                                    modifier = Modifier.size(14.dp)
+                                                                )
+                                                            }
+                                                            androidx.compose.material3.DropdownMenu(
+                                                                expanded = rowUnitExpanded,
+                                                                onDismissRequest = { rowUnitExpanded = false }
+                                                            ) {
+                                                                STANDARD_VOLUME_UNITS.forEach { uOpt ->
+                                                                    DropdownMenuItem(
+                                                                        text = { Text(uOpt) },
+                                                                        onClick = {
+                                                                            draftChecklistItems[idx] = item.copy(unit = uOpt)
+                                                                            rowUnitExpanded = false
+                                                                        }
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
                                                     IconButton(
                                                         onClick = { draftChecklistItems.removeAt(idx) },
-                                                        modifier = Modifier.size(32.dp)
+                                                        modifier = Modifier.size(28.dp)
                                                     ) {
                                                         Icon(
-                                                            imageVector = Icons.Default.DeleteOutline,
+                                                            imageVector = Icons.Default.Close,
                                                             contentDescription = "Удалить строку",
-                                                            tint = MaterialTheme.colorScheme.error,
-                                                            modifier = Modifier.size(18.dp)
+                                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            modifier = Modifier.size(16.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Строка ввода нового пункта чек-листа: название + интегрированное поле количества и ед. изм.
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = softFieldBg,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(modifier = Modifier.weight(1f)) {
+                                                    if (draftItemTitle.isEmpty()) {
+                                                        Text(
+                                                            text = "Название пункта работ...",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                                                        )
+                                                    }
+                                                    BasicTextField(
+                                                        value = draftItemTitle,
+                                                        onValueChange = { draftItemTitle = it },
+                                                        singleLine = true,
+                                                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                            color = MaterialTheme.colorScheme.onSurface
+                                                        ),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .testTag("draft_subtask_title_input")
+                                                    )
+                                                }
+
+                                                // Маленькое поле количества + интегрированный выпадающий список единиц измерения
+                                                Surface(
+                                                    shape = RoundedCornerShape(9.dp),
+                                                    color = MaterialTheme.colorScheme.surface
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                                    ) {
+                                                        BasicTextField(
+                                                            value = draftItemVolText,
+                                                            onValueChange = { draftItemVolText = it },
+                                                            singleLine = true,
+                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                            textStyle = MaterialTheme.typography.labelLarge.copy(
+                                                                fontWeight = FontWeight.Bold,
+                                                                textAlign = TextAlign.End,
+                                                                color = MaterialTheme.colorScheme.onSurface
+                                                            ),
+                                                            modifier = Modifier
+                                                                .width(42.dp)
+                                                                .testTag("draft_subtask_volume_input")
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Box {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                modifier = Modifier
+                                                                    .clip(RoundedCornerShape(6.dp))
+                                                                    .clickable { draftUnitMenuExpanded = true }
+                                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                                    .testTag("draft_subtask_unit_dropdown")
+                                                            ) {
+                                                                Text(
+                                                                    text = draftItemUnit,
+                                                                    style = MaterialTheme.typography.labelSmall,
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    color = MaterialTheme.colorScheme.primary
+                                                                )
+                                                                Icon(
+                                                                    imageVector = Icons.Default.ExpandMore,
+                                                                    contentDescription = "Выбрать единицу измерения",
+                                                                    tint = MaterialTheme.colorScheme.primary,
+                                                                    modifier = Modifier.size(14.dp)
+                                                                )
+                                                            }
+                                                            androidx.compose.material3.DropdownMenu(
+                                                                expanded = draftUnitMenuExpanded,
+                                                                onDismissRequest = { draftUnitMenuExpanded = false }
+                                                            ) {
+                                                                STANDARD_VOLUME_UNITS.forEach { uItem ->
+                                                                    DropdownMenuItem(
+                                                                        text = { Text(uItem) },
+                                                                        onClick = {
+                                                                            draftItemUnit = uItem
+                                                                            draftUnitMenuExpanded = false
+                                                                        }
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Аккуратная текстовая кнопка «+ Добавить пункт»
+                                        TextButton(
+                                            onClick = {
+                                                if (draftItemTitle.isNotBlank()) {
+                                                    val v = (draftItemVolText.replace(",", ".").toDoubleOrNull() ?: 1.0)
+                                                        .coerceAtLeast(0.1)
+                                                    val u = draftItemUnit.trim().ifBlank { "шт" }
+                                                    draftChecklistItems.add(
+                                                        SubtaskItem(
+                                                            id = "sub_${System.currentTimeMillis()}_${draftChecklistItems.size + 1}",
+                                                            title = draftItemTitle.trim(),
+                                                            isDone = false,
+                                                            targetVolume = v,
+                                                            completedVolume = 0.0,
+                                                            unit = u
+                                                        )
+                                                    )
+                                                    draftItemTitle = ""
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            modifier = Modifier.testTag("add_draft_subtask_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Add,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "+ Добавить пункт",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 4. ДОПОЛНИТЕЛЬНО: ОПИСАНИЕ ПОД КНОПКОЙ «+ ДОБАВИТЬ ОПИСАНИЕ» И «ПРОДВИНУТЫЕ ОПЦИИ» ВНИЗУ
+                        if (!showDescriptionInput && description.isBlank()) {
+                            TextButton(
+                                onClick = { showDescriptionInput = true },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("toggle_description_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Description,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "+ Добавить описание / примечание",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Описание / примечание",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    TextButton(
+                                        onClick = {
+                                            description = ""
+                                            showDescriptionInput = false
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Text("Скрыть", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                                TextField(
+                                    value = description,
+                                    onValueChange = { description = it },
+                                    placeholder = {
+                                        Text("Технические требования, отметки по чертежу, особые указания...")
+                                    },
+                                    minLines = 2,
+                                    maxLines = 4,
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = TextFieldDefaults.colors(
+                                        focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                        unfocusedContainerColor = softFieldBg,
+                                        focusedIndicatorColor = Color.Transparent,
+                                        unfocusedIndicatorColor = Color.Transparent
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("create_task_desc_input")
+                                )
+                            }
+                        }
+
+                        // ПРОДВИНУТЫЕ ОПЦИИ (В самом низу перед футером)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = softBlockBg,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { showAdvancedOptions = !showAdvancedOptions }
+                                        .testTag("toggle_advanced_options_button"),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Tune,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = "Продвинутые опции (повтор, время, участок, объём)",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = if (showAdvancedOptions) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+
+                                AnimatedVisibility(visible = showAdvancedOptions) {
+                                    Column(
+                                        modifier = Modifier.padding(top = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            TextField(
+                                                value = deadlineTime,
+                                                onValueChange = { deadlineTime = it },
+                                                label = { Text("Время сдачи") },
+                                                singleLine = true,
+                                                shape = RoundedCornerShape(12.dp),
+                                                colors = TextFieldDefaults.colors(
+                                                    focusedContainerColor = softFieldBg,
+                                                    unfocusedContainerColor = softFieldBg,
+                                                    focusedIndicatorColor = Color.Transparent,
+                                                    unfocusedIndicatorColor = Color.Transparent
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            TextField(
+                                                value = geoLocation,
+                                                onValueChange = { geoLocation = it },
+                                                label = { Text("Участок / зона") },
+                                                singleLine = true,
+                                                shape = RoundedCornerShape(12.dp),
+                                                colors = TextFieldDefaults.colors(
+                                                    focusedContainerColor = softFieldBg,
+                                                    unfocusedContainerColor = softFieldBg,
+                                                    focusedIndicatorColor = Color.Transparent,
+                                                    unfocusedIndicatorColor = Color.Transparent
+                                                ),
+                                                modifier = Modifier.weight(1.5f)
+                                            )
+                                        }
+
+                                        Text("Повторяемость:", style = MaterialTheme.typography.labelSmall)
+                                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            listOf(
+                                                RecurrenceRule.NONE,
+                                                RecurrenceRule.DAILY,
+                                                RecurrenceRule.WEEKDAYS,
+                                                RecurrenceRule.WEEKLY
+                                            ).forEach { rule ->
+                                                FilterChip(
+                                                    selected = selectedRecurrence == rule,
+                                                    onClick = { selectedRecurrence = rule },
+                                                    label = { Text(rule.titleRu) }
+                                                )
+                                            }
+                                        }
+
+                                        // Опциональный общий объём задачи (если задаётся без чек-листа)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "Задать единый объём на всю задачу",
+                                                style = MaterialTheme.typography.labelMedium
+                                            )
+                                            Switch(
+                                                checked = hasVolumeRequirement,
+                                                onCheckedChange = { hasVolumeRequirement = it },
+                                                modifier = Modifier.testTag("toggle_volume_requirement_switch")
+                                            )
+                                        }
+
+                                        AnimatedVisibility(visible = hasVolumeRequirement) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                TextField(
+                                                    value = targetVolumeText,
+                                                    onValueChange = { targetVolumeText = it },
+                                                    label = { Text("Плановый объём работ") },
+                                                    singleLine = true,
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    colors = TextFieldDefaults.colors(
+                                                        focusedContainerColor = softFieldBg,
+                                                        unfocusedContainerColor = softFieldBg,
+                                                        focusedIndicatorColor = Color.Transparent,
+                                                        unfocusedIndicatorColor = Color.Transparent
+                                                    ),
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .testTag("create_task_target_volume_input")
+                                                )
+                                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    STANDARD_VOLUME_UNITS.forEach { unitItem ->
+                                                        FilterChip(
+                                                            selected = !isCustomUnitSelected && selectedUnit == unitItem,
+                                                            onClick = {
+                                                                isCustomUnitSelected = false
+                                                                selectedUnit = unitItem
+                                                            },
+                                                            label = { Text(unitItem) },
+                                                            modifier = Modifier.testTag("unit_chip_$unitItem")
                                                         )
                                                     }
                                                 }
@@ -2724,184 +4072,67 @@ fun CreateTaskDialog(
                                         }
                                     }
                                 }
-
-                                // Новая строка: поле ввода текста пункта + ячейка количества напротив + кнопка "+"
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    OutlinedTextField(
-                                        value = draftItemTitle,
-                                        onValueChange = { draftItemTitle = it },
-                                        label = { Text("Наименование пункта") },
-                                        placeholder = { Text("Введите пункт...") },
-                                        singleLine = true,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("draft_subtask_title_input")
-                                    )
-                                    OutlinedTextField(
-                                        value = draftItemVolText,
-                                        onValueChange = { draftItemVolText = it },
-                                        label = { Text("Кол-во ($draftItemUnit)") },
-                                        placeholder = { Text("10") },
-                                        singleLine = true,
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                        modifier = Modifier
-                                            .width(96.dp)
-                                            .testTag("draft_subtask_volume_input")
-                                    )
-                                    FilledIconButton(
-                                        onClick = {
-                                            if (draftItemTitle.isNotBlank()) {
-                                                val v = (draftItemVolText.replace(",", ".").toDoubleOrNull() ?: 1.0)
-                                                    .coerceAtLeast(0.1)
-                                                val u = draftItemUnit.trim().ifBlank { "шт" }
-                                                draftChecklistItems.add(
-                                                    SubtaskItem(
-                                                        id = "sub_${System.currentTimeMillis()}_${draftChecklistItems.size + 1}",
-                                                        title = draftItemTitle.trim(),
-                                                        isDone = false,
-                                                        targetVolume = v,
-                                                        completedVolume = 0.0,
-                                                        unit = u
-                                                    )
-                                                )
-                                                draftItemTitle = ""
-                                            }
-                                        },
-                                        modifier = Modifier
-                                            .size(44.dp)
-                                            .testTag("add_draft_subtask_button")
-                                    ) {
-                                        Icon(Icons.Default.Add, contentDescription = "Добавить пункт в новой строке")
-                                    }
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    STANDARD_VOLUME_UNITS.forEach { uItem ->
-                                        FilterChip(
-                                            selected = draftItemUnit == uItem,
-                                            onClick = { draftItemUnit = uItem },
-                                            label = { Text(uItem) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        OutlinedTextField(
-                            value = description,
-                            onValueChange = { description = it },
-                            label = { Text("Описание / примечание (необязательно)") },
-                            maxLines = 2,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("create_task_desc_input")
-                        )
-
-                        // Кнопка сохранения прямо внутри прокручиваемой области
-                        Button(
-                            onClick = saveTaskAction,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(46.dp)
-                                .testTag("inline_save_task_button")
-                        ) {
-                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Сохранить задание", fontWeight = FontWeight.Bold)
-                        }
-
-                        // Дополнительные настройки в подменю
-                        TextButton(
-                            onClick = { showAdvancedOptions = !showAdvancedOptions },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                if (showAdvancedOptions) "Скрыть доп. параметры"
-                                else "Доп. параметры (повтор, время, участок)"
-                            )
-                        }
-
-                        AnimatedVisibility(visible = showAdvancedOptions) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Повторяемость:", style = MaterialTheme.typography.labelMedium)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    listOf(
-                                        RecurrenceRule.NONE,
-                                        RecurrenceRule.DAILY,
-                                        RecurrenceRule.WEEKDAYS,
-                                        RecurrenceRule.WEEKLY
-                                    ).forEach { rule ->
-                                        FilterChip(
-                                            selected = selectedRecurrence == rule,
-                                            onClick = { selectedRecurrence = rule },
-                                            label = { Text(rule.titleRu) }
-                                        )
-                                    }
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedTextField(
-                                        value = deadlineTime,
-                                        onValueChange = { deadlineTime = it },
-                                        label = { Text("Время") },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    OutlinedTextField(
-                                        value = geoLocation,
-                                        onValueChange = { geoLocation = it },
-                                        label = { Text("Участок / зона") },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1.5f)
-                                    )
-                                }
-                                OutlinedTextField(
-                                    value = tagsRaw,
-                                    onValueChange = { tagsRaw = it },
-                                    label = { Text("Теги через запятую") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
                             }
                         }
                     }
 
-                    // 3. ЗАКРЕПЛЁННАЯ НИЖНЯЯ ПАНЕЛЬ КНОПОК (всегда видна на любом телефоне!)
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    // 5. ФИКСИРОВАННЫЙ ФУТЕР С МЯГКОЙ ТЕНЬЮ И ДВУМЯ КНОПКАМИ: «ОТМЕНА» И «СОЗДАТЬ ЗАДАЧУ»
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 8.dp,
+                        shadowElevation = 12.dp,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        OutlinedButton(
-                            onClick = onDismiss,
+                        Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .height(46.dp)
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Отмена")
-                        }
-                        Button(
-                            onClick = saveTaskAction,
-                            modifier = Modifier
-                                .weight(1.5f)
-                                .height(46.dp)
-                                .testTag("confirm_create_task_button")
-                        ) {
-                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Сохранить задание", fontWeight = FontWeight.SemiBold)
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = softFieldBg,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { onDismiss() }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = "Отмена",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Button(
+                                onClick = saveTaskAction,
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                modifier = Modifier
+                                    .weight(1.6f)
+                                    .height(48.dp)
+                                    .testTag("confirm_create_task_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Создать задачу",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
@@ -2909,3 +4140,4 @@ fun CreateTaskDialog(
         }
     }
 }
+

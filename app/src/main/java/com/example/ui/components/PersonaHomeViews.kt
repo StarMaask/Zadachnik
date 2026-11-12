@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LocationOn
@@ -88,6 +90,12 @@ enum class PersonaUiMode(
             CorporateRole.ITR -> ITR
             CorporateRole.HEAD, CorporateRole.ADMIN -> ITR
         }
+
+        fun allowedModesForRole(role: CorporateRole): List<PersonaUiMode> = when (role) {
+            CorporateRole.WORKER -> listOf(WORKER)
+            CorporateRole.ITR -> listOf(WORKER, ITR)
+            CorporateRole.HEAD, CorporateRole.ADMIN -> listOf(WORKER, ITR, DIRECTOR)
+        }
     }
 }
 
@@ -103,12 +111,17 @@ enum class ItrQuickFilter(val titleRu: String) {
 }
 
 /**
- * Сегментированный переключатель ролевых интерфейсов (Рабочий | ИТР | Руководитель).
+ * Сегментированный переключатель ролевых интерфейсов, отображающий только режимы,
+ * доступные уровню прав текущего пользователя:
+ * - Рабочий видит только «Рабочий»
+ * - ИТР видит «Рабочий» и «ИТР (Прораб)»
+ * - Руководитель / Администратор видит «Рабочий», «ИТР (Прораб)» и «Руководитель»
  */
 @Composable
 fun PersonaModeSwitcherBar(
     selectedMode: PersonaUiMode,
     onSelectMode: (PersonaUiMode) -> Unit,
+    allowedModes: List<PersonaUiMode> = PersonaUiMode.entries,
     modifier: Modifier = Modifier
 ) {
     val tokens = LocalAppThemeTokens.current
@@ -125,8 +138,8 @@ fun PersonaModeSwitcherBar(
                 .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            PersonaUiMode.entries.forEach { mode ->
-                val isSelected = selectedMode == mode
+            allowedModes.forEach { mode ->
+                val isSelected = selectedMode == mode || allowedModes.size == 1
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
@@ -141,7 +154,11 @@ fun PersonaModeSwitcherBar(
                         modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
                     ) {
                         Text(
-                            text = mode.titleRu,
+                            text = if (allowedModes.size == 1) {
+                                "${mode.titleRu} • ${mode.subtitleRu}"
+                            } else {
+                                mode.titleRu
+                            },
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             color = if (isSelected) {
@@ -170,7 +187,9 @@ fun WorkerTodayHeaderCard(
     currentEpochDay: Long,
     totalTasksToday: Int,
     completedTasksToday: Int,
-    onCreateTaskClick: () -> Unit
+    onCreateTaskClick: () -> Unit,
+    isCalendarExpanded: Boolean = false,
+    onToggleExpandCalendar: () -> Unit = {}
 ) {
     val tokens = LocalAppThemeTokens.current
     val dateText = remember(currentEpochDay) {
@@ -194,13 +213,34 @@ fun WorkerTodayHeaderCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Сегодня • $dateText",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onToggleExpandCalendar() }
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CalendarMonth,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = "Сегодня • $dateText",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Icon(
+                        imageVector = if (isCalendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (isCalendarExpanded) "Свернуть календарь" else "Развернуть календарь с задачами",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = "Мои задачи на смену",
@@ -215,28 +255,52 @@ fun WorkerTodayHeaderCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.clickable(onClick = onCreateTaskClick)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier
+                        .clickable(onClick = onToggleExpandCalendar)
+                        .testTag("worker_expand_calendar_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Задача",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isCalendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = "Развернуть календарь",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.clickable(onClick = onCreateTaskClick)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Задача",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                 }
             }
         }
@@ -535,35 +599,67 @@ fun ItrHorizontalDateStrip(
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Верхняя строка: текущая дата + аккуратная кнопка «+ Задача» (не перекрывающая карточки)
+            // Верхняя строка: текущая дата + кнопка разворота календаря с задачами + аккуратная кнопка «+ Задача»
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.clickable { onToggleFullCalendar() }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isFullCalendarExpanded) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 10.dp)
+                        .clickable { onToggleFullCalendar() }
+                        .testTag("toggle_expand_calendar_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.CalendarMonth,
-                        contentDescription = "Календарь",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Column {
-                        Text(
-                            text = ReportDocumentGenerator.formatEpochDay(selectedEpochDay) +
-                                if (selectedEpochDay == currentEpochDay) " • Сегодня" else "",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = if (isFullCalendarExpanded) "Скрыть сетку месяца" else "Нажмите для сетки месяца",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = "Календарь",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = ReportDocumentGenerator.formatEpochDay(selectedEpochDay) +
+                                        if (selectedEpochDay == currentEpochDay) " • Сегодня" else "",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (isFullCalendarExpanded) {
+                                        "Свернуть календарь с задачами"
+                                    } else {
+                                        "Развернуть календарь с задачами"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = if (isFullCalendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = if (isFullCalendarExpanded) "Свернуть календарь" else "Развернуть календарь",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -595,11 +691,12 @@ fun ItrHorizontalDateStrip(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                val ruLocale = remember { Locale.forLanguageTag("ru") }
                 daysWindow.forEach { dayEpoch ->
                     val localDate = remember(dayEpoch) { LocalDate.ofEpochDay(dayEpoch) }
-                    val dayOfWeekShort = remember(localDate) {
-                        localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale("ru"))
-                            .replaceFirstChar { it.titlecase(Locale("ru")) }
+                    val dayOfWeekShort = remember(localDate, ruLocale) {
+                        localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, ruLocale)
+                            .replaceFirstChar { it.titlecase(ruLocale) }
                     }
                     val isSelected = dayEpoch == selectedEpochDay
                     val isToday = dayEpoch == currentEpochDay

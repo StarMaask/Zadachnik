@@ -394,4 +394,40 @@ class ExampleUnitTest {
         assertEquals("УЭСАиТМ", pendingMember.effectiveSiteName)
         assertEquals("ЛПДС \"Быково\"", pendingMember.groupName)
     }
+
+    @Test
+    fun `home screen persona visibility restricts worker to worker mode, itr to worker and itr, and head or admin to all`() {
+        val workerModes = com.example.ui.components.PersonaUiMode.allowedModesForRole(CorporateRole.WORKER)
+        assertEquals(listOf(com.example.ui.components.PersonaUiMode.WORKER), workerModes)
+
+        val itrModes = com.example.ui.components.PersonaUiMode.allowedModesForRole(CorporateRole.ITR)
+        assertEquals(
+            listOf(
+                com.example.ui.components.PersonaUiMode.WORKER,
+                com.example.ui.components.PersonaUiMode.ITR
+            ),
+            itrModes
+        )
+
+        val headModes = com.example.ui.components.PersonaUiMode.allowedModesForRole(CorporateRole.HEAD)
+        assertEquals(
+            listOf(
+                com.example.ui.components.PersonaUiMode.WORKER,
+                com.example.ui.components.PersonaUiMode.ITR,
+                com.example.ui.components.PersonaUiMode.DIRECTOR
+            ),
+            headModes
+        )
+
+        val adminModes = com.example.ui.components.PersonaUiMode.allowedModesForRole(CorporateRole.ADMIN)
+        assertEquals(
+            listOf(
+                com.example.ui.components.PersonaUiMode.WORKER,
+                com.example.ui.components.PersonaUiMode.ITR,
+                com.example.ui.components.PersonaUiMode.DIRECTOR
+            ),
+            adminModes
+        )
+    }
 }
+

@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FactCheck
@@ -81,6 +83,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -106,6 +109,7 @@ import com.example.data.model.CorporateRole
 import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
+import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
 import com.example.data.model.TaskStatus
 import com.example.data.repository.EzhednevnikRepository
@@ -127,6 +131,7 @@ import com.example.ui.components.TaskItemCard
 import com.example.ui.components.ThemeSettingsDialog
 import com.example.ui.components.WorkerPersonaTaskCard
 import com.example.ui.components.WorkerTodayHeaderCard
+import com.example.ui.components.statusColor
 import com.example.ui.theme.LocalAppThemeTokens
 import com.example.ui.viewmodel.EzhednevnikViewModel
 import com.example.ui.viewmodel.TaskFilterTab
@@ -251,17 +256,28 @@ fun MainFeatureScreen(
         allSiteMembers.count { it.isPendingRole && !it.isRejected }
     }
 
-    // Role-based task visibility filter
-    val roleVisibleTasks = remember(allTasksRaw, activeEmployee) {
+    // Строгая фильтрация видимости задач по уровню доступа:
+    // - Рабочий видит информацию только рабочего
+    // - ИТР видит информацию рабочего и ИТР
+    // - Руководитель / Администратор видит всю информацию
+    val roleVisibleTasks = remember(allTasksRaw, activeEmployee, availableEmployees) {
+        val roleByEmpId = availableEmployees.associate { it.id to it.role }
         when (activeEmployee.role) {
             CorporateRole.ADMIN, CorporateRole.HEAD -> allTasksRaw
-            CorporateRole.ITR -> allTasksRaw.filter {
-                it.groupId == activeEmployee.groupId ||
-                    it.assigneeId == activeEmployee.id ||
-                    it.creatorId == activeEmployee.id
+            CorporateRole.ITR -> allTasksRaw.filter { task ->
+                val assigneeRole = roleByEmpId[task.assigneeId]
+                    ?: CorporateSeedData.employees.firstOrNull { it.id == task.assigneeId }?.role
+                    ?: CorporateRole.WORKER
+                val isWorkerOrItrTask = assigneeRole == CorporateRole.WORKER || assigneeRole == CorporateRole.ITR
+                isWorkerOrItrTask ||
+                    task.assigneeId == activeEmployee.id ||
+                    task.creatorId == activeEmployee.id
             }
-            CorporateRole.WORKER -> allTasksRaw.filter {
-                it.assigneeId == activeEmployee.id || it.creatorId == activeEmployee.id
+            CorporateRole.WORKER -> allTasksRaw.filter { task ->
+                task.assigneeId == activeEmployee.id ||
+                    task.creatorId == activeEmployee.id ||
+                    task.assigneeName.equals(activeEmployee.fullName, ignoreCase = true) ||
+                    task.assigneeName.equals(activeEmployee.shortName, ignoreCase = true)
             }
         }
     }
@@ -666,6 +682,7 @@ fun MainFeatureScreen(
             availableEmployees = availableEmployees,
             currentEpochDay = currentEpochDay,
             initialDueDateEpochDay = createDialogTargetEpochDay,
+            existingTasks = roleVisibleTasks,
             onDismiss = { showCreateTaskDialog = false },
             onCreate = viewModel::createNewTask
         )
@@ -736,16 +753,24 @@ private fun TodayTasksContent(
     onDeleteTask: (TaskDocument) -> Unit,
     onToggleSubtask: (TaskDocument, String) -> Unit
 ) {
-    val tokens = LocalAppThemeTokens.current
+    val allowedModes = remember(activeEmployee.role) {
+        PersonaUiMode.allowedModesForRole(activeEmployee.role)
+    }
     var selectedPersonaMode by remember(activeEmployee.role) {
         mutableStateOf(PersonaUiMode.defaultForRole(activeEmployee.role))
     }
+    val effectivePersonaMode = if (selectedPersonaMode in allowedModes) {
+        selectedPersonaMode
+    } else {
+        allowedModes.first()
+    }
+
     var selectedItrFilter by remember { mutableStateOf(ItrQuickFilter.ALL) }
-    var showFullMonthCalendarInItr by remember { mutableStateOf(false) }
+    var showFullMonthCalendar by remember { mutableStateOf(false) }
 
     val filteredTasks = remember(
         visibleTasks,
-        selectedPersonaMode,
+        effectivePersonaMode,
         selectedItrFilter,
         selectedFilter,
         searchQuery,
@@ -758,9 +783,14 @@ private fun TodayTasksContent(
                 task.assigneeName.contains(searchQuery, ignoreCase = true) ||
                 task.description.contains(searchQuery, ignoreCase = true)
 
-            val matchesModeAndFilter = when (selectedPersonaMode) {
+            val matchesModeAndFilter = when (effectivePersonaMode) {
                 PersonaUiMode.WORKER -> {
-                    task.taskStatus != TaskStatus.ARCHIVED && task.dueDateEpochDay <= currentEpochDay + 1L
+                    val matchesDate = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                        task.dueDateEpochDay == selectedCalendarEpochDay
+                    } else {
+                        task.dueDateEpochDay <= currentEpochDay + 1L
+                    }
+                    task.taskStatus != TaskStatus.ARCHIVED && matchesDate
                 }
                 PersonaUiMode.ITR -> {
                     val matchesDateOrAll = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
@@ -859,14 +889,18 @@ private fun TodayTasksContent(
             }
         }
 
-        // Переключатель 3 ролевых интерфейсов: Рабочий | ИТР (Прораб) | Руководитель
+        // Переключатель ролевых интерфейсов строго по уровню доступа:
+        // Рабочий -> только Рабочий; ИТР -> Рабочий + ИТР; Руководитель -> все
         item {
             PersonaModeSwitcherBar(
-                selectedMode = selectedPersonaMode,
+                selectedMode = effectivePersonaMode,
+                allowedModes = allowedModes,
                 onSelectMode = { mode ->
-                    selectedPersonaMode = mode
-                    if (mode == PersonaUiMode.ITR && selectedFilter == TaskFilterTab.CALENDAR_DATE) {
-                        onSelectFilter(TaskFilterTab.ALL)
+                    if (mode in allowedModes) {
+                        selectedPersonaMode = mode
+                        if (mode == PersonaUiMode.ITR && selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                            onSelectFilter(TaskFilterTab.ALL)
+                        }
                     }
                 }
             )
@@ -896,7 +930,7 @@ private fun TodayTasksContent(
             }
         }
 
-        when (selectedPersonaMode) {
+        when (effectivePersonaMode) {
             // =========================================================================
             // 1. ИНТЕРФЕЙС РАБОЧЕГО (Монтажник)
             // =========================================================================
@@ -909,15 +943,36 @@ private fun TodayTasksContent(
                         currentEpochDay = currentEpochDay,
                         totalTasksToday = filteredTasks.size,
                         completedTasksToday = doneCount,
-                        onCreateTaskClick = { onOpenCreateDialogForDate(currentEpochDay) }
+                        onCreateTaskClick = { onOpenCreateDialogForDate(currentEpochDay) },
+                        isCalendarExpanded = showFullMonthCalendar,
+                        onToggleExpandCalendar = { showFullMonthCalendar = !showFullMonthCalendar }
                     )
+                }
+
+                if (showFullMonthCalendar) {
+                    item {
+                        CorporateCalendarSection(
+                            currentEpochDay = currentEpochDay,
+                            selectedCalendarEpochDay = selectedCalendarEpochDay,
+                            isCalendarFilterActive = selectedFilter == TaskFilterTab.CALENDAR_DATE,
+                            allVisibleTasks = visibleTasks,
+                            onSelectDate = onSelectCalendarDate,
+                            onCreateTaskForDate = onOpenCreateDialogForDate,
+                            onOpenReportingTab = onOpenReportingTab,
+                            onTaskClick = onTaskClick
+                        )
+                    }
                 }
 
                 if (filteredTasks.isEmpty()) {
                     item {
                         EmptyTasksCleanCard(
-                            targetEpochDay = currentEpochDay,
-                            onCreateClick = { onOpenCreateDialogForDate(currentEpochDay) }
+                            targetEpochDay = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) selectedCalendarEpochDay else currentEpochDay,
+                            onCreateClick = {
+                                onOpenCreateDialogForDate(
+                                    if (selectedFilter == TaskFilterTab.CALENDAR_DATE) selectedCalendarEpochDay else currentEpochDay
+                                )
+                            }
                         )
                     }
                 } else {
@@ -949,12 +1004,12 @@ private fun TodayTasksContent(
                             }
                         },
                         onCreateTaskForDate = onOpenCreateDialogForDate,
-                        onToggleFullCalendar = { showFullMonthCalendarInItr = !showFullMonthCalendarInItr },
-                        isFullCalendarExpanded = showFullMonthCalendarInItr
+                        onToggleFullCalendar = { showFullMonthCalendar = !showFullMonthCalendar },
+                        isFullCalendarExpanded = showFullMonthCalendar
                     )
                 }
 
-                if (showFullMonthCalendarInItr) {
+                if (showFullMonthCalendar) {
                     item {
                         CorporateCalendarSection(
                             currentEpochDay = currentEpochDay,
@@ -963,7 +1018,8 @@ private fun TodayTasksContent(
                             allVisibleTasks = visibleTasks,
                             onSelectDate = onSelectCalendarDate,
                             onCreateTaskForDate = onOpenCreateDialogForDate,
-                            onOpenReportingTab = onOpenReportingTab
+                            onOpenReportingTab = onOpenReportingTab,
+                            onTaskClick = onTaskClick
                         )
                     }
                 }
@@ -1120,9 +1176,10 @@ private fun CorporateCalendarSection(
     allVisibleTasks: List<TaskDocument>,
     onSelectDate: (Long) -> Unit,
     onCreateTaskForDate: (Long) -> Unit,
-    onOpenReportingTab: () -> Unit
+    onOpenReportingTab: () -> Unit,
+    onTaskClick: (TaskDocument) -> Unit = {}
 ) {
-    var expandedMonthView by remember { mutableStateOf(false) }
+    var expandedMonthView by remember { mutableStateOf(true) }
     val selectedLocalDate = remember(selectedCalendarEpochDay) {
         LocalDate.ofEpochDay(selectedCalendarEpochDay)
     }
@@ -1164,17 +1221,21 @@ private fun CorporateCalendarSection(
 
     val tokens = LocalAppThemeTokens.current
     Surface(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         shadowElevation = tokens.cardShadowElevationDp.dp,
-        border = BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor),
+        border = if (tokens.cardBorderWidthDp > 0f) {
+            BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
+        } else {
+            null
+        },
         modifier = Modifier
             .fillMaxWidth()
             .testTag("corporate_calendar_card")
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // Шапка календаря с переключением месяца и режима (Неделя / Месяц)
             Row(
@@ -1281,7 +1342,6 @@ private fun CorporateCalendarSection(
             }
 
             if (!expandedMonthView) {
-                // Компактная полоса текущей недели (Пн..Вс вокруг выбранной даты)
                 val mondayOfSelectedWeek = remember(selectedLocalDate) {
                     val shift = selectedLocalDate.dayOfWeek.value - 1
                     selectedLocalDate.minusDays(shift.toLong())
@@ -1311,7 +1371,6 @@ private fun CorporateCalendarSection(
                     }
                 }
             } else {
-                // Полная сетка месяца (по неделям)
                 val firstOfMonth = displayedYearMonth.atDay(1)
                 val daysInMonth = displayedYearMonth.lengthOfMonth()
                 val leadingEmptyCells = firstOfMonth.dayOfWeek.value - 1
@@ -1354,9 +1413,7 @@ private fun CorporateCalendarSection(
                 }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-            // Панель сводки по выбранной в календаре дате (Задачи, Планы, Объёмы, Фотоотчёты)
+            // Панель сводки и список задач по выбранной в календаре дате
             val formattedSelectedDate = ReportDocumentGenerator.formatEpochDay(selectedCalendarEpochDay)
             val dateRelationLabel = when (selectedCalendarEpochDay) {
                 currentEpochDay -> "Сегодня"
@@ -1366,13 +1423,13 @@ private fun CorporateCalendarSection(
             }
 
             Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1386,7 +1443,7 @@ private fun CorporateCalendarSection(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Задач и планов: ${tasksOnSelectedDate.size}",
+                            text = "Задач: ${tasksOnSelectedDate.size}",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -1394,10 +1451,95 @@ private fun CorporateCalendarSection(
                     }
 
                     Text(
-                        text = "Выполнено (100%): $completedOnDate • На проверке: $onReviewOnDate • В плане/работе: $plannedOrInProgressOnDate • Фото: $photosOnDate",
+                        text = "Выполнено: $completedOnDate • На проверке: $onReviewOnDate • В работе: $plannedOrInProgressOnDate • Фото: $photosOnDate",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    // Список задач на выбранную дату прямо внутри развёрнутого календаря
+                    if (tasksOnSelectedDate.isNotEmpty()) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            tasksOnSelectedDate.forEach { dayTask ->
+                                val stColor = statusColor(dayTask.taskStatus)
+                                val tVol = dayTask.effectiveTargetVolume
+                                val cVol = dayTask.effectiveCompletedVolume
+                                val uStr = dayTask.effectiveVolumeUnit.ifBlank { "шт" }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onTaskClick(dayTask) }
+                                        .testTag("calendar_task_item_${dayTask.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(stColor)
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = dayTask.title,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                val metaLine = buildString {
+                                                    append(dayTask.assigneeName.ifBlank { "Исполнитель" })
+                                                    if (tVol > 0.0) {
+                                                        append(" • ${SubtaskItem.formatVolumeNumber(cVol)}/${SubtaskItem.formatVolumeNumber(tVol)} $uStr")
+                                                    }
+                                                }
+                                                Text(
+                                                    text = metaLine,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = stColor.copy(alpha = 0.14f)
+                                        ) {
+                                            Text(
+                                                text = dayTask.taskStatus.titleRu,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = stColor,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "На выбранную дату задач пока не запланировано.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1406,15 +1548,16 @@ private fun CorporateCalendarSection(
                         Button(
                             onClick = { onCreateTaskForDate(selectedCalendarEpochDay) },
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1.3f)
-                                .height(34.dp)
+                                .height(36.dp)
                                 .testTag("calendar_add_task_for_date_button")
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "+ Задача / план на ${formattedSelectedDate.take(5)}",
+                                text = "+ Задача на ${formattedSelectedDate.take(5)}",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
@@ -1430,9 +1573,10 @@ private fun CorporateCalendarSection(
                                 }
                             },
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
-                                .height(34.dp)
+                                .height(36.dp)
                         ) {
                             Text(
                                 text = if (!isCalendarFilterActive) "Показать день" else "Отчёт за день",

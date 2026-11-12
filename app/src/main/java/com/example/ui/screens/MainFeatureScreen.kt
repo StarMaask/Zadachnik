@@ -126,6 +126,8 @@ import com.example.ui.components.ItrFilterPillsRow
 import com.example.ui.components.ItrHorizontalDateStrip
 import com.example.ui.components.ItrPersonaTaskCard
 import com.example.ui.components.ItrQuickFilter
+import com.example.ui.components.ItrScopeFilter
+import com.example.ui.components.ItrSubdivisionScopeBar
 import com.example.ui.components.PersonaModeSwitcherBar
 import com.example.ui.components.PersonaUiMode
 import com.example.ui.components.TaskDetailDialog
@@ -250,6 +252,8 @@ fun MainFeatureScreen(
     var showThemeSettingsDialog by remember { mutableStateOf(false) }
 
     val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
+    val isAdminOrHead = activeEmployee.role.isAdminOrHead
+    val isPersonalProfileOnlyRole = !isAdminOrHead
     val visibleNavDestinations = remember(isWorkerRole) {
         if (isWorkerRole) {
             listOf(
@@ -284,13 +288,7 @@ fun MainFeatureScreen(
         when (activeEmployee.role) {
             CorporateRole.ADMIN, CorporateRole.HEAD -> allTasksRaw
             CorporateRole.ITR -> allTasksRaw.filter { task ->
-                val assigneeRole = roleByEmpId[task.assigneeId]
-                    ?: CorporateSeedData.employees.firstOrNull { it.id == task.assigneeId }?.role
-                    ?: CorporateRole.WORKER
-                val isWorkerOrItrTask = assigneeRole == CorporateRole.WORKER || assigneeRole == CorporateRole.ITR
-                isWorkerOrItrTask ||
-                    task.isAssignedToEmployee(activeEmployee) ||
-                    task.creatorId == activeEmployee.id
+                task.isRelevantToItr(activeEmployee, availableEmployees)
             }
             CorporateRole.WORKER -> allTasksRaw.filter { task ->
                 task.isAssignedToEmployee(activeEmployee) ||
@@ -316,7 +314,7 @@ fun MainFeatureScreen(
                 TopAppBar(
                     title = {
                         Column(
-                            modifier = if (!isWorkerRole) {
+                            modifier = if (isAdminOrHead) {
                                 Modifier.clickable { showOrgSettingsDialog = true }
                             } else {
                                 Modifier
@@ -377,7 +375,7 @@ fun MainFeatureScreen(
                                     },
                                     modifier = Modifier.testTag("menu_theme_settings")
                                 )
-                                if (!isWorkerRole) {
+                                if (isAdminOrHead) {
                                     DropdownMenuItem(
                                         text = { Text("Настройки организации и участка") },
                                         leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
@@ -405,6 +403,8 @@ fun MainFeatureScreen(
                                             currentTab = MainNavDestination.REPORTING
                                         }
                                     )
+                                }
+                                if (isAdminOrHead) {
                                     DropdownMenuItem(
                                         text = { Text("Персонал и роли") },
                                         leadingIcon = { Icon(Icons.Default.AdminPanelSettings, contentDescription = null) },
@@ -469,12 +469,12 @@ fun MainFeatureScreen(
                         tonalElevation = 0.dp
                     ) {
                         visibleNavDestinations.forEach { dest ->
-                            val tabTitle = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                            val tabTitle = if (dest == MainNavDestination.ADMIN && isPersonalProfileOnlyRole) {
                                 "Профиль"
                             } else {
                                 dest.titleRu
                             }
-                            val tabIcon = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                            val tabIcon = if (dest == MainNavDestination.ADMIN && isPersonalProfileOnlyRole) {
                                 Icons.Default.Person
                             } else {
                                 dest.icon
@@ -491,7 +491,7 @@ fun MainFeatureScreen(
                                                 Icon(tabIcon, contentDescription = tabTitle)
                                             }
                                         }
-                                        dest == MainNavDestination.ADMIN && !isWorkerRole && pendingMembersCount > 0 -> {
+                                        dest == MainNavDestination.ADMIN && isAdminOrHead && pendingMembersCount > 0 -> {
                                             BadgedBox(
                                                 badge = { Badge { Text(pendingMembersCount.toString()) } }
                                             ) {
@@ -519,12 +519,12 @@ fun MainFeatureScreen(
                 if (isWideScreen) {
                     NavigationRail(modifier = Modifier.fillMaxHeight()) {
                         visibleNavDestinations.forEach { dest ->
-                            val tabTitle = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                            val tabTitle = if (dest == MainNavDestination.ADMIN && isPersonalProfileOnlyRole) {
                                 "Профиль"
                             } else {
                                 dest.titleRu
                             }
-                            val tabIcon = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                            val tabIcon = if (dest == MainNavDestination.ADMIN && isPersonalProfileOnlyRole) {
                                 Icons.Default.Person
                             } else {
                                 dest.icon
@@ -819,18 +819,66 @@ private fun TodayTasksContent(
     }
 
     var selectedItrFilter by remember { mutableStateOf(ItrQuickFilter.ALL) }
+    var selectedItrScope by remember { mutableStateOf(ItrScopeFilter.SUBDIVISION) }
     var showFullMonthCalendar by remember { mutableStateOf(false) }
+
+    val itrScopeTasks = remember(visibleTasks, selectedItrScope, activeEmployee) {
+        visibleTasks.filter { task ->
+            when (selectedItrScope) {
+                ItrScopeFilter.SUBDIVISION -> {
+                    task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                        task.creatorId == activeEmployee.id ||
+                        task.isAssignedToEmployee(activeEmployee)
+                }
+                ItrScopeFilter.SITE -> {
+                    task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
+                        task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                        task.creatorId == activeEmployee.id ||
+                        task.isAssignedToEmployee(activeEmployee)
+                }
+                ItrScopeFilter.PERSONAL -> {
+                    task.isAssignedToEmployee(activeEmployee)
+                }
+            }
+        }
+    }
+
+    val itrSubdivisionCount = remember(visibleTasks, activeEmployee) {
+        visibleTasks.count {
+            it.taskStatus != TaskStatus.ARCHIVED &&
+                (it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                 it.creatorId == activeEmployee.id ||
+                 it.isAssignedToEmployee(activeEmployee))
+        }
+    }
+    val itrSiteCount = remember(visibleTasks, activeEmployee) {
+        visibleTasks.count {
+            it.taskStatus != TaskStatus.ARCHIVED &&
+                (it.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
+                 it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                 it.creatorId == activeEmployee.id ||
+                 it.isAssignedToEmployee(activeEmployee))
+        }
+    }
+    val itrPersonalCount = remember(visibleTasks, activeEmployee) {
+        visibleTasks.count {
+            it.taskStatus != TaskStatus.ARCHIVED && it.isAssignedToEmployee(activeEmployee)
+        }
+    }
 
     val filteredTasks = remember(
         visibleTasks,
+        itrScopeTasks,
         effectivePersonaMode,
         selectedItrFilter,
+        selectedItrScope,
         selectedFilter,
         searchQuery,
         currentEpochDay,
         selectedCalendarEpochDay
     ) {
-        visibleTasks.filter { task ->
+        val baseList = if (effectivePersonaMode == PersonaUiMode.ITR) itrScopeTasks else visibleTasks
+        baseList.filter { task ->
             val matchesQuery = searchQuery.isBlank() ||
                 task.title.contains(searchQuery, ignoreCase = true) ||
                 task.assigneeName.contains(searchQuery, ignoreCase = true) ||
@@ -873,21 +921,21 @@ private fun TodayTasksContent(
         }
     }
 
-    val itrInWorkCount = remember(visibleTasks) {
-        visibleTasks.count { it.taskStatus == TaskStatus.NEW || it.taskStatus == TaskStatus.IN_PROGRESS }
+    val itrInWorkCount = remember(itrScopeTasks) {
+        itrScopeTasks.count { it.taskStatus == TaskStatus.NEW || it.taskStatus == TaskStatus.IN_PROGRESS }
     }
-    val itrOnReviewCount = remember(visibleTasks) {
-        visibleTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
+    val itrOnReviewCount = remember(itrScopeTasks) {
+        itrScopeTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
     }
-    val itrProblemsCount = remember(visibleTasks) {
-        visibleTasks.count {
+    val itrProblemsCount = remember(itrScopeTasks) {
+        itrScopeTasks.count {
             it.taskStatus == TaskStatus.OVERDUE ||
                 it.taskStatus == TaskStatus.REJECTED ||
                 it.carryoverCount > 0L
         }
     }
-    val itrAllActiveCount = remember(visibleTasks) {
-        visibleTasks.count { it.taskStatus != TaskStatus.ARCHIVED }
+    val itrAllActiveCount = remember(itrScopeTasks) {
+        itrScopeTasks.count { it.taskStatus != TaskStatus.ARCHIVED }
     }
 
     LazyColumn(
@@ -942,9 +990,8 @@ private fun TodayTasksContent(
             }
         }
 
-        // Переключатель ролевых интерфейсов показываем только если у пользователя больше 1 доступного режима
-        // (для Рабочего лишняя плашка «Рабочий • Сменное задание на сегодня» скрыта, убирая визуальный шум)
-        if (allowedModes.size > 1) {
+        // Переключатель ролевых интерфейсов показываем только для Администратора / Руководителя
+        if (activeEmployee.role.isAdminOrHead && allowedModes.size > 1) {
             item {
                 PersonaModeSwitcherBar(
                     selectedMode = effectivePersonaMode,
@@ -1056,10 +1103,21 @@ private fun TodayTasksContent(
             // =========================================================================
             PersonaUiMode.ITR -> {
                 item {
+                    ItrSubdivisionScopeBar(
+                        activeEmployee = activeEmployee,
+                        selectedScope = selectedItrScope,
+                        subdivisionCount = itrSubdivisionCount,
+                        siteCount = itrSiteCount,
+                        personalCount = itrPersonalCount,
+                        onSelectScope = { scope -> selectedItrScope = scope }
+                    )
+                }
+
+                item {
                     ItrHorizontalDateStrip(
                         currentEpochDay = currentEpochDay,
                         selectedEpochDay = selectedCalendarEpochDay,
-                        allVisibleTasks = visibleTasks,
+                        allVisibleTasks = itrScopeTasks,
                         onSelectDate = { day ->
                             if (selectedFilter == TaskFilterTab.CALENDAR_DATE && selectedCalendarEpochDay == day) {
                                 onSelectFilter(TaskFilterTab.ALL)

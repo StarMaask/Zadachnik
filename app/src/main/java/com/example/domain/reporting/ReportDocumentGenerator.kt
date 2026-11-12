@@ -162,9 +162,12 @@ object ReportDocumentGenerator {
         val roleScopedTasks = when (actor.role) {
             CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
             CorporateRole.ITR -> allTasks.filter {
-                it.groupId == actor.groupId || it.assigneeId == actor.id || it.creatorId == actor.id
+                it.belongsToSubdivision(actor.groupName, actor.groupId) ||
+                    it.belongsToSite(actor.siteName, actor.siteId) ||
+                    it.isAssignedToEmployee(actor) ||
+                    it.creatorId == actor.id
             }
-            CorporateRole.WORKER -> allTasks.filter { it.assigneeId == actor.id }
+            CorporateRole.WORKER -> allTasks.filter { it.isAssignedToEmployee(actor) }
         }
 
         val roleScopeLabel = when (actor.role) {

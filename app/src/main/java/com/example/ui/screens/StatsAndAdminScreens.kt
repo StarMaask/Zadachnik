@@ -289,7 +289,10 @@ fun StatisticsDashboardScreen(
     onExportStats: (ExportFormat) -> Unit
 ) {
     val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
+    val isItrRole = activeEmployee.role == CorporateRole.ITR
     var selectedPeriod by remember { mutableStateOf(StatsPeriodFilter.MONTH) }
+    var itrPersonalOnlyScope by remember { mutableStateOf(false) }
+    val showOnlyPersonalStats = isWorkerRole || (isItrRole && itrPersonalOnlyScope)
 
     val currentLocalDate = remember(currentEpochDay) { LocalDate.ofEpochDay(currentEpochDay) }
     val ruLocale = remember { Locale.forLanguageTag("ru-RU") }
@@ -314,10 +317,10 @@ fun StatisticsDashboardScreen(
         }
     }
 
-    // Для рабочего берём строго его личные задачи; для руководства/ИТР — задачи в рамках области видимости
-    val baseScopedTasks = remember(allTasks, activeEmployee, isWorkerRole) {
+    // Для рабочего (или ИТР в режиме «Личная сводка») берём строго личные задачи; иначе — задачи в рамках области видимости роли
+    val baseScopedTasks = remember(allTasks, activeEmployee, showOnlyPersonalStats) {
         val nonArchived = allTasks.filter { it.taskStatus != TaskStatus.ARCHIVED }
-        if (isWorkerRole) {
+        if (showOnlyPersonalStats) {
             nonArchived.filter { it.isAssignedToEmployee(activeEmployee) }
         } else {
             nonArchived
@@ -426,6 +429,16 @@ fun StatisticsDashboardScreen(
         }
     }
 
+    val roleFilteredEmployeeStats = remember(stats.employeeStats, activeEmployee.role) {
+        when (activeEmployee.role) {
+            CorporateRole.ADMIN, CorporateRole.HEAD -> stats.employeeStats
+            CorporateRole.ITR -> stats.employeeStats.filter {
+                it.employee.role == CorporateRole.WORKER || it.employee.role == CorporateRole.ITR
+            }
+            CorporateRole.WORKER -> emptyList()
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -433,7 +446,7 @@ fun StatisticsDashboardScreen(
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. Шапка сводки (для Рабочего — только личная сводка без групповой выгрузки)
+        // 1. Шапка сводки (для Рабочего — только личная сводка без групповой выгрузки; для ИТР — переключатель Бригада / Личная)
         item {
             Surface(
                 color = MaterialTheme.colorScheme.surface,
@@ -441,52 +454,78 @@ fun StatisticsDashboardScreen(
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
+                Column(
                     modifier = Modifier.padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (isWorkerRole) "Моя личная сводка" else "Сводная статистика",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = if (isWorkerRole) {
-                                "${activeEmployee.fullName} • ${activeEmployee.position.ifBlank { activeEmployee.role.titleRu }}"
-                            } else {
-                                stats.roleScopeLabel
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (isWorkerRole && activeEmployee.groupName.isNotBlank()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "${activeEmployee.groupName} • ${activeEmployee.siteName}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
+                                text = if (showOnlyPersonalStats) "Моя личная сводка" else "Сводная статистика",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                             )
+                            Text(
+                                text = if (showOnlyPersonalStats) {
+                                    "${activeEmployee.fullName} • ${activeEmployee.position.ifBlank { activeEmployee.role.titleRu }}"
+                                } else {
+                                    stats.roleScopeLabel
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (showOnlyPersonalStats && activeEmployee.groupName.isNotBlank()) {
+                                Text(
+                                    text = "${activeEmployee.groupName} • ${activeEmployee.siteName}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        if (!isWorkerRole) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = { onExportStats(ExportFormat.PDF) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("PDF", style = MaterialTheme.typography.labelSmall)
+                                }
+                                OutlinedButton(
+                                    onClick = { onExportStats(ExportFormat.XLSX) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("XLSX", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
                         }
                     }
-                    if (!isWorkerRole) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(
-                                onClick = { onExportStats(ExportFormat.PDF) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("PDF", style = MaterialTheme.typography.labelSmall)
-                            }
-                            OutlinedButton(
-                                onClick = { onExportStats(ExportFormat.XLSX) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("XLSX", style = MaterialTheme.typography.labelSmall)
-                            }
+
+                    // Для ИТР: быстрый переключатель между статистикой подчинённых рабочих и личной статистикой ИТР
+                    if (isItrRole) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = !itrPersonalOnlyScope,
+                                onClick = { itrPersonalOnlyScope = false },
+                                label = { Text("Подразделение и рабочие") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = itrPersonalOnlyScope,
+                                onClick = { itrPersonalOnlyScope = true },
+                                label = { Text("Личная сводка ИТР") },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                     }
                 }
@@ -584,7 +623,7 @@ fun StatisticsDashboardScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (isWorkerRole) {
+                                text = if (showOnlyPersonalStats) {
                                     "Личный рейтинг выполнения (${selectedPeriod.titleRu.lowercase()})"
                                 } else {
                                     "Индекс выполнения за период (${selectedPeriod.titleRu.lowercase()})"
@@ -679,7 +718,7 @@ fun StatisticsDashboardScreen(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = if (isWorkerRole) {
+                            text = if (showOnlyPersonalStats) {
                                 "Мой выполненный объём работ (${selectedPeriod.titleRu.lowercase()})"
                             } else {
                                 "Выполненный физический объём (${selectedPeriod.titleRu.lowercase()})"
@@ -732,7 +771,7 @@ fun StatisticsDashboardScreen(
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = if (isWorkerRole) {
+                        text = if (showOnlyPersonalStats) {
                             "Детальные личные показатели (${selectedPeriod.titleRu.lowercase()})"
                         } else {
                             "Детальные показатели выполнения (${selectedPeriod.titleRu.lowercase()})"
@@ -762,8 +801,8 @@ fun StatisticsDashboardScreen(
             }
         }
 
-        // 6. Таблица по сотрудникам — показывается ТОЛЬКО для ИТР / Руководителя / Администратора
-        if (!isWorkerRole) {
+        // 6. Таблица по сотрудникам — показывается для Руководителя/Администратора или ИТР (только по рабочим/ИТР в режиме подразделения)
+        if (!showOnlyPersonalStats && roleFilteredEmployeeStats.isNotEmpty()) {
             item {
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
@@ -773,7 +812,11 @@ fun StatisticsDashboardScreen(
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Text(
-                            text = "Таблица по сотрудникам (${selectedPeriod.titleRu.lowercase()})",
+                            text = if (isItrRole) {
+                                "Исполнители и ИТР подразделения (${selectedPeriod.titleRu.lowercase()})"
+                            } else {
+                                "Таблица по сотрудникам (${selectedPeriod.titleRu.lowercase()})"
+                            },
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -812,7 +855,7 @@ fun StatisticsDashboardScreen(
                         }
                         HorizontalDivider()
 
-                        stats.employeeStats.forEach { empStat ->
+                        roleFilteredEmployeeStats.forEach { empStat ->
                             val empPeriodTasks = periodTasks.filter { it.isAssignedToEmployee(empStat.employee) }
                             val empAssigned = empPeriodTasks.size
                             val empDone = empPeriodTasks.count {
@@ -981,8 +1024,9 @@ fun AdminAndAuditScreen(
     onSwitchPersona: (String) -> Unit,
     onSignOut: () -> Unit
 ) {
-    val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
     val canManageUsers = activeEmployee.role.isAdminOrHead
+    // Для Рабочего и ИТР вкладка работает исключительно как личный профиль без административных функций
+    val isPersonalProfileOnly = !canManageUsers
 
     LaunchedEffect(canManageUsers) {
         if (canManageUsers) {
@@ -1066,8 +1110,8 @@ fun AdminAndAuditScreen(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Блок настроек наименования организации и участка — только для Администратора / Руководителя / ИТР
-        if (!isWorkerRole) {
+        // Блок настроек наименования организации и участка — ТОЛЬКО для Администратора / Руководителя
+        if (canManageUsers) {
             item {
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
@@ -1104,16 +1148,14 @@ fun AdminAndAuditScreen(
                                 )
                             }
                         }
-                        if (canManageUsers) {
-                            OutlinedButton(
-                                onClick = onOpenOrganizationSettings,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                modifier = Modifier.testTag("edit_org_site_button")
-                            ) {
-                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Изменить", style = MaterialTheme.typography.labelMedium)
-                            }
+                        OutlinedButton(
+                            onClick = onOpenOrganizationSettings,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("edit_org_site_button")
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Изменить", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -1158,7 +1200,11 @@ fun AdminAndAuditScreen(
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (isWorkerRole) "Личный профиль работника" else activeEmployee.fullName,
+                                    text = when (activeEmployee.role) {
+                                        CorporateRole.WORKER -> "Личный профиль работника"
+                                        CorporateRole.ITR -> "Личный профиль ИТР (${activeEmployee.shortName})"
+                                        else -> activeEmployee.fullName
+                                    },
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -1193,7 +1239,7 @@ fun AdminAndAuditScreen(
                             Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (isWorkerRole) "Редактировать в окне" else "Мои личные данные",
+                                text = if (isPersonalProfileOnly) "Редактировать в окне" else "Мои личные данные",
                                 style = MaterialTheme.typography.labelMedium
                             )
                         }
@@ -1211,8 +1257,8 @@ fun AdminAndAuditScreen(
             }
         }
 
-        // Для Рабочего: развёрнутая персональная форма редактирования ТОЛЬКО своих личных данных
-        if (isWorkerRole) {
+        // Для Рабочего и ИТР: развёрнутая персональная форма редактирования ТОЛЬКО своих личных данных без функций администрирования
+        if (isPersonalProfileOnly) {
             item {
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
@@ -1230,7 +1276,7 @@ fun AdminAndAuditScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Вы можете изменить свои контактные и учётные данные. Изменения сразу отразятся в сменных заданиях и сводке.",
+                            text = "Вы можете изменить свои контактные и учётные данные. Изменения сразу отразятся в сменных заданиях, отчётах и сводке.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1252,7 +1298,7 @@ fun AdminAndAuditScreen(
                             OutlinedTextField(
                                 value = selfPosition,
                                 onValueChange = { selfPosition = it },
-                                label = { Text("Должность / разряд") },
+                                label = { Text("Должность / специальность") },
                                 singleLine = true,
                                 modifier = Modifier
                                     .weight(1.3f)
@@ -1346,7 +1392,7 @@ fun AdminAndAuditScreen(
 
                         Button(
                             onClick = {
-                                val resolvedName = selfFullName.trim().ifBlank { activeEmployee.fullName.ifBlank { "Рабочий" } }
+                                val resolvedName = selfFullName.trim().ifBlank { activeEmployee.fullName.ifBlank { "Сотрудник" } }
                                 onEditEmployeeDetails(
                                     currentSelfMember,
                                     resolvedName,
@@ -1374,8 +1420,8 @@ fun AdminAndAuditScreen(
             }
         }
 
-        // Разделы управления персоналом, заявками и журналом действий — ТОЛЬКО для ИТР / Руководителя / Администратора
-        if (!isWorkerRole) {
+        // Разделы администрирования персонала, подтверждения ролей и системного журнала — ТОЛЬКО для Руководителя / Администратора
+        if (canManageUsers) {
             // SECTION 1: Pending Role Assignment Queue
             if (pendingMembers.isNotEmpty() || canManageUsers) {
                 item {

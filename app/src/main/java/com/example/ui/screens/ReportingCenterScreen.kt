@@ -296,7 +296,9 @@ fun ReportingCenterScreen(
     }
     val isTodaySelected = selectedReportEpochDay == currentEpochDay
 
-    val allReportCatalog = remember(templates, todayFormatted, organizationName, siteName, selectedReportEpochDay) {
+    val isAdminOrHead = activeEmployee.role.isAdminOrHead
+
+    val allReportCatalog = remember(templates, todayFormatted, organizationName, siteName, selectedReportEpochDay, isAdminOrHead) {
         val headerText = "$organizationName • $siteName"
         val normalizedTemplates = templates.map { tpl ->
             tpl.copy(
@@ -317,7 +319,7 @@ fun ReportingCenterScreen(
                     orgHeader = headerText
                 )
             }
-        // Сортируем в логическом порядке: сначалаDAILY_REPORT, затем NEXT_DAY_PLAN, PERIOD_REPORT и далее
+        // Сортируем в логическом порядке: сначала DAILY_REPORT, затем NEXT_DAY_PLAN, PERIOD_REPORT и далее
         val orderPriority = listOf(
             ReportType.DAILY_REPORT,
             ReportType.NEXT_DAY_PLAN,
@@ -333,10 +335,19 @@ fun ReportingCenterScreen(
             ReportType.INDIVIDUAL_1ON1,
             ReportType.CUSTOM
         )
-        (normalizedTemplates + extraTemplates).sortedBy { tpl ->
-            val idx = orderPriority.indexOf(tpl.parsedReportType)
-            if (idx >= 0) idx else 999
-        }
+        (normalizedTemplates + extraTemplates)
+            .filter { tpl ->
+                // Контроль SLA проверяющих ИТР доступен только Руководителю / Администратору
+                if (!isAdminOrHead && tpl.parsedReportType == ReportType.APPROVAL_SLA) {
+                    false
+                } else {
+                    true
+                }
+            }
+            .sortedBy { tpl ->
+                val idx = orderPriority.indexOf(tpl.parsedReportType)
+                if (idx >= 0) idx else 999
+            }
     }
 
     val dailyOperationalList = remember(allReportCatalog) {
@@ -676,20 +687,22 @@ fun ReportingCenterScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    OutlinedButton(
-                                        onClick = onOpenOrganizationSettings,
-                                        shape = RoundedCornerShape(10.dp),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .testTag("open_org_settings_from_reports")
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Business,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Организация и участок", style = MaterialTheme.typography.labelMedium)
+                                    if (isAdminOrHead) {
+                                        OutlinedButton(
+                                            onClick = onOpenOrganizationSettings,
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("open_org_settings_from_reports")
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Business,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Организация и участок", style = MaterialTheme.typography.labelMedium)
+                                        }
                                     }
                                     OutlinedButton(
                                         onClick = { showCustomTemplateDialog = true },

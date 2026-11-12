@@ -1775,7 +1775,10 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val scopedTasks = when (actor.role) {
             CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
             CorporateRole.ITR -> allTasks.filter {
-                it.groupId == actor.groupId || it.isAssignedToEmployee(actor) || it.creatorId == actor.id
+                it.belongsToSubdivision(actor.groupName, actor.groupId) ||
+                    it.belongsToSite(actor.siteName, actor.siteId) ||
+                    it.isAssignedToEmployee(actor) ||
+                    it.creatorId == actor.id
             }
             CorporateRole.WORKER -> allTasks.filter { it.isAssignedToEmployee(actor) }
         }
@@ -1803,7 +1806,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             when (actor.role) {
                 CorporateRole.ADMIN, CorporateRole.HEAD -> customEmployees
                 CorporateRole.ITR -> customEmployees.filter {
-                    it.groupId == actor.groupId || it.id == actor.id
+                    (it.role == CorporateRole.WORKER || it.role == CorporateRole.ITR) &&
+                        (it.groupId == actor.groupId || it.groupName.equals(actor.groupName, ignoreCase = true) || it.id == actor.id || it.role == CorporateRole.WORKER)
                 }
                 CorporateRole.WORKER -> customEmployees.filter { it.id == actor.id }
             }.ifEmpty { listOf(actor) }

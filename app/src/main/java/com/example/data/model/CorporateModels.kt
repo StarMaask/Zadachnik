@@ -64,7 +64,8 @@ enum class CorporateRole(
 
     fun canApproveReportOf(assigneeRole: CorporateRole): Boolean {
         return when (this) {
-            ADMIN, HEAD, ITR -> true
+            ADMIN, HEAD -> true
+            ITR -> assigneeRole == WORKER
             WORKER -> false
         }
     }
@@ -889,6 +890,65 @@ data class TaskDocument(
         } else {
             "Без объёма (${taskStatus.titleRu})"
         }
+    }
+
+    /**
+     * Проверка принадлежности задачи к тематическому подразделению (бригаде / службе).
+     */
+    fun belongsToSubdivision(targetGroupName: String, targetGroupId: String): Boolean {
+        if (targetGroupId.isNotBlank() && groupId.isNotBlank() && groupId.equals(targetGroupId, ignoreCase = true)) {
+            return true
+        }
+        if (targetGroupName.isNotBlank() && groupName.isNotBlank() && groupName.equals(targetGroupName, ignoreCase = true)) {
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Проверка принадлежности задачи к строительному участку / объекту.
+     */
+    fun belongsToSite(targetSiteName: String, targetSiteId: String): Boolean {
+        if (targetSiteId.isNotBlank() && siteId.isNotBlank() && siteId.equals(targetSiteId, ignoreCase = true)) {
+            return true
+        }
+        val loc = geoLocation.orEmpty().trim()
+        if (targetSiteName.isNotBlank()) {
+            if (loc.isNotBlank() && (loc.contains(targetSiteName, ignoreCase = true) || targetSiteName.contains(loc, ignoreCase = true))) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Проверка, относится ли задача к сфере ответственности ИТР (подразделение, участок, исполнитель или создатель).
+     */
+    fun isRelevantToItr(
+        itr: CorporateEmployee,
+        allEmployees: List<CorporateEmployee> = emptyList()
+    ): Boolean {
+        // Лично назначенная или созданная задача относится всегда
+        if (isAssignedToEmployee(itr) || creatorId == itr.id) {
+            return true
+        }
+        if (belongsToSubdivision(itr.groupName, itr.groupId)) {
+            return true
+        }
+        if (belongsToSite(itr.siteName, itr.siteId)) {
+            return true
+        }
+        if (allEmployees.isNotEmpty()) {
+            val relatedEmps = allEmployees.filter {
+                (it.groupId.isNotBlank() && it.groupId == itr.groupId) ||
+                    (it.groupName.isNotBlank() && it.groupName.equals(itr.groupName, ignoreCase = true)) ||
+                    (it.siteId.isNotBlank() && it.siteId == itr.siteId)
+            }
+            if (relatedEmps.any { isAssignedToEmployee(it) }) {
+                return true
+            }
+        }
+        return false
     }
 }
 

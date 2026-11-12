@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.PendingActions
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -59,6 +60,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AuditLogDocument
+import com.example.data.model.CorporateEmployee
 import com.example.data.model.CorporateRole
 import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
@@ -97,6 +99,18 @@ enum class PersonaUiMode(
             CorporateRole.HEAD, CorporateRole.ADMIN -> listOf(WORKER, ITR, DIRECTOR)
         }
     }
+}
+
+/**
+ * Определение области видимости задач для ИТР:
+ * - SUBDIVISION: Задачи тематического подразделения (профильная бригада / служба ИТР)
+ * - SITE: Задачи строительного участка (все подразделения на объекте)
+ * - PERSONAL: Задачи, назначенные лично ИТР
+ */
+enum class ItrScopeFilter(val titleRu: String, val chipLabel: String) {
+    SUBDIVISION("Моё подразделение", "Бригада"),
+    SITE("Весь участок", "Участок"),
+    PERSONAL("Мои наряды", "Личные")
 }
 
 /**
@@ -852,6 +866,154 @@ fun ItrHorizontalDateStrip(
                                         }
                                     )
                             )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Панель определения области видимости для ИТР:
+ * Тематическое подразделение (бригада) / Строительный участок / Личные задачи
+ */
+@Composable
+fun ItrSubdivisionScopeBar(
+    activeEmployee: CorporateEmployee,
+    selectedScope: ItrScopeFilter,
+    subdivisionCount: Int,
+    siteCount: Int,
+    personalCount: Int,
+    onSelectScope: (ItrScopeFilter) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tokens = LocalAppThemeTokens.current
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = if (!tokens.isDark) 2.dp else 0.dp,
+        border = if (tokens.isDark) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)) else null,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Groups,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Column {
+                        Text(
+                            text = activeEmployee.groupName.ifBlank { "Тематическое подразделение" },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.LocationOn,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = activeEmployee.siteName.ifBlank { "Строительный участок" },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Селектор области видимости задач ИТР
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ItrScopeFilter.entries.forEach { scope ->
+                    val isSelected = selectedScope == scope
+                    val count = when (scope) {
+                        ItrScopeFilter.SUBDIVISION -> subdivisionCount
+                        ItrScopeFilter.SITE -> siteCount
+                        ItrScopeFilter.PERSONAL -> personalCount
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                        },
+                        modifier = Modifier
+                            .clickable { onSelectScope(scope) }
+                            .testTag("itr_scope_chip_${scope.name}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = scope.titleRu,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.22f)
+                                } else {
+                                    MaterialTheme.colorScheme.surface
+                                }
+                            ) {
+                                Text(
+                                    text = count.toString(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
                         }
                     }
                 }

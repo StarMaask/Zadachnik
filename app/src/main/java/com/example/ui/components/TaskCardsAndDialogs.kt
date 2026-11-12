@@ -448,8 +448,36 @@ fun TaskDetailDialog(
     val context = LocalContext.current
     var photoComment by remember { mutableStateOf("") }
     val photoGps = remember(task.geoLocation) { task.geoLocation ?: "Участок №1" }
-    val assignees = remember(availableEmployees, activeEmployee) {
-        availableEmployees.ifEmpty { listOf(activeEmployee) }
+    val canReassignTask = activeEmployee.role.canAssignToOtherEmployees()
+    val canDeleteThisTask = activeEmployee.role != com.example.data.model.CorporateRole.WORKER ||
+        task.creatorId == activeEmployee.id
+    var detailItrAssigneeFilterBySubdivision by remember {
+        mutableStateOf(activeEmployee.role == com.example.data.model.CorporateRole.ITR)
+    }
+    val assignees = remember(availableEmployees, activeEmployee, canReassignTask, detailItrAssigneeFilterBySubdivision) {
+        if (!canReassignTask) {
+            listOf(activeEmployee)
+        } else {
+            val candidates = availableEmployees
+                .filter { activeEmployee.role.canAssignTo(it.role) }
+                .ifEmpty { listOf(activeEmployee) }
+
+            if (activeEmployee.role == com.example.data.model.CorporateRole.ITR && detailItrAssigneeFilterBySubdivision) {
+                val myGroup = candidates.filter {
+                    it.groupId == activeEmployee.groupId ||
+                        (it.groupName.isNotBlank() && it.groupName.equals(activeEmployee.groupName, ignoreCase = true)) ||
+                        it.id == activeEmployee.id
+                }
+                myGroup.ifEmpty { candidates }
+            } else {
+                candidates.sortedWith(
+                    compareByDescending<CorporateEmployee> {
+                        it.groupId == activeEmployee.groupId ||
+                            (it.groupName.isNotBlank() && it.groupName.equals(activeEmployee.groupName, ignoreCase = true))
+                    }.thenBy { it.fullName }
+                )
+            }
+        }
     }
     var showEditAssigneeSection by remember { mutableStateOf(false) }
     var detailUseManualAssignee by remember { mutableStateOf(false) }
@@ -610,18 +638,20 @@ fun TaskDetailDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
-                                IconButton(
-                                    onClick = { showDeleteConfirm = true },
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .testTag("dialog_delete_task_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.DeleteOutline,
-                                        contentDescription = "Удалить задачу",
-                                        tint = if (showDeleteConfirm) crimsonSecondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                if (canDeleteThisTask) {
+                                    IconButton(
+                                        onClick = { showDeleteConfirm = true },
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .testTag("dialog_delete_task_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = "Удалить задачу",
+                                            tint = if (showDeleteConfirm) crimsonSecondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
                                 }
                                 IconButton(
                                     onClick = onDismiss,
@@ -698,11 +728,15 @@ fun TaskDetailDialog(
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .clickable { showEditAssigneeSection = !showEditAssigneeSection }
-                                            .padding(horizontal = 4.dp, vertical = 2.dp)
-                                            .testTag("toggle_edit_task_assignee_button")
+                                        modifier = if (canReassignTask) {
+                                            Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { showEditAssigneeSection = !showEditAssigneeSection }
+                                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                                .testTag("toggle_edit_task_assignee_button")
+                                        } else {
+                                            Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                        }
                                     ) {
                                         Text(
                                             text = task.assigneeName.ifBlank { "Не назначен" },
@@ -713,33 +747,77 @@ fun TaskDetailDialog(
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.widthIn(max = 195.dp)
                                         )
-                                        Text(
-                                            text = if (showEditAssigneeSection) "Скрыть" else "Изменить",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Medium
-                                        )
+                                        if (canReassignTask) {
+                                            Text(
+                                                text = if (showEditAssigneeSection) "Скрыть" else "Изменить",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
                                     }
                                 }
 
-                                AnimatedVisibility(visible = showEditAssigneeSection) {
+                                AnimatedVisibility(visible = canReassignTask && showEditAssigneeSection) {
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(top = 4.dp, bottom = 4.dp),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Text(
-                                            text = "Отметьте одного или нескольких исполнителей:",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "Отметьте исполнителей:",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (activeEmployee.role == com.example.data.model.CorporateRole.ITR) {
+                                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = if (detailItrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                                        modifier = Modifier
+                                                            .clickable { detailItrAssigneeFilterBySubdivision = true }
+                                                            .testTag("detail_itr_assignees_subdivision_chip")
+                                                    ) {
+                                                        Text(
+                                                            text = "Моя бригада",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = if (detailItrAssigneeFilterBySubdivision) FontWeight.Bold else FontWeight.Medium,
+                                                            color = if (detailItrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = if (!detailItrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                                        modifier = Modifier
+                                                            .clickable { detailItrAssigneeFilterBySubdivision = false }
+                                                            .testTag("detail_itr_assignees_all_chip")
+                                                    ) {
+                                                        Text(
+                                                            text = "Весь участок",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = if (!detailItrAssigneeFilterBySubdivision) FontWeight.Bold else FontWeight.Medium,
+                                                            color = if (!detailItrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
                                         Column(
                                             verticalArrangement = Arrangement.spacedBy(4.dp),
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             assignees.forEach { emp ->
                                                 val isChecked = detailSelectedAssigneeIds.contains(emp.id)
+                                                val isMySub = emp.groupId == activeEmployee.groupId ||
+                                                    (emp.groupName.isNotBlank() && emp.groupName.equals(activeEmployee.groupName, ignoreCase = true))
                                                 Surface(
                                                     shape = RoundedCornerShape(10.dp),
                                                     color = if (isChecked) {
@@ -777,11 +855,29 @@ fun TaskDetailDialog(
                                                             modifier = Modifier.size(20.dp)
                                                         )
                                                         Column(modifier = Modifier.weight(1f)) {
-                                                            Text(
-                                                                text = emp.fullName,
-                                                                style = MaterialTheme.typography.bodySmall,
-                                                                fontWeight = FontWeight.SemiBold
-                                                            )
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = emp.fullName,
+                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    fontWeight = FontWeight.SemiBold
+                                                                )
+                                                                if (activeEmployee.role == com.example.data.model.CorporateRole.ITR) {
+                                                                    Surface(
+                                                                        shape = RoundedCornerShape(4.dp),
+                                                                        color = if (isMySub) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                                                                    ) {
+                                                                        Text(
+                                                                            text = if (isMySub) "Моё подразделение" else "Смежник",
+                                                                            style = MaterialTheme.typography.labelSmall,
+                                                                            color = if (isMySub) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
                                                             Text(
                                                                 text = "${emp.position} • ${emp.groupName}",
                                                                 style = MaterialTheme.typography.labelSmall,
@@ -2601,8 +2697,33 @@ fun CreateTaskDialog(
     onCreate: (TaskDraft) -> Unit
 ) {
     val tokens = LocalAppThemeTokens.current
-    val assignees = remember(availableEmployees, activeEmployee) {
-        availableEmployees.ifEmpty { listOf(activeEmployee) }
+    var itrAssigneeFilterBySubdivision by remember {
+        mutableStateOf(activeEmployee.role == com.example.data.model.CorporateRole.ITR)
+    }
+    val assignees = remember(availableEmployees, activeEmployee, itrAssigneeFilterBySubdivision) {
+        if (!activeEmployee.role.canAssignToOtherEmployees()) {
+            listOf(activeEmployee)
+        } else {
+            val candidates = availableEmployees
+                .filter { activeEmployee.role.canAssignTo(it.role) }
+                .ifEmpty { listOf(activeEmployee) }
+
+            if (activeEmployee.role == com.example.data.model.CorporateRole.ITR && itrAssigneeFilterBySubdivision) {
+                val myGroup = candidates.filter {
+                    it.groupId == activeEmployee.groupId ||
+                        (it.groupName.isNotBlank() && it.groupName.equals(activeEmployee.groupName, ignoreCase = true)) ||
+                        it.id == activeEmployee.id
+                }
+                myGroup.ifEmpty { candidates }
+            } else {
+                candidates.sortedWith(
+                    compareByDescending<CorporateEmployee> {
+                        it.groupId == activeEmployee.groupId ||
+                            (it.groupName.isNotBlank() && it.groupName.equals(activeEmployee.groupName, ignoreCase = true))
+                    }.thenBy { it.fullName }
+                )
+            }
+        }
     }
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
@@ -2930,6 +3051,45 @@ fun CreateTaskDialog(
                                 }
                             }
 
+                            if (activeEmployee.role == com.example.data.model.CorporateRole.ITR) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (itrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier
+                                            .clickable { itrAssigneeFilterBySubdivision = true }
+                                            .testTag("create_itr_assignees_subdivision_chip")
+                                    ) {
+                                        Text(
+                                            text = "Моё подразделение (${activeEmployee.groupName.take(18)})",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = if (itrAssigneeFilterBySubdivision) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (itrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (!itrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier
+                                            .clickable { itrAssigneeFilterBySubdivision = false }
+                                            .testTag("create_itr_assignees_all_chip")
+                                    ) {
+                                        Text(
+                                            text = "Весь участок",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = if (!itrAssigneeFilterBySubdivision) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (!itrAssigneeFilterBySubdivision) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+
                             if (!useCustomAssigneeName) {
                                 ExposedDropdownMenuBox(
                                     expanded = assigneeDropdownExpanded,
@@ -3008,6 +3168,8 @@ fun CreateTaskDialog(
                                     ) {
                                         assignees.forEach { emp ->
                                             val isChecked = selectedAssigneeIds.contains(emp.id)
+                                            val isMySub = emp.groupId == activeEmployee.groupId ||
+                                                (emp.groupName.isNotBlank() && emp.groupName.equals(activeEmployee.groupName, ignoreCase = true))
                                             DropdownMenuItem(
                                                 leadingIcon = {
                                                     Checkbox(
@@ -3017,11 +3179,29 @@ fun CreateTaskDialog(
                                                 },
                                                 text = {
                                                     Column {
-                                                        Text(
-                                                            text = emp.fullName,
-                                                            style = MaterialTheme.typography.bodyMedium,
-                                                            fontWeight = FontWeight.SemiBold
-                                                        )
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = emp.fullName,
+                                                                style = MaterialTheme.typography.bodyMedium,
+                                                                fontWeight = FontWeight.SemiBold
+                                                            )
+                                                            if (activeEmployee.role == com.example.data.model.CorporateRole.ITR) {
+                                                                Surface(
+                                                                    shape = RoundedCornerShape(4.dp),
+                                                                    color = if (isMySub) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                                                                ) {
+                                                                    Text(
+                                                                        text = if (isMySub) "Моё подразделение" else "Смежник",
+                                                                        style = MaterialTheme.typography.labelSmall,
+                                                                        color = if (isMySub) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
                                                         Text(
                                                             text = "${emp.position} (${emp.role.titleRu}) • ${emp.groupName}",
                                                             style = MaterialTheme.typography.labelSmall,

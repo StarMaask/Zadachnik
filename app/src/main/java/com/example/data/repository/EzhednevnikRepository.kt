@@ -95,7 +95,6 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val path = "tasks"
         emitAll(
             db.collection(path)
-                .whereEqualTo("userId", uid)
                 .snapshots()
                 .map { querySnapshot ->
                     querySnapshot.toObjects(
@@ -1000,19 +999,25 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         actor: CorporateEmployee,
         draft: TaskDraft,
         resolvedAssignee: CorporateEmployee? = null,
-        customTaskId: String? = null
+        customTaskId: String? = null,
+        resolvedAssignees: List<CorporateEmployee> = emptyList()
     ): Result<String> = runCatching {
         val uid = requireUserId()
-        val assignee = resolvedAssignee ?: CorporateSeedData.findEmployee(draft.assigneeId)
+        val assigneesList = resolvedAssignees.ifEmpty {
+            listOf(resolvedAssignee ?: CorporateSeedData.findEmployee(draft.assigneeId))
+        }
+        val assignee = assigneesList.first()
 
         // RBAC Enforcement: Check hierarchy rights
-        if (actor.id != assignee.id && !actor.role.canAssignTo(assignee.role)) {
-            throw IllegalArgumentException(
-                "Роль «${actor.role.titleRu}» не может назначать задачи сотруднику с ролью «${assignee.role.titleRu}»"
-            )
-        }
-        if (actor.role == CorporateRole.WORKER && actor.id != assignee.id) {
-            throw IllegalArgumentException("Рабочий может создавать только личные задачи для себя")
+        assigneesList.forEach { targetEmp ->
+            if (actor.id != targetEmp.id && !actor.role.canAssignTo(targetEmp.role)) {
+                throw IllegalArgumentException(
+                    "Роль «${actor.role.titleRu}» не может назначать задачи сотруднику с ролью «${targetEmp.role.titleRu}»"
+                )
+            }
+            if (actor.role == CorporateRole.WORKER && actor.id != targetEmp.id) {
+                throw IllegalArgumentException("Рабочий может создавать только личные задачи для себя")
+            }
         }
 
         val docId = customTaskId?.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")?.take(64)
@@ -1026,12 +1031,16 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 SubtaskItem("sub_${idx + 1}", raw, false).encode()
             }
         }
+        val allShortNames = assigneesList.joinToString(", ") { it.shortName }
+        val allFullNames = assigneesList.map { it.fullName }
+        val allAssigneeIds = assigneesList.map { it.id }
+
         val initialHistory = listOf(
             StatusHistoryEntry(
                 timestampText = nowTimeText(),
                 actorName = actor.shortName,
                 statusCode = TaskStatus.NEW.code,
-                note = "Задача поставлена исполнителю ${assignee.shortName}"
+                note = "Задача поставлена исполнителям: $allShortNames"
             ).encode()
         )
         val mergedTags = if (draft.targetVolume > 0.0) {
@@ -1049,7 +1058,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             creatorId = actor.id,
             creatorName = actor.fullName,
             assigneeId = assignee.id,
-            assigneeName = assignee.fullName,
+            assigneeName = allFullNames.joinToString(", ").take(120),
             groupId = assignee.groupId,
             groupName = assignee.groupName,
             siteId = assignee.siteId,
@@ -1072,7 +1081,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             commentItems = emptyList(),
             historyItems = initialHistory,
             geoLocation = draft.geoLocation.ifBlank { assignee.siteName }.take(120)
-        )
+        ).withUpdatedAssignees(allAssigneeIds, allFullNames)
 
         try {
             docRef.set(taskToCreatePayload(uid, taskModel)).await()
@@ -1090,7 +1099,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 actionType = "CREATE_TASK",
                 targetType = "TASK",
                 targetId = docRef.id,
-                details = "Поставлена задача «${taskModel.title}» исполнителю ${assignee.shortName}"
+                details = "Поставлена задача «${taskModel.title}» исполнителям: $allShortNames"
             )
         }
         docRef.id
@@ -1185,10 +1194,10 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     }
 
     suspend fun getUserTasks(): Result<List<TaskDocument>> = runCatching {
-        val uid = requireUserId()
+        requireUserId()
         val path = "tasks"
         val snapshot = try {
-            db.collection(path).whereEqualTo("userId", uid).get().await()
+            db.collection(path).get().await()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1196,6 +1205,37 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             throw e
         }
         snapshot.toObjects(TaskDocument::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+    }
+
+    suspend fun updateTaskAssigneesInFirestore(
+        task: TaskDocument,
+        assigneeId: String,
+        assigneeName: String,
+        groupId: String,
+        groupName: String,
+        tags: List<String>,
+        historyItems: List<String>
+    ): Result<Unit> = runCatching {
+        require(task.id.isNotBlank()) { "Task ID must not be blank" }
+        val docRef = db.collection("tasks").document(task.id)
+        try {
+            docRef.update(
+                mapOf(
+                    "assigneeId" to assigneeId.take(64),
+                    "assigneeName" to assigneeName.take(120),
+                    "groupId" to groupId.take(64),
+                    "groupName" to groupName.take(120),
+                    "tags" to tags.take(10),
+                    "historyItems" to historyItems.takeLast(50),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            throw e
+        }
     }
 
     suspend fun addPhotoToTask(
@@ -1318,15 +1358,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val uid = requireUserId()
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
 
-        // Mandatory Photo Report Validation Rule
         val currentPhotos = task.photoItems.size
-        val requiredPhotos = task.minPhotoCount.toInt()
-        if (task.requiresPhotoReport && currentPhotos < requiredPhotos) {
-            throw IllegalStateException(
-                "Нельзя отметить выполнение без фотоотчёта: требуется минимум $requiredPhotos фото (добавлено: $currentPhotos)"
-            )
-        }
-
         val targetStatus = if (task.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
         val historyNote = if (targetStatus == TaskStatus.ON_REVIEW) {
             "Выполнено и отправлено на проверку ИТР/Руководителю (фото: $currentPhotos шт.)"
@@ -1743,9 +1775,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val scopedTasks = when (actor.role) {
             CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
             CorporateRole.ITR -> allTasks.filter {
-                it.groupId == actor.groupId || it.assigneeId == actor.id || it.creatorId == actor.id
+                it.groupId == actor.groupId || it.isAssignedToEmployee(actor) || it.creatorId == actor.id
             }
-            CorporateRole.WORKER -> allTasks.filter { it.assigneeId == actor.id }
+            CorporateRole.WORKER -> allTasks.filter { it.isAssignedToEmployee(actor) }
         }
 
         val scopeLabel = when (actor.role) {
@@ -1781,7 +1813,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
         val visibleEmployees = basePool
         val employeeStats = visibleEmployees.map { emp ->
-            val empTasks = allTasks.filter { it.assigneeId == emp.id }
+            val empTasks = allTasks.filter { it.isAssignedToEmployee(emp) }
             val empTotal = empTasks.size
             val empApproved = empTasks.count { it.taskStatus == TaskStatus.APPROVED }
             val empOnReview = empTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }

@@ -95,17 +95,23 @@ import com.example.ui.components.TaskItemCard
 fun ApprovalsQueueScreen(
     activeEmployee: CorporateEmployee,
     allTasks: List<TaskDocument>,
-    onTaskClick: (TaskDocument) -> Unit
+    onTaskClick: (TaskDocument) -> Unit,
+    onApproveTask: (TaskDocument) -> Unit = {},
+    onRejectTask: (TaskDocument, String) -> Unit = { _, _ -> }
 ) {
-    val onReviewTasks = allTasks.filter { it.taskStatus == TaskStatus.ON_REVIEW }
+    val onReviewTasks = allTasks.filter {
+        it.taskStatus == TaskStatus.ON_REVIEW ||
+            (it.taskStatus == TaskStatus.IN_PROGRESS && (it.completionPercent() >= 100 || it.photoItems.isNotEmpty()))
+    }
     val rejectedTasks = allTasks.filter { it.taskStatus == TaskStatus.REJECTED }
+    val canVerify = activeEmployee.role.canApproveReportOf(CorporateRole.WORKER)
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .testTag("approvals_queue_list"),
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             Surface(
@@ -158,10 +164,47 @@ fun ApprovalsQueueScreen(
             }
         } else {
             items(onReviewTasks, key = { it.id }) { task ->
-                TaskItemCard(
-                    task = task,
-                    onClick = { onTaskClick(task) }
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TaskItemCard(
+                        task = task,
+                        onClick = { onTaskClick(task) }
+                    )
+                    if (canVerify) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { onRejectTask(task, "Возвращено на доработку при приёмке") },
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                                    .testTag("queue_reject_${task.id}")
+                            ) {
+                                Text("Отклонить", fontWeight = FontWeight.SemiBold)
+                            }
+                            Button(
+                                onClick = { onApproveTask(task) },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF10B981),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier
+                                    .weight(1.35f)
+                                    .height(44.dp)
+                                    .testTag("queue_approve_${task.id}")
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Принять отчёт", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -176,10 +219,29 @@ fun ApprovalsQueueScreen(
                 )
             }
             items(rejectedTasks, key = { it.id }) { task ->
-                TaskItemCard(
-                    task = task,
-                    onClick = { onTaskClick(task) }
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TaskItemCard(
+                        task = task,
+                        onClick = { onTaskClick(task) }
+                    )
+                    if (canVerify) {
+                        Button(
+                            onClick = { onApproveTask(task) },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF10B981),
+                                contentColor = Color.White
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(42.dp)
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Принять работу после доработки", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         }
     }

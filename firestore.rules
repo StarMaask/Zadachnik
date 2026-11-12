@@ -60,7 +60,7 @@ service cloud.firestore {
 
     // 2. TaskDocument Validation Helper
     function isValidTaskDocument(data) {
-      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
              data.description is string && data.description.size() <= 2000 &&
              data.creatorId is string && data.creatorId.size() <= 64 &&
@@ -86,18 +86,18 @@ service cloud.firestore {
              (!('commentItems' in data) || isBoundedList(data.commentItems, 50)) &&
              (!('historyItems' in data) || isBoundedList(data.historyItems, 50)) &&
              (!('rejectionReason' in data) || data.rejectionReason == null || (data.rejectionReason is string && data.rejectionReason.size() <= 500)) &&
-             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName.size() <= 120)) &&
+             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName is string && data.approvedByName.size() <= 120)) &&
              (!('geoLocation' in data) || data.geoLocation == null || (data.geoLocation is string && data.geoLocation.size() <= 120)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
     match /tasks/{taskId} {
-      allow get: if isSignedIn() && isValidId(taskId) && resource.data.userId == request.auth.uid;
-      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get, list: if isSignedIn();
 
       allow create: if isSignedIn() &&
                        isValidId(taskId) &&
+                       request.resource.data.userId == request.auth.uid &&
                        request.resource.data.keys().hasAll([
                          'userId', 'title', 'description', 'creatorId', 'creatorName',
                          'assigneeId', 'assigneeName', 'groupId', 'groupName', 'siteId',
@@ -120,7 +120,6 @@ service cloud.firestore {
 
       allow update: if isSignedIn() &&
                        isValidId(taskId) &&
-                       resource.data.userId == request.auth.uid &&
                        resource.data.status != 'ARCHIVED' &&
                        isValidTaskDocument(request.resource.data) &&
                        request.resource.data.userId == resource.data.userId &&
@@ -136,7 +135,7 @@ service cloud.firestore {
                          'geoLocation', 'updatedAt'
                        ]);
 
-      allow delete: if isSignedIn() && isValidId(taskId) && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(taskId);
     }
 
     // 3. ReportTemplateDocument Validation Helper

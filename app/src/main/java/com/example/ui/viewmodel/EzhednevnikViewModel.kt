@@ -371,13 +371,20 @@ class EzhednevnikViewModel(
                 mergedMap[task.id] = task
             }
         }
-        // Локальные задачи и правки (чек-листы, фото, статусы) имеют приоритет
-        localTasks.forEach { task ->
-            if (task.id.isNotBlank() &&
-                !CorporateSeedData.isLegacyFakeSeedTaskId(task.id) &&
-                task.id !in deletedIds
+        // Объединяем локальные и облачные задачи, выбирая более свежую ревизию по истории/фото/комментариям
+        localTasks.forEach { localTask ->
+            if (localTask.id.isNotBlank() &&
+                !CorporateSeedData.isLegacyFakeSeedTaskId(localTask.id) &&
+                localTask.id !in deletedIds
             ) {
-                mergedMap[task.id] = task
+                val remoteTask = mergedMap[localTask.id]
+                if (remoteTask == null) {
+                    mergedMap[localTask.id] = localTask
+                } else {
+                    val remoteWeight = remoteTask.historyItems.size * 10 + remoteTask.photoItems.size * 5 + remoteTask.commentItems.size * 2
+                    val localWeight = localTask.historyItems.size * 10 + localTask.photoItems.size * 5 + localTask.commentItems.size * 2
+                    mergedMap[localTask.id] = if (remoteWeight > localWeight) remoteTask else localTask
+                }
             }
         }
         UiState.Success(
@@ -799,8 +806,17 @@ class EzhednevnikViewModel(
     }
 
     private fun findTaskById(taskId: String): TaskDocument? {
+        val fromLocal = _localTasks.value.firstOrNull { it.id == taskId }
         val fromState = (tasksState.value as? UiState.Success)?.data?.firstOrNull { it.id == taskId }
-        return fromState ?: _localTasks.value.firstOrNull { it.id == taskId }
+        return when {
+            fromLocal != null && fromState != null -> {
+                val stateWeight = fromState.historyItems.size * 10 + fromState.photoItems.size * 5 + fromState.commentItems.size * 2
+                val localWeight = fromLocal.historyItems.size * 10 + fromLocal.photoItems.size * 5 + fromLocal.commentItems.size * 2
+                if (stateWeight > localWeight) fromState else fromLocal
+            }
+            fromLocal != null -> fromLocal
+            else -> fromState
+        }
     }
 
     fun updateMyPendingRequestDetails(
@@ -1322,16 +1338,33 @@ class EzhednevnikViewModel(
         _bannerMessage.value = "Профиль: ${target.fullName} (${target.role.titleRu})"
     }
 
-    fun createNewTask(draft: TaskDraft) {
+    private fun resolveOrCreateEmployees(
+        selectedIds: List<String>,
+        customNamesRaw: String
+    ): List<CorporateEmployee> {
         val actor = activeEmployee.value
-        val customFio = draft.customAssigneeName.trim()
-        val assignee: CorporateEmployee = if (customFio.isNotBlank()) {
+        val result = LinkedHashMap<String, CorporateEmployee>()
+
+        selectedIds.map { it.trim() }.filter { it.isNotBlank() }.forEach { targetId ->
+            val found = availableEmployees.value.firstOrNull {
+                it.id == targetId || normalizeMemberKey(it.id) == normalizeMemberKey(targetId)
+            }
+            if (found != null) {
+                result[normalizeMemberKey(found.id)] = found
+            }
+        }
+
+        val customNames = customNamesRaw.split(",", ";")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        customNames.forEach { customFio ->
             val existingByName = availableEmployees.value.firstOrNull {
                 it.fullName.equals(customFio, ignoreCase = true) ||
                     it.shortName.equals(customFio, ignoreCase = true)
             }
             if (existingByName != null) {
-                existingByName
+                result[normalizeMemberKey(existingByName.id)] = existingByName
             } else {
                 val newEmpId = "emp_${UUID.randomUUID().toString().replace("-", "").take(10)}"
                 val newMember = SiteMemberDocument(
@@ -1348,17 +1381,30 @@ class EzhednevnikViewModel(
                     siteName = _siteName.value
                 )
                 upsertLocalMember(newMember)
-                newMember.toCorporateEmployee(defaultSiteName = _siteName.value)
+                val createdEmp = newMember.toCorporateEmployee(defaultSiteName = _siteName.value)
+                result[normalizeMemberKey(createdEmp.id)] = createdEmp
             }
-        } else {
-            availableEmployees.value.firstOrNull {
-                it.id == draft.assigneeId || normalizeMemberKey(it.id) == normalizeMemberKey(draft.assigneeId)
-            } ?: actor
         }
+
+        return result.values.toList()
+    }
+
+    fun createNewTask(draft: TaskDraft) {
+        val actor = activeEmployee.value
+        val candidateIds = (draft.assigneeIds + listOfNotNull(draft.assigneeId.takeIf { it.isNotBlank() })).distinct()
+        val resolvedAssignees = resolveOrCreateEmployees(
+            selectedIds = candidateIds,
+            customNamesRaw = draft.customAssigneeName
+        ).ifEmpty { listOf(actor) }
+
+        val assignee = resolvedAssignees.first()
+        val allAssigneeIds = resolvedAssignees.map { it.id }
+        val allAssigneeFullNames = resolvedAssignees.map { it.fullName }
+        val allAssigneeShortNames = resolvedAssignees.joinToString(", ") { it.shortName }
 
         val cleanTitle = draft.title.trim().ifBlank {
             draft.description.lines().firstOrNull { it.isNotBlank() }?.trim()
-                ?: "Задание — ${assignee.shortName} (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)})"
+                ?: "Задание — $allAssigneeShortNames (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)})"
         }
 
         val taskId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
@@ -1409,7 +1455,7 @@ class EzhednevnikViewModel(
             creatorId = actor.id,
             creatorName = actor.fullName,
             assigneeId = assignee.id,
-            assigneeName = assignee.fullName,
+            assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
             groupId = assignee.groupId,
             groupName = assignee.groupName,
             siteId = assignee.siteId,
@@ -1435,11 +1481,13 @@ class EzhednevnikViewModel(
                     nowText(),
                     actor.shortName,
                     TaskStatus.NEW.code,
-                    "Задача создана (пунктов чек-листа: ${decodedInitialSubtasks.size}, план: ${SubtaskItem.formatVolumeNumber(resolvedTaskTargetVol)} $resolvedTaskUnit)"
+                    "Задача создана (исп.: $allAssigneeShortNames, пунктов: ${decodedInitialSubtasks.size}, план: ${SubtaskItem.formatVolumeNumber(resolvedTaskTargetVol)} $resolvedTaskUnit)"
                 ).encode()
             ),
             geoLocation = draft.geoLocation.ifBlank { _siteName.value }
-        ).withUpdatedVolume(resolvedTaskTargetVol, 0.0, resolvedTaskUnit)
+        )
+            .withUpdatedVolume(resolvedTaskTargetVol, 0.0, resolvedTaskUnit)
+            .withUpdatedAssignees(allAssigneeIds, allAssigneeFullNames)
 
         // Мгновенно сохраняем задачу локально
         upsertLocalTask(baseTask)
@@ -1472,7 +1520,7 @@ class EzhednevnikViewModel(
             }
         }
 
-        _bannerMessage.value = "Задача «$cleanTitle» сохранена (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)}, исп.: ${assignee.shortName})"
+        _bannerMessage.value = "Задача «$cleanTitle» назначена (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)}, исп.: $allAssigneeShortNames)"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -1481,67 +1529,77 @@ class EzhednevnikViewModel(
                     draft = draft.copy(
                         title = cleanTitle,
                         assigneeId = assignee.id,
+                        assigneeIds = allAssigneeIds,
                         targetVolume = resolvedTaskTargetVol,
                         volumeUnit = resolvedTaskUnit,
                         subtasks = encodedSubtasks,
                         tags = baseTask.tags
                     ),
                     resolvedAssignee = assignee,
-                    customTaskId = taskId
+                    customTaskId = taskId,
+                    resolvedAssignees = resolvedAssignees
+                )
+            }
+        }
+    }
+
+    fun updateTaskAssignees(
+        task: TaskDocument,
+        assigneeIds: List<String>,
+        customAssigneeName: String = ""
+    ) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        val resolvedAssignees = resolveOrCreateEmployees(
+            selectedIds = assigneeIds,
+            customNamesRaw = customAssigneeName
+        )
+        if (resolvedAssignees.isEmpty()) return
+
+        val primary = resolvedAssignees.first()
+        val allIds = resolvedAssignees.map { it.id }
+        val allFullNames = resolvedAssignees.map { it.fullName }
+        val displayNames = allFullNames.joinToString(", ").take(120)
+
+        val updatedTask = currentTask
+            .copy(
+                assigneeId = primary.id,
+                assigneeName = displayNames,
+                groupId = primary.groupId,
+                groupName = primary.groupName,
+                historyItems = currentTask.historyItems + StatusHistoryEntry(
+                    nowText(),
+                    actor.shortName,
+                    currentTask.status,
+                    "Назначены исполнители: $displayNames"
+                ).encode()
+            )
+            .withUpdatedAssignees(allIds, allFullNames)
+
+        upsertLocalTask(updatedTask)
+        _bannerMessage.value = "Исполнители задачи: $displayNames"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                repository.updateTaskAssigneesInFirestore(
+                    task = updatedTask,
+                    assigneeId = updatedTask.assigneeId,
+                    assigneeName = updatedTask.assigneeName,
+                    groupId = updatedTask.groupId,
+                    groupName = updatedTask.groupName,
+                    tags = updatedTask.tags,
+                    historyItems = updatedTask.historyItems
                 )
             }
         }
     }
 
     fun updateTaskAssignee(task: TaskDocument, assigneeId: String, customAssigneeName: String = "") {
-        val currentTask = findTaskById(task.id) ?: task
-        val actor = activeEmployee.value
-        val customFio = customAssigneeName.trim()
-        val resolvedAssignee: CorporateEmployee = if (customFio.isNotBlank()) {
-            val existingByName = availableEmployees.value.firstOrNull {
-                it.fullName.equals(customFio, ignoreCase = true) ||
-                    it.shortName.equals(customFio, ignoreCase = true)
-            }
-            if (existingByName != null) {
-                existingByName
-            } else {
-                val newEmpId = "emp_${UUID.randomUUID().toString().replace("-", "").take(10)}"
-                val newMember = SiteMemberDocument(
-                    id = newEmpId,
-                    memberId = newEmpId,
-                    email = "$newEmpId@site1.ru",
-                    fullName = customFio,
-                    position = "Исполнитель",
-                    role = CorporateRole.WORKER.code,
-                    approvalStatus = MemberApprovalStatus.APPROVED.code,
-                    groupId = CorporateSeedData.workGroups.first().id,
-                    groupName = CorporateSeedData.workGroups.first().name,
-                    approvedByName = actor.fullName,
-                    siteName = _siteName.value
-                )
-                upsertLocalMember(newMember)
-                newMember.toCorporateEmployee(defaultSiteName = _siteName.value)
-            }
-        } else {
-            availableEmployees.value.firstOrNull {
-                it.id == assigneeId || normalizeMemberKey(it.id) == normalizeMemberKey(assigneeId)
-            } ?: return
-        }
-
-        val updatedTask = currentTask.copy(
-            assigneeId = resolvedAssignee.id,
-            assigneeName = resolvedAssignee.fullName,
-            groupId = resolvedAssignee.groupId,
-            groupName = resolvedAssignee.groupName,
-            historyItems = currentTask.historyItems + StatusHistoryEntry(
-                nowText(),
-                actor.shortName,
-                currentTask.status,
-                "Назначен исполнитель: ${resolvedAssignee.fullName}"
-            ).encode()
+        updateTaskAssignees(
+            task = task,
+            assigneeIds = listOfNotNull(assigneeId.takeIf { it.isNotBlank() }),
+            customAssigneeName = customAssigneeName
         )
-        upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Исполнитель задачи изменён: ${resolvedAssignee.fullName}"
     }
 
     fun deleteTask(task: TaskDocument) {
@@ -1560,20 +1618,27 @@ class EzhednevnikViewModel(
         }
     }
 
-    fun addPhotoToTask(task: TaskDocument, uriString: String, gpsCoords: String, comment: String) {
+    fun addPhotosToTask(
+        task: TaskDocument,
+        items: List<Pair<String, String>>,
+        gpsCoords: String
+    ) {
+        if (items.isEmpty()) return
         val currentTask = findTaskById(task.id) ?: task
         val actor = activeEmployee.value
-        val newPhoto = PhotoReportItem(
-            id = "ph_${System.currentTimeMillis()}_${(100..999).random()}",
-            uriString = uriString,
-            authorId = actor.id,
-            authorName = actor.shortName,
-            capturedAtText = nowText(),
-            gpsCoords = gpsCoords.ifBlank { "Участок №1" },
-            comment = comment.ifBlank { "Фотофиксация выполнения" }
-        ).encode()
-
-        val updatedPhotos = currentTask.photoItems + newPhoto
+        val nowStr = nowText()
+        val encodedNew = items.mapIndexed { idx, (uriString, comment) ->
+            PhotoReportItem(
+                id = "ph_${System.currentTimeMillis()}_${idx}_${(100..999).random()}",
+                uriString = uriString,
+                authorId = actor.id,
+                authorName = actor.shortName,
+                capturedAtText = nowStr,
+                gpsCoords = gpsCoords.ifBlank { "Участок №1" },
+                comment = comment.ifBlank { "Фотофиксация выполнения" }
+            ).encode()
+        }
+        val updatedPhotos = (currentTask.photoItems + encodedNew).takeLast(30)
         val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW) {
             TaskStatus.IN_PROGRESS.code
         } else {
@@ -1583,20 +1648,37 @@ class EzhednevnikViewModel(
             photoItems = updatedPhotos,
             status = nextStatus,
             historyItems = currentTask.historyItems + StatusHistoryEntry(
-                nowText(),
+                nowStr,
                 actor.shortName,
                 nextStatus,
-                "Добавлено фото (${updatedPhotos.size} шт.)"
+                "Добавлено фото в отчёт (+${encodedNew.size} шт., всего: ${updatedPhotos.size} шт.)"
             ).encode()
         )
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Фото добавлено (${updatedPhotos.size} шт.)"
+        _bannerMessage.value = "Фотоотчёт сохранён (всего фото: ${updatedPhotos.size} шт.)"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.addPhotoToTask(actor, currentTask, uriString, gpsCoords, comment)
+                var runningTask = currentTask
+                items.forEach { (uriString, comment) ->
+                    repository.addPhotoToTask(actor, runningTask, uriString, gpsCoords, comment)
+                    val addedEncoded = PhotoReportItem(
+                        id = "ph_${System.currentTimeMillis()}",
+                        uriString = uriString,
+                        authorId = actor.id,
+                        authorName = actor.shortName,
+                        capturedAtText = nowStr,
+                        gpsCoords = gpsCoords.ifBlank { "Участок №1" },
+                        comment = comment.ifBlank { "Фотофиксация выполнения" }
+                    ).encode()
+                    runningTask = runningTask.copy(photoItems = runningTask.photoItems + addedEncoded)
+                }
             }
         }
+    }
+
+    fun addPhotoToTask(task: TaskDocument, uriString: String, gpsCoords: String, comment: String) {
+        addPhotosToTask(task, listOf(uriString to comment), gpsCoords)
     }
 
     fun deletePhotoFromTask(task: TaskDocument, photoId: String) {
@@ -1959,18 +2041,13 @@ class EzhednevnikViewModel(
         var currentTask = findTaskById(task.id) ?: task
         val actor = activeEmployee.value
 
-        if (currentTask.requiresPhotoReport && currentTask.photoItems.size < currentTask.minPhotoCount) {
-            _bannerMessage.value = "Прикрепите минимум ${currentTask.minPhotoCount} фото (сейчас: ${currentTask.photoItems.size})"
-            return
-        }
-
-        // Если работник вручную вбил выполненный объём от всего объёма, применяем его перед отправкой отчёта
         val targetVol = currentTask.effectiveTargetVolume
         val unitLabel = currentTask.effectiveVolumeUnit.ifBlank { "шт" }
+        val decoded = currentTask.decodedSubtasks()
+
         if (manualCompletedVolume != null && targetVol > 0.0) {
             val clamped = manualCompletedVolume.coerceIn(0.0, targetVol)
             val ratio = (clamped / targetVol).coerceIn(0.0, 1.0)
-            val decoded = currentTask.decodedSubtasks()
             val updatedDecoded = decoded.map { sub ->
                 val subTarget = sub.effectiveTargetVolume
                 val subCompleted = if (decoded.size == 1) {
@@ -1989,25 +2066,38 @@ class EzhednevnikViewModel(
             currentTask = currentTask
                 .copy(subtaskItems = updatedEncoded)
                 .withUpdatedVolume(targetVol, clamped, unitLabel)
+        } else if (manualCompletedVolume == null && currentTask.completionPercent() == 0 && (decoded.isNotEmpty() || targetVol > 0.0)) {
+            // Если работник нажимает «Подтвердить выполнение» без ручного ввода, отмечаем 100% выполнения
+            val updatedDecoded = decoded.map { sub ->
+                val subTarget = sub.effectiveTargetVolume
+                sub.copy(
+                    targetVolume = subTarget,
+                    completedVolume = subTarget,
+                    isDone = true,
+                    unit = sub.effectiveUnit
+                )
+            }
+            val updatedEncoded = updatedDecoded.map { it.encode() }
+            currentTask = currentTask
+                .copy(subtaskItems = updatedEncoded)
+                .let { if (targetVol > 0.0) it.withUpdatedVolume(targetVol, targetVol, unitLabel) else it }
         }
 
         val finalCompleted = currentTask.effectiveCompletedVolume
         val finalTarget = currentTask.effectiveTargetVolume
         val pct = currentTask.completionPercent()
-        val is100 = !currentTask.hasVolumeTracking() || currentTask.isVolumeCompleted100Percent()
 
-        val nextStatus = when {
-            is100 && currentTask.requiresApproval -> TaskStatus.ON_REVIEW
-            is100 && !currentTask.requiresApproval -> TaskStatus.APPROVED
-            currentTask.requiresApproval -> TaskStatus.ON_REVIEW
-            else -> TaskStatus.IN_PROGRESS
+        val nextStatus = if (currentTask.requiresApproval) {
+            TaskStatus.ON_REVIEW
+        } else {
+            TaskStatus.APPROVED
         }
 
         val reportLogNote = buildString {
             if (finalTarget > 0.0) {
-                append("Отчёт работника: выполнено ${SubtaskItem.formatVolumeNumber(finalCompleted)} из ${SubtaskItem.formatVolumeNumber(finalTarget)} $unitLabel ($pct%)")
+                append("Выполнено и передано на проверку: ${SubtaskItem.formatVolumeNumber(finalCompleted)} из ${SubtaskItem.formatVolumeNumber(finalTarget)} $unitLabel ($pct%)")
             } else {
-                append("Отчёт работника ($pct%)")
+                append("Выполнено и передано на проверку ($pct%)")
             }
             if (note.isNotBlank()) {
                 append(" • ${note.trim()}")
@@ -2017,6 +2107,7 @@ class EzhednevnikViewModel(
         val updatedTask = currentTask.copy(
             status = nextStatus.code,
             rejectionReason = null,
+            approvedByName = if (nextStatus == TaskStatus.APPROVED) actor.fullName else currentTask.approvedByName,
             historyItems = currentTask.historyItems + StatusHistoryEntry(
                 nowText(),
                 actor.shortName,

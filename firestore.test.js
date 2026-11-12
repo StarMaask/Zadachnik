@@ -85,14 +85,26 @@ test("Authenticated user: can create and query own tasks with matching filter", 
   );
 });
 
-test("Authenticated user: cannot read another user's task or query without filter", async () => {
+test("Authenticated user: can read shared site tasks and update status, but cannot spoof creator userId", async () => {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     await context.firestore().collection("tasks").doc("task_bob_1").set(validTaskPayload(BOB_UID));
   });
 
   const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
-  await assertFails(aliceDb.collection("tasks").doc("task_bob_1").get());
-  await assertFails(aliceDb.collection("tasks").get());
+  await assertSucceeds(aliceDb.collection("tasks").doc("task_bob_1").get());
+  await assertSucceeds(aliceDb.collection("tasks").get());
+  await assertSucceeds(
+    aliceDb.collection("tasks").doc("task_bob_1").update({
+      status: "ON_REVIEW",
+      updatedAt: new Date(),
+    })
+  );
+  await assertFails(
+    aliceDb.collection("tasks").doc("task_bob_1").update({
+      userId: ALICE_UID,
+      updatedAt: new Date(),
+    })
+  );
 });
 
 test("Shadow Update & Terminal State Lock: rejects ghost fields and archived task updates", async () => {

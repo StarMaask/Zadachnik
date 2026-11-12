@@ -271,14 +271,12 @@ fun MainFeatureScreen(
                     ?: CorporateRole.WORKER
                 val isWorkerOrItrTask = assigneeRole == CorporateRole.WORKER || assigneeRole == CorporateRole.ITR
                 isWorkerOrItrTask ||
-                    task.assigneeId == activeEmployee.id ||
+                    task.isAssignedToEmployee(activeEmployee) ||
                     task.creatorId == activeEmployee.id
             }
             CorporateRole.WORKER -> allTasksRaw.filter { task ->
-                task.assigneeId == activeEmployee.id ||
-                    task.creatorId == activeEmployee.id ||
-                    task.assigneeName.equals(activeEmployee.fullName, ignoreCase = true) ||
-                    task.assigneeName.equals(activeEmployee.shortName, ignoreCase = true)
+                task.isAssignedToEmployee(activeEmployee) ||
+                    task.creatorId == activeEmployee.id
             }
         }
     }
@@ -568,7 +566,9 @@ fun MainFeatureScreen(
                             ApprovalsQueueScreen(
                                 activeEmployee = activeEmployee,
                                 allTasks = roleVisibleTasks,
-                                onTaskClick = { selectedTaskId = it.id }
+                                onTaskClick = { selectedTaskId = it.id },
+                                onApproveTask = { viewModel.approveReport(it, "Принято руководителем") },
+                                onRejectTask = { task, reason -> viewModel.rejectReport(task, reason) }
                             )
                         }
                         MainNavDestination.REPORTING -> {
@@ -696,6 +696,7 @@ fun MainFeatureScreen(
             availableEmployees = availableEmployees,
             onDismiss = { selectedTaskId = null },
             onAddPhoto = { uri, gps, cmt -> viewModel.addPhotoToTask(task, uri, gps, cmt) },
+            onAddPhotosBatch = { items, gps -> viewModel.addPhotosToTask(task, items, gps) },
             onDeletePhoto = { photoId -> viewModel.deletePhotoFromTask(task, photoId) },
             onToggleSubtask = { subId -> viewModel.toggleSubtask(task, subId) },
             onUpdateSubtaskVolume = { subId, vol -> viewModel.updateSubtaskVolume(task, subId, vol) },
@@ -705,6 +706,9 @@ fun MainFeatureScreen(
             onUpdateTaskVolume = { vol -> viewModel.updateTaskVolumeProgress(task, vol) },
             onUpdateAssignee = { empId, customName ->
                 viewModel.updateTaskAssignee(task, empId, customName)
+            },
+            onUpdateAssignees = { empIds, customName ->
+                viewModel.updateTaskAssignees(task, empIds, customName)
             },
             onAddSubtask = { title, vol, unit -> viewModel.addSubtaskToTask(task, title, vol, unit) },
             onDeleteSubtask = { subId -> viewModel.deleteSubtaskFromTask(task, subId) },
@@ -789,7 +793,7 @@ private fun TodayTasksContent(
                     val matchesDate = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
                         task.dueDateEpochDay == selectedCalendarEpochDay
                     } else {
-                        task.dueDateEpochDay <= currentEpochDay + 1L
+                        true
                     }
                     task.taskStatus != TaskStatus.ARCHIVED && matchesDate
                 }
@@ -989,7 +993,10 @@ private fun TodayTasksContent(
                             task = task,
                             onOpenDetail = { onTaskClick(task) },
                             onQuickComplete = { onQuickCompleteTask(task) },
-                            onToggleSubtask = { subId -> onToggleSubtask(task, subId) }
+                            onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
+                            canApprove = activeEmployee.role.canApproveReportOf(CorporateRole.WORKER),
+                            onApproveTask = { onApproveTask(task) },
+                            onRejectTask = { onRejectTask(task) }
                         )
                     }
                 }
@@ -1090,7 +1097,11 @@ private fun TodayTasksContent(
                                     task = task,
                                     onClick = { onTaskClick(task) },
                                     onDelete = { onDeleteTask(task) },
-                                    onToggleSubtask = { subId -> onToggleSubtask(task, subId) }
+                                    onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
+                                    canApprove = activeEmployee.role.canApproveReportOf(CorporateRole.WORKER),
+                                    onApproveTask = { onApproveTask(task) },
+                                    onRejectTask = { onRejectTask(task) },
+                                    onQuickComplete = { onQuickCompleteTask(task) }
                                 )
                             }
                         }

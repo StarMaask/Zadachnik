@@ -341,7 +341,10 @@ fun WorkerPersonaTaskCard(
     task: TaskDocument,
     onOpenDetail: () -> Unit,
     onQuickComplete: () -> Unit,
-    onToggleSubtask: (String) -> Unit
+    onToggleSubtask: (String) -> Unit,
+    canApprove: Boolean = false,
+    onApproveTask: (() -> Unit)? = null,
+    onRejectTask: (() -> Unit)? = null
 ) {
     val tokens = LocalAppThemeTokens.current
     val isDoneOrReview = task.taskStatus == TaskStatus.APPROVED || task.taskStatus == TaskStatus.ON_REVIEW
@@ -408,6 +411,21 @@ fun WorkerPersonaTaskCard(
                             text = task.geoLocation.orEmpty().ifBlank { "Участок №1" } + " • до ${task.deadlineTime}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (task.assigneeName.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (task.allAssigneeNames.size > 1) {
+                                "Исполнители (${task.allAssigneeNames.size}): ${task.assigneeName}"
+                            } else {
+                                "Исп.: ${task.assigneeName}"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -576,6 +594,60 @@ fun WorkerPersonaTaskCard(
                         fontWeight = FontWeight.Bold,
                         color = if (isDoneOrReview) doneColor else MaterialTheme.colorScheme.onPrimary
                     )
+                }
+            }
+
+            // Быстрые кнопки проверки и приёмки отчёта для ИТР / Руководителя / Администратора прямо с карточки
+            if (canApprove && task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED &&
+                (task.taskStatus == TaskStatus.ON_REVIEW || progressRatio >= 1f) && onApproveTask != null
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (onRejectTask != null) {
+                        OutlinedButton(
+                            onClick = onRejectTask,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.65f)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(42.dp)
+                                .testTag("card_reject_task_${task.id}")
+                        ) {
+                            Text(
+                                text = "Отклонить",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFEF4444)
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = onApproveTask,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF10B981),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .weight(1.3f)
+                            .height(42.dp)
+                            .testTag("card_approve_task_${task.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Принять отчёт",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -870,7 +942,11 @@ fun ItrPersonaTaskCard(
     task: TaskDocument,
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
-    onToggleSubtask: ((String) -> Unit)? = null
+    onToggleSubtask: ((String) -> Unit)? = null,
+    canApprove: Boolean = false,
+    onQuickComplete: (() -> Unit)? = null,
+    onApproveTask: (() -> Unit)? = null,
+    onRejectTask: (() -> Unit)? = null
 ) {
     val tokens = LocalAppThemeTokens.current
     val doneColor = tokens.statusDoneColor
@@ -879,14 +955,18 @@ fun ItrPersonaTaskCard(
     val unitLabel = task.effectiveVolumeUnit.ifBlank { "шт" }
     val pct = task.completionPercent()
     val subtasks = remember(task.subtaskItems) { task.decodedSubtasks() }
-    val initials = remember(task.assigneeName) {
-        task.assigneeName
-            .trim()
-            .split(Regex("\\s+"))
-            .filter { it.isNotBlank() }
-            .take(2)
-            .joinToString("") { it.first().uppercaseChar().toString() }
-            .ifBlank { "И" }
+    val initials = remember(task.assigneeName, task.tags) {
+        if (task.allAssigneeNames.size > 1) {
+            "${task.allAssigneeNames.size}"
+        } else {
+            task.assigneeName
+                .trim()
+                .split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+                .take(2)
+                .joinToString("") { it.first().uppercaseChar().toString() }
+                .ifBlank { "И" }
+        }
     }
 
     Surface(
@@ -1025,7 +1105,7 @@ fun ItrPersonaTaskCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    // Аватарка исполнителя с инициалами
+                    // Аватарка исполнителя с инициалами или числом исполнителей
                     Box(
                         modifier = Modifier
                             .size(28.dp)
@@ -1046,7 +1126,7 @@ fun ItrPersonaTaskCard(
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
@@ -1077,6 +1157,85 @@ fun ItrPersonaTaskCard(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp)
                         )
+                    }
+                }
+            }
+
+            // Кнопки быстрой приёмки / подтверждения выполнения прямо на карточке ИТР
+            if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (task.taskStatus != TaskStatus.ON_REVIEW && onQuickComplete != null) {
+                        OutlinedButton(
+                            onClick = onQuickComplete,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp)
+                                .testTag("itr_quick_complete_${task.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Сдать работу",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                    if (onRejectTask != null && (task.taskStatus == TaskStatus.ON_REVIEW || pct >= 100)) {
+                        OutlinedButton(
+                            onClick = onRejectTask,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.6f)),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .weight(0.85f)
+                                .height(36.dp)
+                                .testTag("itr_reject_task_${task.id}")
+                        ) {
+                            Text(
+                                text = "Отклонить",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFEF4444)
+                            )
+                        }
+                    }
+                    if (onApproveTask != null) {
+                        Button(
+                            onClick = onApproveTask,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF10B981),
+                                contentColor = Color.White
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .weight(1.15f)
+                                .height(36.dp)
+                                .testTag("itr_approve_task_${task.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Принять отчёт",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }

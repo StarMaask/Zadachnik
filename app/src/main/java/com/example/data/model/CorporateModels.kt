@@ -64,8 +64,7 @@ enum class CorporateRole(
 
     fun canApproveReportOf(assigneeRole: CorporateRole): Boolean {
         return when (this) {
-            ADMIN, HEAD -> true
-            ITR -> assigneeRole == WORKER
+            ADMIN, HEAD, ITR -> true
             WORKER -> false
         }
     }
@@ -676,14 +675,84 @@ data class TaskDocument(
         }
 
     val visibleTags: List<String>
-        get() = tags.filterNot { it.startsWith("__vol__|") }
+        get() = tags.filterNot { it.startsWith("__vol__|") || it.startsWith("__asgn__|") }
+
+    private fun parsedAssigneesTag(): Pair<List<String>, List<String>>? {
+        val raw = tags.firstOrNull { it.startsWith("__asgn__|") } ?: return null
+        val parts = raw.split("|")
+        if (parts.size < 3) return null
+        val ids = parts[1].split(";").map { it.trim() }.filter { it.isNotBlank() }
+        val names = parts[2].split(";").map { it.trim() }.filter { it.isNotBlank() }
+        return Pair(ids, names)
+    }
+
+    val allAssigneeIds: List<String>
+        get() {
+            val fromTag = parsedAssigneesTag()?.first.orEmpty()
+            val merged = (fromTag + listOfNotNull(assigneeId.takeIf { it.isNotBlank() })).distinct()
+            return merged
+        }
+
+    val allAssigneeNames: List<String>
+        get() {
+            val fromTag = parsedAssigneesTag()?.second.orEmpty()
+            val fromField = assigneeName.split(",", ";")
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+            return (fromTag.ifEmpty { fromField }).distinct()
+        }
+
+    fun isAssignedToEmployee(emp: CorporateEmployee): Boolean {
+        val empIdClean = emp.id.trim()
+        val empCanonicalId = SiteMemberDocument.canonicalMemberId(emp.id, emp.email).trim()
+        val ids = allAssigneeIds.map { it.trim() }
+        if (empIdClean.isNotBlank() && ids.any { it.equals(empIdClean, ignoreCase = true) }) {
+            return true
+        }
+        if (empCanonicalId.isNotBlank() && ids.any { it.equals(empCanonicalId, ignoreCase = true) }) {
+            return true
+        }
+        val fullClean = emp.fullName.trim().lowercase()
+        val shortClean = emp.shortName.trim().lowercase()
+        val emailPrefix = emp.email.substringBefore("@").trim().lowercase()
+        val names = allAssigneeNames.map { it.trim().lowercase() }
+        val rawAssigneeLower = assigneeName.trim().lowercase()
+
+        if (fullClean.isNotBlank() && (names.any { it == fullClean || it.contains(fullClean) || fullClean.contains(it) } || rawAssigneeLower.contains(fullClean))) {
+            return true
+        }
+        if (shortClean.isNotBlank() && shortClean != "сотрудник" && (names.any { it == shortClean || it.contains(shortClean) } || rawAssigneeLower.contains(shortClean))) {
+            return true
+        }
+        if (emailPrefix.length >= 3 && !emp.email.endsWith("@site1.ru") && names.any { it.replace(" ", "").contains(emailPrefix) }) {
+            return true
+        }
+        return false
+    }
+
+    fun withUpdatedAssignees(ids: List<String>, names: List<String>): TaskDocument {
+        val cleanIds = ids.map { it.trim().replace("|", "").replace(";", "") }.filter { it.isNotBlank() }.distinct()
+        val cleanNames = names.map { it.trim().replace("|", "/").replace(";", ",") }.filter { it.isNotBlank() }.distinct()
+        val primaryId = (cleanIds.firstOrNull() ?: assigneeId.ifBlank { "emp_worker_1" }).take(64)
+        val joinedNames = cleanNames.joinToString(", ").ifBlank { assigneeName.ifBlank { "Исполнитель" } }.take(120)
+        val nonAssigneeTags = tags.filterNot { it.startsWith("__asgn__|") }
+        val asgnTag = "__asgn__|${cleanIds.joinToString(";")}|${cleanNames.joinToString(";")}".take(480)
+        val volTag = nonAssigneeTags.filter { it.startsWith("__vol__|") }
+        val userTags = nonAssigneeTags.filterNot { it.startsWith("__vol__|") }
+        val updatedTags = (volTag + listOf(asgnTag) + userTags).take(10)
+        return copy(
+            assigneeId = primaryId,
+            assigneeName = joinedNames,
+            tags = updatedTags
+        )
+    }
 
     fun withUpdatedVolume(newTarget: Double, newCompleted: Double, newUnit: String): TaskDocument {
-        val cleanTags = tags.filterNot { it.startsWith("__vol__|") }
+        val nonVolTags = tags.filterNot { it.startsWith("__vol__|") }
         val updatedTags = if (newTarget > 0.0) {
-            listOf("__vol__|$newTarget|$newCompleted|${newUnit.replace("|", "/")}") + cleanTags
+            listOf("__vol__|$newTarget|$newCompleted|${newUnit.replace("|", "/")}") + nonVolTags
         } else {
-            cleanTags
+            nonVolTags
         }
         return copy(
             targetVolume = newTarget,
@@ -882,6 +951,7 @@ data class TaskDraft(
     val title: String,
     val description: String,
     val assigneeId: String,
+    val assigneeIds: List<String> = emptyList(),
     val customAssigneeName: String = "",
     val priority: TaskPriority,
     val dueDateEpochDay: Long,

@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -420,12 +421,18 @@ fun TaskDetailDialog(
     availableEmployees: List<CorporateEmployee> = listOf(activeEmployee),
     onDismiss: () -> Unit,
     onAddPhoto: (uriString: String, gpsCoords: String, comment: String) -> Unit,
+    onAddPhotosBatch: (items: List<Pair<String, String>>, gpsCoords: String) -> Unit = { items, gps ->
+        items.forEach { (uri, comment) -> onAddPhoto(uri, gps, comment) }
+    },
     onDeletePhoto: (photoId: String) -> Unit = {},
     onToggleSubtask: (subtaskId: String) -> Unit,
     onUpdateSubtaskVolume: (subtaskId: String, completedVol: Double) -> Unit = { _, _ -> },
     onUpdateSubtaskDetails: (subtaskId: String, targetVol: Double, completedVol: Double, unit: String) -> Unit = { _, _, _, _ -> },
     onUpdateTaskVolume: (completedVol: Double) -> Unit = {},
     onUpdateAssignee: (assigneeId: String, customAssigneeName: String) -> Unit = { _, _ -> },
+    onUpdateAssignees: (assigneeIds: List<String>, customAssigneeName: String) -> Unit = { ids, custom ->
+        onUpdateAssignee(ids.firstOrNull().orEmpty(), custom)
+    },
     onAddSubtask: (title: String, targetVolume: Double, unit: String) -> Unit = { _, _, _ -> },
     onDeleteSubtask: (subtaskId: String) -> Unit = {},
     onAddComment: (text: String, mentionedUser: String) -> Unit,
@@ -446,8 +453,13 @@ fun TaskDetailDialog(
     }
     var showEditAssigneeSection by remember { mutableStateOf(false) }
     var detailUseManualAssignee by remember { mutableStateOf(false) }
-    var detailManualAssigneeText by remember(task.assigneeName) { mutableStateOf(task.assigneeName) }
+    var detailManualAssigneeText by remember(task.assigneeName) { mutableStateOf("") }
     var detailAssigneeDropdownExpanded by remember { mutableStateOf(false) }
+    val detailSelectedAssigneeIds = remember(task.id, task.tags, task.assigneeId, assignees) {
+        val initialIds = assignees.filter { task.isAssignedToEmployee(it) }.map { it.id }
+            .ifEmpty { task.allAssigneeIds }
+        mutableStateListOf<String>().apply { addAll(initialIds.distinct()) }
+    }
 
     // Поля для добавления нового пункта чек-листа в новой строке (текст + ячейка количества + кнопка "+")
     var newSubtaskTitle by remember { mutableStateOf("") }
@@ -668,14 +680,18 @@ fun TaskDetailDialog(
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                // Строка 1: Исполнитель
+                                // Строка 1: Исполнители (один или несколько)
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "Исполнитель",
+                                        text = if (task.allAssigneeNames.size > 1) {
+                                            "Исполнители (${task.allAssigneeNames.size})"
+                                        } else {
+                                            "Исполнитель"
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -692,7 +708,10 @@ fun TaskDetailDialog(
                                             text = task.assigneeName.ifBlank { "Не назначен" },
                                             style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onSurface
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 195.dp)
                                         )
                                         Text(
                                             text = if (showEditAssigneeSection) "Скрыть" else "Изменить",
@@ -710,100 +729,97 @@ fun TaskDetailDialog(
                                             .padding(top = 4.dp, bottom = 4.dp),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            FilterChip(
-                                                selected = !detailUseManualAssignee,
-                                                onClick = { detailUseManualAssignee = false },
-                                                label = { Text("Из списка сотрудников") }
-                                            )
-                                            FilterChip(
-                                                selected = detailUseManualAssignee,
-                                                onClick = { detailUseManualAssignee = true },
-                                                label = { Text("Ввод вручную") }
-                                            )
-                                        }
-
-                                        if (!detailUseManualAssignee) {
-                                            ExposedDropdownMenuBox(
-                                                expanded = detailAssigneeDropdownExpanded,
-                                                onExpandedChange = { detailAssigneeDropdownExpanded = !detailAssigneeDropdownExpanded },
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                OutlinedTextField(
-                                                    value = task.assigneeName,
-                                                    onValueChange = {},
-                                                    readOnly = true,
-                                                    singleLine = true,
-                                                    label = { Text("Выберите сотрудника") },
-                                                    trailingIcon = {
-                                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = detailAssigneeDropdownExpanded)
+                                        Text(
+                                            text = "Отметьте одного или нескольких исполнителей:",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            assignees.forEach { emp ->
+                                                val isChecked = detailSelectedAssigneeIds.contains(emp.id)
+                                                Surface(
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    color = if (isChecked) {
+                                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                                    } else {
+                                                        MaterialTheme.colorScheme.surface
                                                     },
                                                     modifier = Modifier
-                                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                                                         .fillMaxWidth()
-                                                )
-                                                ExposedDropdownMenu(
-                                                    expanded = detailAssigneeDropdownExpanded,
-                                                    onDismissRequest = { detailAssigneeDropdownExpanded = false }
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .clickable {
+                                                            if (isChecked) {
+                                                                detailSelectedAssigneeIds.remove(emp.id)
+                                                            } else {
+                                                                detailSelectedAssigneeIds.add(emp.id)
+                                                            }
+                                                        }
                                                 ) {
-                                                    assignees.forEach { emp ->
-                                                        DropdownMenuItem(
-                                                            text = {
-                                                                Column {
-                                                                    Text(emp.fullName, fontWeight = FontWeight.SemiBold)
-                                                                    Text(
-                                                                        "${emp.position} • ${emp.groupName}",
-                                                                        style = MaterialTheme.typography.labelSmall,
-                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                                    )
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        Checkbox(
+                                                            checked = isChecked,
+                                                            onCheckedChange = { checked ->
+                                                                if (checked) {
+                                                                    if (!detailSelectedAssigneeIds.contains(emp.id)) {
+                                                                        detailSelectedAssigneeIds.add(emp.id)
+                                                                    }
+                                                                } else {
+                                                                    detailSelectedAssigneeIds.remove(emp.id)
                                                                 }
                                                             },
-                                                            onClick = {
-                                                                onUpdateAssignee(emp.id, "")
-                                                                detailAssigneeDropdownExpanded = false
-                                                                showEditAssigneeSection = false
-                                                            }
+                                                            modifier = Modifier.size(20.dp)
                                                         )
-                                                    }
-                                                    DropdownMenuItem(
-                                                        text = {
+                                                        Column(modifier = Modifier.weight(1f)) {
                                                             Text(
-                                                                "+ Ввести ФИО вручную...",
-                                                                color = MaterialTheme.colorScheme.primary,
+                                                                text = emp.fullName,
+                                                                style = MaterialTheme.typography.bodySmall,
                                                                 fontWeight = FontWeight.SemiBold
                                                             )
-                                                        },
-                                                        onClick = {
-                                                            detailUseManualAssignee = true
-                                                            detailAssigneeDropdownExpanded = false
+                                                            Text(
+                                                                text = "${emp.position} • ${emp.groupName}",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
                                                         }
-                                                    )
+                                                    }
                                                 }
                                             }
-                                        } else {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                verticalAlignment = Alignment.CenterVertically
+                                        }
+
+                                        OutlinedTextField(
+                                            value = detailManualAssigneeText,
+                                            onValueChange = { detailManualAssigneeText = it },
+                                            label = { Text("Доп. ФИО вручную (через запятую)") },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.End,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    if (detailSelectedAssigneeIds.isNotEmpty() || detailManualAssigneeText.isNotBlank()) {
+                                                        onUpdateAssignees(
+                                                            detailSelectedAssigneeIds.toList(),
+                                                            detailManualAssigneeText.trim()
+                                                        )
+                                                        showEditAssigneeSection = false
+                                                    }
+                                                },
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier.testTag("save_task_assignees_button")
                                             ) {
-                                                OutlinedTextField(
-                                                    value = detailManualAssigneeText,
-                                                    onValueChange = { detailManualAssigneeText = it },
-                                                    label = { Text("ФИО исполнителя") },
-                                                    singleLine = true,
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                Button(
-                                                    onClick = {
-                                                        if (detailManualAssigneeText.isNotBlank()) {
-                                                            onUpdateAssignee("", detailManualAssigneeText.trim())
-                                                            showEditAssigneeSection = false
-                                                        }
-                                                    },
-                                                    shape = RoundedCornerShape(10.dp)
-                                                ) {
-                                                    Text("ОК")
-                                                }
+                                                Text("Сохранить исполнителей")
                                             }
                                         }
                                     }
@@ -1610,7 +1626,7 @@ fun TaskDetailDialog(
                                 .padding(horizontal = 20.dp, vertical = 14.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            if (canApproveThisTask && (task.taskStatus == TaskStatus.ON_REVIEW || task.taskStatus == TaskStatus.IN_PROGRESS)) {
+                            if (canApproveThisTask && task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1667,48 +1683,78 @@ fun TaskDetailDialog(
 
                             if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
                                 val hasEnoughPhotosNow = task.hasEnoughPhotos()
-                                val submitLabel = when {
-                                    !hasEnoughPhotosNow -> "Прикрепите фото (${task.photoItems.size}/${task.minPhotoCount})"
-                                    task.requiresApproval -> "Отправить отчёт на проверку"
-                                    else -> "Завершить задачу"
-                                }
-                                Button(
-                                    onClick = {
-                                        onSubmitWorkerVolumeReport(null, photoComment)
-                                        if (hasEnoughPhotosNow) onDismiss()
-                                    },
-                                    enabled = hasEnoughPhotosNow,
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (canApproveThisTask) {
-                                            MaterialTheme.colorScheme.surfaceVariant
-                                        } else {
-                                            emeraldPrimary
-                                        },
-                                        contentColor = if (canApproveThisTask) {
-                                            MaterialTheme.colorScheme.onSurface
-                                        } else {
-                                            Color.White
-                                        }
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(44.dp)
-                                        .testTag("submit_task_completion_button")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(17.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = submitLabel,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    if (!hasEnoughPhotosNow) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier
+                                                .height(44.dp)
+                                                .testTag("bottom_bar_open_camera_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.PhotoCamera,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Фото (${task.photoItems.size}/${task.minPhotoCount})",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+
+                                    val submitLabel = when {
+                                        task.taskStatus == TaskStatus.ON_REVIEW -> "Обновить отчёт (На проверке)"
+                                        task.requiresApproval -> "Подтвердить выполнение"
+                                        else -> "Завершить задачу"
+                                    }
+                                    Button(
+                                        onClick = {
+                                            onSubmitWorkerVolumeReport(null, photoComment)
+                                            onDismiss()
+                                        },
+                                        enabled = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (canApproveThisTask) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                            } else {
+                                                emeraldPrimary
+                                            },
+                                            contentColor = if (canApproveThisTask) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                Color.White
+                                            }
+                                        ),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(44.dp)
+                                            .testTag("submit_task_completion_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = submitLabel,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1730,9 +1776,7 @@ fun TaskDetailDialog(
                 cameraLauncher.launch(null)
             },
             onSaveCapturedPhotos = { capturedItems ->
-                capturedItems.forEach { (savedPath, captionText) ->
-                    onAddPhoto(savedPath, photoGps, captionText)
-                }
+                onAddPhotosBatch(capturedItems, photoGps)
                 photoComment = ""
                 showModernCameraDialog = false
             },
@@ -2043,97 +2087,137 @@ fun ModernPhotoCaptureDialog(
             decorFitsSystemWindows = false
         )
     ) {
-        Surface(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .systemBarsPadding()
-                .imePadding(),
-            color = Color(0xFF090D16)
+                .imePadding()
+                .padding(horizontal = 12.dp, vertical = 20.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(
+            Surface(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.SpaceBetween
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.88f),
+                shape = RoundedCornerShape(24.dp),
+                color = Color(0xFF090D16),
+                shadowElevation = 18.dp,
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
             ) {
-                // 1. ВЕРХНЯЯ ПАНЕЛЬ КАМЕРЫ СМР
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    // 1. ВЕРХНЯЯ ПАНЕЛЬ КАМЕРЫ СМР
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF10B981))
+                                )
+                                Text(
+                                    text = "КАМЕРА СМР",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF10B981),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = taskTitle.ifBlank { "Фотофиксация выполнения работ" },
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF10B981))
-                            )
-                            Text(
-                                text = "КАМЕРА СМР • МГНОВЕННАЯ СЪЁМКА",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF10B981),
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = taskTitle.ifBlank { "Фотофиксация выполнения работ" },
-                            style = MaterialTheme.typography.titleSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        val totalWithSession = existingPhotoCount + capturedSessionItems.size
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = if (totalWithSession >= minRequiredPhotos) {
-                                Color(0xFF10B981).copy(alpha = 0.22f)
-                            } else {
-                                Color(0xFF3B82F6).copy(alpha = 0.22f)
-                            }
-                        ) {
-                            Text(
-                                text = "Кадров: $totalWithSession / $minRequiredPhotos",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
+                            val totalWithSession = existingPhotoCount + capturedSessionItems.size
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
                                 color = if (totalWithSession >= minRequiredPhotos) {
-                                    Color(0xFF34D399)
+                                    Color(0xFF10B981).copy(alpha = 0.22f)
                                 } else {
-                                    Color(0xFF60A5FA)
-                                },
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                            )
-                        }
+                                    Color(0xFF3B82F6).copy(alpha = 0.22f)
+                                }
+                            ) {
+                                Text(
+                                    text = "Кадров: $totalWithSession / $minRequiredPhotos",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (totalWithSession >= minRequiredPhotos) {
+                                        Color(0xFF34D399)
+                                    } else {
+                                        Color(0xFF60A5FA)
+                                    },
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
 
-                        IconButton(
-                            onClick = onDismiss,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.08f))
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Закрыть камеру",
-                                tint = Color.White
-                            )
+                            if (capturedSessionItems.isNotEmpty()) {
+                                Button(
+                                    onClick = {
+                                        onSaveCapturedPhotos(capturedSessionItems.toList())
+                                    },
+                                    shape = RoundedCornerShape(999.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF10B981),
+                                        contentColor = Color.White
+                                    ),
+                                    modifier = Modifier
+                                        .height(34.dp)
+                                        .testTag("top_save_captured_photos_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Готово (${capturedSessionItems.size})",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.08f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Закрыть камеру",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                 // 2. ОБЛАСТЬ ВИДОИСКАТЕЛЯ С ЖИВЫМ ШТАМПОМ СМР И ТАПОМ ДЛЯ СЪЁМКИ
                 Box(
@@ -2410,7 +2494,7 @@ fun ModernPhotoCaptureDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 4.dp),
+                            .padding(top = 4.dp, bottom = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -2418,7 +2502,7 @@ fun ModernPhotoCaptureDialog(
                             onClick = onDismiss,
                             shape = RoundedCornerShape(14.dp),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                            modifier = Modifier.height(48.dp)
+                            modifier = Modifier.height(46.dp)
                         ) {
                             Text("Отмена", color = Color.White)
                         }
@@ -2427,7 +2511,7 @@ fun ModernPhotoCaptureDialog(
                         Box(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier
-                                .size(68.dp)
+                                .size(62.dp)
                                 .clip(CircleShape)
                                 .background(Color.White.copy(alpha = 0.18f))
                                 .clickable { takeInstantShot() }
@@ -2436,14 +2520,14 @@ fun ModernPhotoCaptureDialog(
                             Surface(
                                 shape = CircleShape,
                                 color = Color.White,
-                                modifier = Modifier.size(54.dp)
+                                modifier = Modifier.size(48.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.Default.CameraAlt,
                                         contentDescription = "Сделать снимок",
                                         tint = Color(0xFF0F172A),
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(22.dp)
                                     )
                                 }
                             }
@@ -2463,7 +2547,7 @@ fun ModernPhotoCaptureDialog(
                                 contentColor = Color.White
                             ),
                             modifier = Modifier
-                                .height(48.dp)
+                                .height(46.dp)
                                 .testTag("save_captured_photos_button")
                         ) {
                             Icon(
@@ -2486,6 +2570,7 @@ fun ModernPhotoCaptureDialog(
             }
         }
     }
+}
 }
 
 /**
@@ -2523,8 +2608,14 @@ fun CreateTaskDialog(
     var description by remember { mutableStateOf("") }
     var showDescriptionInput by remember { mutableStateOf(false) }
 
-    // Выбор исполнителя: из компактного выпадающего списка с аватаром или ввод ФИО вручную
-    var selectedAssignee by remember(assignees) { mutableStateOf(assignees.first()) }
+    // Выбор одного или нескольких исполнителей: из списка с чекбоксами или ввод ФИО вручную
+    val selectedAssigneeIds = remember(assignees) {
+        mutableStateListOf(assignees.first().id)
+    }
+    val selectedAssignees = remember(assignees, selectedAssigneeIds.toList()) {
+        assignees.filter { it.id in selectedAssigneeIds }.ifEmpty { listOf(assignees.first()) }
+    }
+    val selectedAssignee = selectedAssignees.first()
     var useCustomAssigneeName by remember { mutableStateOf(false) }
     var customAssigneeName by remember { mutableStateOf("") }
     var assigneeDropdownExpanded by remember { mutableStateOf(false) }
@@ -2569,7 +2660,7 @@ fun CreateTaskDialog(
         val assigneeLabel = if (useCustomAssigneeName && customAssigneeName.isNotBlank()) {
             customAssigneeName.trim()
         } else {
-            selectedAssignee.shortName
+            selectedAssignees.joinToString(", ") { it.shortName }
         }
 
         // Если пользователь ввёл текст в строку добавления пункта, но не нажал «+ Добавить пункт», сохраняем и его
@@ -2641,6 +2732,7 @@ fun CreateTaskDialog(
                 title = effectiveTitle,
                 description = description.trim(),
                 assigneeId = selectedAssignee.id,
+                assigneeIds = selectedAssignees.map { it.id },
                 customAssigneeName = if (useCustomAssigneeName) customAssigneeName.trim() else "",
                 priority = selectedPriority,
                 dueDateEpochDay = dueDay,
@@ -2772,36 +2864,69 @@ fun CreateTaskDialog(
                             )
                         }
 
-                        // БЛОК 2.2: ИСПОЛНИТЕЛЬ (Компактный выпадающий список с круглым аватаром + опция ручного ввода)
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // БЛОК 2.2: ИСПОЛНИТЕЛИ (Мультивыбор одного или нескольких сотрудников + опция ручного ввода)
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Исполнитель",
+                                    text = if (selectedAssignees.size > 1) {
+                                        "Исполнители (выбрано: ${selectedAssignees.size})"
+                                    } else {
+                                        "Исполнители (можно выбрать несколько)"
+                                    },
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                TextButton(
-                                    onClick = { useCustomAssigneeName = !useCustomAssigneeName },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                                    modifier = Modifier
-                                        .height(28.dp)
-                                        .testTag(if (useCustomAssigneeName) "assignee_mode_dropdown_chip" else "custom_assignee_chip")
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Text(
-                                        text = if (useCustomAssigneeName) {
-                                            "Выбрать из списка (${assignees.size})"
-                                        } else {
-                                            "+ Ввести ФИО вручную"
-                                        },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
+                                    if (!useCustomAssigneeName && assignees.size > 1) {
+                                        TextButton(
+                                            onClick = {
+                                                if (selectedAssigneeIds.size == assignees.size) {
+                                                    selectedAssigneeIds.clear()
+                                                    selectedAssigneeIds.add(assignees.first().id)
+                                                } else {
+                                                    selectedAssigneeIds.clear()
+                                                    selectedAssigneeIds.addAll(assignees.map { it.id })
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                            modifier = Modifier
+                                                .height(28.dp)
+                                                .testTag("select_all_assignees_button")
+                                        ) {
+                                            Text(
+                                                text = if (selectedAssigneeIds.size == assignees.size) "Сбросить" else "Все (${assignees.size})",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                    TextButton(
+                                        onClick = { useCustomAssigneeName = !useCustomAssigneeName },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                        modifier = Modifier
+                                            .height(28.dp)
+                                            .testTag(if (useCustomAssigneeName) "assignee_mode_dropdown_chip" else "custom_assignee_chip")
+                                    ) {
+                                        Text(
+                                            text = if (useCustomAssigneeName) {
+                                                "Из списка (${assignees.size})"
+                                            } else {
+                                                "+ Ввести ФИО"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
                                 }
                             }
 
@@ -2826,8 +2951,9 @@ fun CreateTaskDialog(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                                         ) {
-                                            // Круглый аватар с инициалами сотрудника
-                                            val initials = remember(selectedAssignee.fullName) {
+                                            val avatarBadgeText = if (selectedAssignees.size > 1) {
+                                                "${selectedAssignees.size}"
+                                            } else {
                                                 selectedAssignee.fullName
                                                     .split(" ")
                                                     .filter { it.isNotBlank() }
@@ -2842,7 +2968,7 @@ fun CreateTaskDialog(
                                             ) {
                                                 Box(contentAlignment = Alignment.Center) {
                                                     Text(
-                                                        text = initials,
+                                                        text = avatarBadgeText,
                                                         style = MaterialTheme.typography.labelMedium,
                                                         fontWeight = FontWeight.Bold,
                                                         color = MaterialTheme.colorScheme.primary
@@ -2852,15 +2978,19 @@ fun CreateTaskDialog(
 
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(
-                                                    text = selectedAssignee.fullName,
+                                                    text = selectedAssignees.joinToString(", ") { it.fullName },
                                                     style = MaterialTheme.typography.bodyMedium,
                                                     fontWeight = FontWeight.SemiBold,
                                                     color = MaterialTheme.colorScheme.onSurface,
-                                                    maxLines = 1,
+                                                    maxLines = 2,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                                 Text(
-                                                    text = "${selectedAssignee.position} • ${selectedAssignee.role.titleRu}",
+                                                    text = if (selectedAssignees.size > 1) {
+                                                        "Задача упадёт всем выбранным исполнителям (${selectedAssignees.size} чел.)"
+                                                    } else {
+                                                        "${selectedAssignee.position} • ${selectedAssignee.role.titleRu}"
+                                                    },
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     maxLines = 1,
@@ -2877,28 +3007,13 @@ fun CreateTaskDialog(
                                         onDismissRequest = { assigneeDropdownExpanded = false }
                                     ) {
                                         assignees.forEach { emp ->
-                                            val empInitials = emp.fullName
-                                                .split(" ")
-                                                .filter { it.isNotBlank() }
-                                                .take(2)
-                                                .joinToString("") { it.take(1).uppercase() }
-                                                .ifBlank { "ИС" }
+                                            val isChecked = selectedAssigneeIds.contains(emp.id)
                                             DropdownMenuItem(
                                                 leadingIcon = {
-                                                    Surface(
-                                                        shape = CircleShape,
-                                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                                                        modifier = Modifier.size(32.dp)
-                                                    ) {
-                                                        Box(contentAlignment = Alignment.Center) {
-                                                            Text(
-                                                                text = empInitials,
-                                                                style = MaterialTheme.typography.labelSmall,
-                                                                fontWeight = FontWeight.Bold,
-                                                                color = MaterialTheme.colorScheme.primary
-                                                            )
-                                                        }
-                                                    }
+                                                    Checkbox(
+                                                        checked = isChecked,
+                                                        onCheckedChange = null
+                                                    )
                                                 },
                                                 text = {
                                                     Column {
@@ -2915,9 +3030,14 @@ fun CreateTaskDialog(
                                                     }
                                                 },
                                                 onClick = {
-                                                    selectedAssignee = emp
+                                                    if (isChecked) {
+                                                        if (selectedAssigneeIds.size > 1) {
+                                                            selectedAssigneeIds.remove(emp.id)
+                                                        }
+                                                    } else {
+                                                        selectedAssigneeIds.add(emp.id)
+                                                    }
                                                     useCustomAssigneeName = false
-                                                    assigneeDropdownExpanded = false
                                                 },
                                                 modifier = Modifier.testTag("dropdown_assignee_${emp.id}")
                                             )
@@ -2926,7 +3046,19 @@ fun CreateTaskDialog(
                                         DropdownMenuItem(
                                             text = {
                                                 Text(
-                                                    text = "+ Ввести ФИО исполнителя вручную...",
+                                                    text = "✓ Готово (выбрано: ${selectedAssignees.size})",
+                                                    color = Color(0xFF10B981),
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            },
+                                            onClick = {
+                                                assigneeDropdownExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = "+ Ввести ФИО исполнителей вручную...",
                                                     color = MaterialTheme.colorScheme.primary,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
@@ -2939,12 +3071,55 @@ fun CreateTaskDialog(
                                         )
                                     }
                                 }
+
+                                // Компактные чипы быстрого переключения исполнителей в один тап
+                                if (assignees.size > 1) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        assignees.forEach { emp ->
+                                            val isSelected = selectedAssigneeIds.contains(emp.id)
+                                            FilterChip(
+                                                selected = isSelected,
+                                                onClick = {
+                                                    if (isSelected) {
+                                                        if (selectedAssigneeIds.size > 1) {
+                                                            selectedAssigneeIds.remove(emp.id)
+                                                        }
+                                                    } else {
+                                                        selectedAssigneeIds.add(emp.id)
+                                                    }
+                                                },
+                                                label = {
+                                                    Text(
+                                                        text = emp.shortName,
+                                                        style = MaterialTheme.typography.labelSmall
+                                                    )
+                                                },
+                                                leadingIcon = if (isSelected) {
+                                                    {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Check,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                    }
+                                                } else null,
+                                                modifier = Modifier.testTag("quick_assignee_chip_${emp.id}")
+                                            )
+                                        }
+                                    }
+                                }
                             } else {
                                 TextField(
                                     value = customAssigneeName,
                                     onValueChange = { customAssigneeName = it },
                                     placeholder = {
-                                        Text("Введите ФИО сотрудника или бригаду (напр. Петров А.С.)...")
+                                        Text("Введите одно или несколько ФИО через запятую...")
                                     },
                                     trailingIcon = {
                                         if (customAssigneeName.isNotBlank()) {

@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.Badge
@@ -248,6 +249,23 @@ fun MainFeatureScreen(
     var showOrgSettingsDialog by remember { mutableStateOf(false) }
     var showThemeSettingsDialog by remember { mutableStateOf(false) }
 
+    val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
+    val visibleNavDestinations = remember(isWorkerRole) {
+        if (isWorkerRole) {
+            listOf(
+                MainNavDestination.TODAY,
+                MainNavDestination.STATS,
+                MainNavDestination.ADMIN
+            )
+        } else {
+            MainNavDestination.entries
+        }
+    }
+
+    if (currentTab !in visibleNavDestinations) {
+        currentTab = MainNavDestination.TODAY
+    }
+
     BackHandler(enabled = currentTab != MainNavDestination.TODAY) {
         currentTab = MainNavDestination.TODAY
     }
@@ -298,7 +316,11 @@ fun MainFeatureScreen(
                 TopAppBar(
                     title = {
                         Column(
-                            modifier = Modifier.clickable { showOrgSettingsDialog = true }
+                            modifier = if (!isWorkerRole) {
+                                Modifier.clickable { showOrgSettingsDialog = true }
+                            } else {
+                                Modifier
+                            }
                         ) {
                             Text(
                                 text = "Ежедневник • $siteName",
@@ -355,15 +377,17 @@ fun MainFeatureScreen(
                                     },
                                     modifier = Modifier.testTag("menu_theme_settings")
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Настройки организации и участка") },
-                                    leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
-                                    onClick = {
-                                        showTopOverflowMenu = false
-                                        showOrgSettingsDialog = true
-                                    },
-                                    modifier = Modifier.testTag("menu_org_settings")
-                                )
+                                if (!isWorkerRole) {
+                                    DropdownMenuItem(
+                                        text = { Text("Настройки организации и участка") },
+                                        leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
+                                        onClick = {
+                                            showTopOverflowMenu = false
+                                            showOrgSettingsDialog = true
+                                        },
+                                        modifier = Modifier.testTag("menu_org_settings")
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Перенести невыполненные на завтра") },
                                     leadingIcon = { Icon(Icons.Default.Update, contentDescription = null) },
@@ -372,22 +396,24 @@ fun MainFeatureScreen(
                                         viewModel.triggerEndOfDayCarryover()
                                     }
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Сформировать план / отчёт") },
-                                    leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
-                                    onClick = {
-                                        showTopOverflowMenu = false
-                                        currentTab = MainNavDestination.REPORTING
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Персонал и роли") },
-                                    leadingIcon = { Icon(Icons.Default.AdminPanelSettings, contentDescription = null) },
-                                    onClick = {
-                                        showTopOverflowMenu = false
-                                        currentTab = MainNavDestination.ADMIN
-                                    }
-                                )
+                                if (!isWorkerRole) {
+                                    DropdownMenuItem(
+                                        text = { Text("Сформировать план / отчёт") },
+                                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
+                                        onClick = {
+                                            showTopOverflowMenu = false
+                                            currentTab = MainNavDestination.REPORTING
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Персонал и роли") },
+                                        leadingIcon = { Icon(Icons.Default.AdminPanelSettings, contentDescription = null) },
+                                        onClick = {
+                                            showTopOverflowMenu = false
+                                            currentTab = MainNavDestination.ADMIN
+                                        }
+                                    )
+                                }
                                 HorizontalDivider()
                                 DropdownMenuItem(
                                     text = { Text("Выйти из учётной записи") },
@@ -442,7 +468,17 @@ fun MainFeatureScreen(
                         containerColor = MaterialTheme.colorScheme.surface,
                         tonalElevation = 0.dp
                     ) {
-                        MainNavDestination.entries.forEach { dest ->
+                        visibleNavDestinations.forEach { dest ->
+                            val tabTitle = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                                "Профиль"
+                            } else {
+                                dest.titleRu
+                            }
+                            val tabIcon = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                                Icons.Default.Person
+                            } else {
+                                dest.icon
+                            }
                             NavigationBarItem(
                                 selected = currentTab == dest,
                                 onClick = { currentTab = dest },
@@ -452,22 +488,22 @@ fun MainFeatureScreen(
                                             BadgedBox(
                                                 badge = { Badge { Text(reviewQueueCount.toString()) } }
                                             ) {
-                                                Icon(dest.icon, contentDescription = dest.titleRu)
+                                                Icon(tabIcon, contentDescription = tabTitle)
                                             }
                                         }
-                                        dest == MainNavDestination.ADMIN && pendingMembersCount > 0 -> {
+                                        dest == MainNavDestination.ADMIN && !isWorkerRole && pendingMembersCount > 0 -> {
                                             BadgedBox(
                                                 badge = { Badge { Text(pendingMembersCount.toString()) } }
                                             ) {
-                                                Icon(dest.icon, contentDescription = dest.titleRu)
+                                                Icon(tabIcon, contentDescription = tabTitle)
                                             }
                                         }
                                         else -> {
-                                            Icon(dest.icon, contentDescription = dest.titleRu)
+                                            Icon(tabIcon, contentDescription = tabTitle)
                                         }
                                     }
                                 },
-                                label = { Text(dest.titleRu) },
+                                label = { Text(tabTitle) },
                                 modifier = Modifier.testTag("nav_${dest.route}")
                             )
                         }
@@ -482,12 +518,22 @@ fun MainFeatureScreen(
             ) {
                 if (isWideScreen) {
                     NavigationRail(modifier = Modifier.fillMaxHeight()) {
-                        MainNavDestination.entries.forEach { dest ->
+                        visibleNavDestinations.forEach { dest ->
+                            val tabTitle = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                                "Профиль"
+                            } else {
+                                dest.titleRu
+                            }
+                            val tabIcon = if (dest == MainNavDestination.ADMIN && isWorkerRole) {
+                                Icons.Default.Person
+                            } else {
+                                dest.icon
+                            }
                             NavigationRailItem(
                                 selected = currentTab == dest,
                                 onClick = { currentTab = dest },
-                                icon = { Icon(dest.icon, contentDescription = dest.titleRu) },
-                                label = { Text(dest.titleRu) },
+                                icon = { Icon(tabIcon, contentDescription = tabTitle) },
+                                label = { Text(tabTitle) },
                                 modifier = Modifier.testTag("rail_${dest.route}")
                             )
                         }
@@ -609,6 +655,8 @@ fun MainFeatureScreen(
                             StatisticsDashboardScreen(
                                 activeEmployee = activeEmployee,
                                 stats = stats,
+                                allTasks = roleVisibleTasks,
+                                currentEpochDay = currentEpochDay,
                                 onExportStats = { fmt ->
                                     val statTpl = ReportTemplateDocument(
                                         id = "tpl_stats_export",
@@ -975,6 +1023,7 @@ private fun TodayTasksContent(
                             onSelectDate = onSelectCalendarDate,
                             onCreateTaskForDate = onOpenCreateDialogForDate,
                             onOpenReportingTab = onOpenReportingTab,
+                            canAccessReporting = activeEmployee.role != CorporateRole.WORKER,
                             onTaskClick = onTaskClick
                         )
                     }
@@ -1289,6 +1338,7 @@ private fun CorporateCalendarSection(
     onSelectDate: (Long) -> Unit,
     onCreateTaskForDate: (Long) -> Unit,
     onOpenReportingTab: () -> Unit,
+    canAccessReporting: Boolean = true,
     onTaskClick: (TaskDocument) -> Unit = {}
 ) {
     var expandedMonthView by remember { mutableStateOf(true) }
@@ -1661,8 +1711,10 @@ private fun CorporateCalendarSection(
                             onClick = {
                                 if (!isCalendarFilterActive) {
                                     onSelectDate(selectedCalendarEpochDay)
-                                } else {
+                                } else if (canAccessReporting) {
                                     onOpenReportingTab()
+                                } else {
+                                    onCreateTaskForDate(selectedCalendarEpochDay)
                                 }
                             },
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -1672,7 +1724,11 @@ private fun CorporateCalendarSection(
                                 .height(36.dp)
                         ) {
                             Text(
-                                text = if (!isCalendarFilterActive) "Показать задачи за $formattedSelectedDate" else "Перейти к отчёту за $formattedSelectedDate",
+                                text = when {
+                                    !isCalendarFilterActive -> "Показать задачи за $formattedSelectedDate"
+                                    canAccessReporting -> "Перейти к отчёту за $formattedSelectedDate"
+                                    else -> "+ Добавить задачу на $formattedSelectedDate"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,

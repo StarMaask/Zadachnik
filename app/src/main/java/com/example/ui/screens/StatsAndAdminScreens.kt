@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -54,6 +58,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
@@ -70,9 +75,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -84,12 +91,18 @@ import com.example.data.model.CorporateRole
 import com.example.data.model.ExportFormat
 import com.example.data.model.SiteMemberDocument
 import com.example.data.model.StatisticsSummary
+import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
 import com.example.data.model.TaskStatus
 import com.example.data.model.WorkGroup
 import com.example.data.seed.CorporateSeedData
+import com.example.domain.reporting.ReportDocumentGenerator
 import com.example.ui.auth.SiteSelectionDialog
 import com.example.ui.components.TaskItemCard
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.format.TextStyle
+import java.util.Locale
 
 @Composable
 fun ApprovalsQueueScreen(
@@ -247,25 +260,185 @@ fun ApprovalsQueueScreen(
     }
 }
 
+enum class StatsPeriodFilter(
+    val code: String,
+    val titleRu: String,
+    val descriptionRu: String
+) {
+    DAY("DAY", "За день", "Текущая смена"),
+    WEEK("WEEK", "За неделю", "За 7 дней"),
+    MONTH("MONTH", "За месяц", "Текущий месяц"),
+    YEAR("YEAR", "За год", "Текущий год")
+}
+
+private data class VolumeUnitSummary(
+    val unit: String,
+    val completedVolume: Double,
+    val targetVolume: Double
+) {
+    val percent: Int
+        get() = if (targetVolume <= 0.0) 100 else ((completedVolume / targetVolume) * 100.0).toInt().coerceIn(0, 100)
+}
+
 @Composable
 fun StatisticsDashboardScreen(
     activeEmployee: CorporateEmployee,
     stats: StatisticsSummary,
+    allTasks: List<TaskDocument> = emptyList(),
+    currentEpochDay: Long = LocalDate.now().toEpochDay(),
     onExportStats: (ExportFormat) -> Unit
 ) {
+    val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
+    var selectedPeriod by remember { mutableStateOf(StatsPeriodFilter.MONTH) }
+
+    val currentLocalDate = remember(currentEpochDay) { LocalDate.ofEpochDay(currentEpochDay) }
+    val ruLocale = remember { Locale.forLanguageTag("ru-RU") }
+
+    val periodDateRangeLabel = remember(selectedPeriod, currentEpochDay, currentLocalDate, ruLocale) {
+        when (selectedPeriod) {
+            StatsPeriodFilter.DAY -> {
+                "Смена за ${ReportDocumentGenerator.formatEpochDay(currentEpochDay)}"
+            }
+            StatsPeriodFilter.WEEK -> {
+                val startDay = currentEpochDay - 6L
+                "${ReportDocumentGenerator.formatEpochDay(startDay)} — ${ReportDocumentGenerator.formatEpochDay(currentEpochDay)}"
+            }
+            StatsPeriodFilter.MONTH -> {
+                val monthName = currentLocalDate.month.getDisplayName(TextStyle.FULL_STANDALONE, ruLocale)
+                    .replaceFirstChar { if (it.isLowerCase()) it.titlecase(ruLocale) else it.toString() }
+                "$monthName ${currentLocalDate.year} г."
+            }
+            StatsPeriodFilter.YEAR -> {
+                "${currentLocalDate.year} год"
+            }
+        }
+    }
+
+    // Для рабочего берём строго его личные задачи; для руководства/ИТР — задачи в рамках области видимости
+    val baseScopedTasks = remember(allTasks, activeEmployee, isWorkerRole) {
+        val nonArchived = allTasks.filter { it.taskStatus != TaskStatus.ARCHIVED }
+        if (isWorkerRole) {
+            nonArchived.filter { it.isAssignedToEmployee(activeEmployee) }
+        } else {
+            nonArchived
+        }
+    }
+
+    val periodTasks = remember(baseScopedTasks, selectedPeriod, currentEpochDay, currentLocalDate) {
+        baseScopedTasks.filter { task ->
+            val taskDate = LocalDate.ofEpochDay(task.dueDateEpochDay)
+            when (selectedPeriod) {
+                StatsPeriodFilter.DAY -> task.dueDateEpochDay == currentEpochDay
+                StatsPeriodFilter.WEEK -> task.dueDateEpochDay in (currentEpochDay - 6L)..(currentEpochDay + 1L)
+                StatsPeriodFilter.MONTH -> {
+                    taskDate.year == currentLocalDate.year && taskDate.monthValue == currentLocalDate.monthValue
+                }
+                StatsPeriodFilter.YEAR -> taskDate.year == currentLocalDate.year
+            }
+        }
+    }
+
+    // Расширенные показатели за выбранный период
+    val totalAssigned = periodTasks.size
+    val approvedCount = periodTasks.count { it.taskStatus == TaskStatus.APPROVED }
+    val onReviewCount = periodTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
+    val completedOrReviewCount = approvedCount + onReviewCount
+    val inProgressCount = periodTasks.count {
+        it.taskStatus == TaskStatus.IN_PROGRESS || it.taskStatus == TaskStatus.NEW
+    }
+    val rejectedCount = periodTasks.count { it.taskStatus == TaskStatus.REJECTED }
+    val overdueCount = periodTasks.count { it.taskStatus == TaskStatus.OVERDUE }
+    val totalCarryovers = periodTasks.sumOf { it.carryoverCount.toInt() }
+    val firstTimePassCount = periodTasks.count {
+        (it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ON_REVIEW) &&
+            it.rejectionReason.isNullOrBlank() &&
+            it.carryoverCount == 0L
+    }
+    val firstTimePassRate = if (completedOrReviewCount == 0) {
+        100
+    } else {
+        ((firstTimePassCount * 100.0) / completedOrReviewCount).toInt().coerceIn(0, 100)
+    }
+
+    val tasksWithPhotosCount = periodTasks.count { it.photoItems.isNotEmpty() }
+    val totalPhotosCount = periodTasks.sumOf { it.photoItems.size }
+    val photoRequiredTasks = periodTasks.filter { it.requiresPhotoReport }
+    val photoCompliancePercent = if (photoRequiredTasks.isEmpty()) {
+        100
+    } else {
+        ((photoRequiredTasks.count { it.hasEnoughPhotos() } * 100.0) / photoRequiredTasks.size).toInt().coerceIn(0, 100)
+    }
+
+    val allPeriodSubtasks = remember(periodTasks) {
+        periodTasks.flatMap { it.decodedSubtasks() }
+    }
+    val totalSubtasksCount = allPeriodSubtasks.size
+    val doneSubtasksCount = allPeriodSubtasks.count { it.isDone }
+    val subtasksCompletionPercent = if (totalSubtasksCount == 0) {
+        if (completedOrReviewCount > 0 && totalAssigned > 0) ((completedOrReviewCount * 100) / totalAssigned) else 0
+    } else {
+        ((doneSubtasksCount * 100.0) / totalSubtasksCount).toInt().coerceIn(0, 100)
+    }
+
+    val avgTaskProgressPercent = if (periodTasks.isEmpty()) {
+        0
+    } else {
+        periodTasks.map { it.completionPercent() }.average().toInt().coerceIn(0, 100)
+    }
+
+    val personalDisciplineScore = remember(
+        totalAssigned,
+        completedOrReviewCount,
+        overdueCount,
+        rejectedCount,
+        totalCarryovers,
+        photoCompliancePercent
+    ) {
+        if (totalAssigned == 0) {
+            100
+        } else {
+            val completionRatio = (completedOrReviewCount.toDouble() / totalAssigned.toDouble()) * 70.0
+            val photoBonus = (photoCompliancePercent / 100.0) * 30.0
+            val penalty = (overdueCount * 10) + (rejectedCount * 7) + (totalCarryovers * 4)
+            (completionRatio + photoBonus - penalty).toInt().coerceIn(0, 100)
+        }
+    }
+
+    // Физические объёмы по единицам измерения за выбранный период
+    val volumeSummaries = remember(periodTasks) {
+        val map = linkedMapOf<String, Pair<Double, Double>>()
+        periodTasks.forEach { task ->
+            val subs = task.decodedSubtasks()
+            if (subs.isNotEmpty()) {
+                subs.forEach { sub ->
+                    val u = sub.effectiveUnit.trim().ifBlank { "шт" }
+                    val prev = map[u] ?: (0.0 to 0.0)
+                    map[u] = (prev.first + sub.effectiveCompletedVolume) to (prev.second + sub.effectiveTargetVolume)
+                }
+            } else if (task.effectiveTargetVolume > 0.0) {
+                val u = task.effectiveVolumeUnit.trim().ifBlank { "шт" }
+                val prev = map[u] ?: (0.0 to 0.0)
+                map[u] = (prev.first + task.effectiveCompletedVolume) to (prev.second + task.effectiveTargetVolume)
+            }
+        }
+        map.entries.map { (unit, pair) ->
+            VolumeUnitSummary(unit = unit, completedVolume = pair.first, targetVolume = pair.second)
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .testTag("statistics_dashboard_list"),
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Header & quick export
+        // 1. Шапка сводки (для Рабочего — только личная сводка без групповой выгрузки)
         item {
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -275,167 +448,471 @@ fun StatisticsDashboardScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Сводная статистика",
-                            style = MaterialTheme.typography.titleSmall,
+                            text = if (isWorkerRole) "Моя личная сводка" else "Сводная статистика",
+                            style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = stats.roleScopeLabel,
+                            text = if (isWorkerRole) {
+                                "${activeEmployee.fullName} • ${activeEmployee.position.ifBlank { activeEmployee.role.titleRu }}"
+                            } else {
+                                stats.roleScopeLabel
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(
-                            onClick = { onExportStats(ExportFormat.PDF) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("PDF", style = MaterialTheme.typography.labelSmall)
+                        if (isWorkerRole && activeEmployee.groupName.isNotBlank()) {
+                            Text(
+                                text = "${activeEmployee.groupName} • ${activeEmployee.siteName}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
-                        OutlinedButton(
-                            onClick = { onExportStats(ExportFormat.XLSX) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("XLSX", style = MaterialTheme.typography.labelSmall)
+                    }
+                    if (!isWorkerRole) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                onClick = { onExportStats(ExportFormat.PDF) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PDF", style = MaterialTheme.typography.labelSmall)
+                            }
+                            OutlinedButton(
+                                onClick = { onExportStats(ExportFormat.XLSX) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("XLSX", style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Compact KPI Table
+        // 2. Переключатель периода: За текущий день | За неделю | За месяц | За год
         item {
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text(
-                        text = "Показатели выполнения задач",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    StatTableRow("Всего поставлено задач", "${stats.totalAssigned}", MaterialTheme.colorScheme.onSurface)
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-                    StatTableRow("Выполнено и подтверждено", "${stats.approvedCount}", Color(0xFF10B981))
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-                    StatTableRow("В работе / На проверке", "${stats.inProgressCount} / ${stats.onReviewCount}", Color(0xFF2563EB))
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-                    StatTableRow("Просрочено / Переносов", "${stats.overdueCount} / ${stats.totalCarryovers}", Color(0xFFE11D48))
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-                    StatTableRow("Задачи с фотоотчётом", "${stats.tasksWithPhotosCount} (${stats.photoCompliancePercent}%)", MaterialTheme.colorScheme.primary)
-                }
-            }
-        }
-
-        // Employee Table
-        item {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text(
-                        text = "Таблица по сотрудникам",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Table Header
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Сотрудник",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1.6f)
+                            text = "Период статистики",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Всего",
+                            text = periodDateRangeLabel,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(0.6f)
-                        )
-                        Text(
-                            text = "Сдано",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(0.6f)
-                        )
-                        Text(
-                            text = "Рейтинг",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(0.7f)
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
-                    HorizontalDivider()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        StatsPeriodFilter.entries.forEach { period ->
+                            val isSelected = selectedPeriod == period
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { selectedPeriod = period }
+                                    .testTag("stats_period_${period.code}")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = period.titleRu,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.onPrimary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-                    stats.employeeStats.forEach { empStat ->
+        // 3. Персональный индекс эффективности и 4 ключевые KPI-карточки за период
+        item {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (isWorkerRole) {
+                                    "Личный рейтинг выполнения (${selectedPeriod.titleRu.lowercase()})"
+                                } else {
+                                    "Индекс выполнения за период (${selectedPeriod.titleRu.lowercase()})"
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Средний прогресс по задачам: $avgTaskProgressPercent% • Сдача без замечаний: $firstTimePassRate%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF10B981).copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                text = "$personalDisciplineScore%",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFF10B981),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    LinearProgressIndicator(
+                        progress = { (avgTaskProgressPercent / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = Color(0xFF10B981),
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+
+                    // Сетка 2x2 ключевых показателей
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        PersonalKpiTile(
+                            title = "Выполнено задач",
+                            mainValue = "$completedOrReviewCount из $totalAssigned",
+                            subValue = "Принято: $approvedCount • На проверке: $onReviewCount",
+                            accentColor = Color(0xFF10B981),
+                            modifier = Modifier.weight(1f)
+                        )
+                        PersonalKpiTile(
+                            title = "Пункты чек-листа",
+                            mainValue = "$doneSubtasksCount из $totalSubtasksCount",
+                            subValue = "Выполнение: $subtasksCompletionPercent%",
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        PersonalKpiTile(
+                            title = "Фотофиксация СМР",
+                            mainValue = "$totalPhotosCount фото",
+                            subValue = "Задач с фото: $tasksWithPhotosCount ($photoCompliancePercent%)",
+                            accentColor = Color(0xFF2563EB),
+                            modifier = Modifier.weight(1f)
+                        )
+                        PersonalKpiTile(
+                            title = "Дисциплина сроков",
+                            mainValue = "$firstTimePassRate% с 1-го раза",
+                            subValue = "Просрочено: $overdueCount • Переносов: $totalCarryovers",
+                            accentColor = if (overdueCount == 0 && rejectedCount == 0) Color(0xFF10B981) else Color(0xFFD97706),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4. Выполненный физический объём работ по единицам измерения за выбранный период
+        if (volumeSummaries.isNotEmpty()) {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = if (isWorkerRole) {
+                                "Мой выполненный объём работ (${selectedPeriod.titleRu.lowercase()})"
+                            } else {
+                                "Выполненный физический объём (${selectedPeriod.titleRu.lowercase()})"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        volumeSummaries.forEach { volItem ->
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Единица измерения: ${volItem.unit}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "${SubtaskItem.formatVolumeNumber(volItem.completedVolume)} / ${SubtaskItem.formatVolumeNumber(volItem.targetVolume)} ${volItem.unit} (${volItem.percent}%)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (volItem.percent >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                LinearProgressIndicator(
+                                    progress = { (volItem.percent / 100f).coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = if (volItem.percent >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Подробная таблица показателей за выбранный период
+        item {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = if (isWorkerRole) {
+                            "Детальные личные показатели (${selectedPeriod.titleRu.lowercase()})"
+                        } else {
+                            "Детальные показатели выполнения (${selectedPeriod.titleRu.lowercase()})"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    StatTableRow("Всего назначено задач за период", "$totalAssigned", MaterialTheme.colorScheme.onSurface)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("Выполнено и подтверждено", "$approvedCount", Color(0xFF10B981))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("Отправлено на проверку", "$onReviewCount", Color(0xFF2563EB))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("Сейчас в работе", "$inProgressCount", MaterialTheme.colorScheme.primary)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("Сдано с первого раза (без возвратов)", "$firstTimePassCount ($firstTimePassRate%)", Color(0xFF10B981))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("На доработке / Просрочено", "$rejectedCount / $overdueCount", Color(0xFFE11D48))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("Переносов на следующую смену", "$totalCarryovers", Color(0xFFD97706))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("Закрыто пунктов чек-листа", "$doneSubtasksCount из $totalSubtasksCount ($subtasksCompletionPercent%)", MaterialTheme.colorScheme.onSurface)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    StatTableRow("Прикреплено фото / Задач с фото", "$totalPhotosCount шт. / $tasksWithPhotosCount ($photoCompliancePercent%)", MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+
+        // 6. Таблица по сотрудникам — показывается ТОЛЬКО для ИТР / Руководителя / Администратора
+        if (!isWorkerRole) {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Таблица по сотрудникам (${selectedPeriod.titleRu.lowercase()})",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Column(modifier = Modifier.weight(1.6f)) {
-                                Text(
-                                    text = empStat.employee.shortName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                val subMeta = buildString {
-                                    append(empStat.employee.role.titleRu)
-                                    if (empStat.employee.personnelNumber.isNotBlank()) {
-                                        append(" • Таб. № ${empStat.employee.personnelNumber}")
-                                    }
-                                }
-                                Text(
-                                    text = subMeta,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
                             Text(
-                                text = "${empStat.assigned}",
-                                style = MaterialTheme.typography.bodySmall,
+                                text = "Сотрудник",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1.6f)
+                            )
+                            Text(
+                                text = "Всего",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(0.6f)
                             )
                             Text(
-                                text = "${empStat.approved}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF10B981),
-                                fontWeight = FontWeight.SemiBold,
+                                text = "Сдано",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(0.6f)
                             )
                             Text(
-                                text = "${empStat.disciplineScore}%",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                text = "Рейтинг",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.weight(0.7f)
                             )
                         }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        HorizontalDivider()
+
+                        stats.employeeStats.forEach { empStat ->
+                            val empPeriodTasks = periodTasks.filter { it.isAssignedToEmployee(empStat.employee) }
+                            val empAssigned = empPeriodTasks.size
+                            val empDone = empPeriodTasks.count {
+                                it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ON_REVIEW
+                            }
+                            val empScore = if (empAssigned == 0) {
+                                empStat.disciplineScore
+                            } else {
+                                ((empDone * 100.0) / empAssigned).toInt().coerceIn(0, 100)
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1.6f)) {
+                                    Text(
+                                        text = empStat.employee.shortName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    val subMeta = buildString {
+                                        append(empStat.employee.role.titleRu)
+                                        if (empStat.employee.personnelNumber.isNotBlank()) {
+                                            append(" • Таб. № ${empStat.employee.personnelNumber}")
+                                        }
+                                    }
+                                    Text(
+                                        text = subMeta,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    text = "$empAssigned",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(0.6f)
+                                )
+                                Text(
+                                    text = "$empDone",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF10B981),
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(0.6f)
+                                )
+                                Text(
+                                    text = "$empScore%",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(0.7f)
+                                )
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PersonalKpiTile(
+    title: String,
+    mainValue: String,
+    subValue: String,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = mainValue,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = accentColor
+            )
+            Text(
+                text = subValue,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -504,8 +981,13 @@ fun AdminAndAuditScreen(
     onSwitchPersona: (String) -> Unit,
     onSignOut: () -> Unit
 ) {
-    LaunchedEffect(Unit) {
-        onRefreshSiteMembers(false)
+    val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
+    val canManageUsers = activeEmployee.role.isAdminOrHead
+
+    LaunchedEffect(canManageUsers) {
+        if (canManageUsers) {
+            onRefreshSiteMembers(false)
+        }
     }
 
     val pendingMembers = remember(siteMembers) {
@@ -514,7 +996,51 @@ fun AdminAndAuditScreen(
     val activeApprovedMembers = remember(siteMembers) {
         siteMembers.filter { !it.isPendingRole && !it.isRejected }
     }
-    val canManageUsers = activeEmployee.role.isAdminOrHead
+
+    val currentSelfMember = remember(activeApprovedMembers, activeEmployee, siteName) {
+        activeApprovedMembers.firstOrNull {
+            it.memberId == activeEmployee.id ||
+                it.id == activeEmployee.id ||
+                (activeEmployee.email.isNotBlank() && it.email.equals(activeEmployee.email, ignoreCase = true))
+        } ?: SiteMemberDocument(
+            id = activeEmployee.id,
+            memberId = activeEmployee.id,
+            email = activeEmployee.email,
+            fullName = activeEmployee.fullName,
+            role = activeEmployee.role.code,
+            groupId = activeEmployee.groupId,
+            groupName = activeEmployee.groupName,
+            position = activeEmployee.position,
+            personnelNumber = activeEmployee.personnelNumber,
+            siteName = activeEmployee.siteName.ifBlank { siteName },
+            phone = activeEmployee.phone
+        ).let { base ->
+            base.copy(
+                approvedByName = base.encodeApprovedByForFirestore(
+                    approverName = activeEmployee.fullName,
+                    explicitPersonnelNumber = activeEmployee.personnelNumber,
+                    explicitSiteName = activeEmployee.siteName.ifBlank { siteName },
+                    explicitPhone = activeEmployee.phone
+                )
+            )
+        }
+    }
+
+    // Поля быстрого личного редактирования (только по себе)
+    val selfSnapshotKey = remember(currentSelfMember, activeEmployee) {
+        "${activeEmployee.id}_${activeEmployee.fullName}_${activeEmployee.position}_${activeEmployee.personnelNumber}_${activeEmployee.siteName}_${activeEmployee.groupName}_${activeEmployee.phone}_${activeEmployee.email}"
+    }
+    var selfFullName by remember(selfSnapshotKey) { mutableStateOf(activeEmployee.fullName) }
+    var selfPosition by remember(selfSnapshotKey) { mutableStateOf(activeEmployee.position.ifBlank { activeEmployee.role.titleRu }) }
+    var selfPersonnelNumber by remember(selfSnapshotKey) { mutableStateOf(activeEmployee.personnelNumber) }
+    var selfGroupName by remember(selfSnapshotKey) { mutableStateOf(activeEmployee.groupName) }
+    var selfSiteName by remember(selfSnapshotKey, siteName) {
+        mutableStateOf(activeEmployee.siteName.ifBlank { siteName })
+    }
+    var selfPhone by remember(selfSnapshotKey) { mutableStateOf(activeEmployee.phone) }
+    var selfEmail by remember(selfSnapshotKey) { mutableStateOf(activeEmployee.email) }
+    var selfSubdivisionExpanded by remember { mutableStateOf(false) }
+    var showSelfSiteDialog by remember { mutableStateOf(false) }
 
     var showPreRegisterForm by remember { mutableStateOf(false) }
     var showAuditLogSection by remember { mutableStateOf(false) }
@@ -540,121 +1066,117 @@ fun AdminAndAuditScreen(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Блок настроек наименования организации и участка
-        item {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+        // Блок настроек наименования организации и участка — только для Администратора / Руководителя / ИТР
+        if (!isWorkerRole) {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier = Modifier.padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Business,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Column {
-                            Text(
-                                text = organizationName,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Business,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
                             )
-                            Text(
-                                text = "Участок: $siteName",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Column {
+                                Text(
+                                    text = organizationName,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Участок: $siteName",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-                    }
-                    OutlinedButton(
-                        onClick = onOpenOrganizationSettings,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("edit_org_site_button")
-                    ) {
-                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Изменить", style = MaterialTheme.typography.labelMedium)
+                        if (canManageUsers) {
+                            OutlinedButton(
+                                onClick = onOpenOrganizationSettings,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.testTag("edit_org_site_button")
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Изменить", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Compact Profile Header Row (с кнопкой редактирования своей карточки сотрудника)
+        // Карточка своего профиля (доступна каждому пользователю для редактирования данных по себе)
         item {
-            val currentSelfMember = remember(activeApprovedMembers, activeEmployee, siteName) {
-                activeApprovedMembers.firstOrNull {
-                    it.memberId == activeEmployee.id ||
-                        it.id == activeEmployee.id ||
-                        (activeEmployee.email.isNotBlank() && it.email.equals(activeEmployee.email, ignoreCase = true))
-                } ?: SiteMemberDocument(
-                    id = activeEmployee.id,
-                    memberId = activeEmployee.id,
-                    email = activeEmployee.email,
-                    fullName = activeEmployee.fullName,
-                    role = activeEmployee.role.code,
-                    groupId = activeEmployee.groupId,
-                    groupName = activeEmployee.groupName,
-                    position = activeEmployee.position,
-                    personnelNumber = activeEmployee.personnelNumber,
-                    siteName = activeEmployee.siteName.ifBlank { siteName },
-                    phone = activeEmployee.phone
-                ).let { base ->
-                    base.copy(
-                        approvedByName = base.encodeApprovedByForFirestore(
-                            approverName = activeEmployee.fullName,
-                            explicitPersonnelNumber = activeEmployee.personnelNumber,
-                            explicitSiteName = activeEmployee.siteName.ifBlank { siteName },
-                            explicitPhone = activeEmployee.phone
-                        )
-                    )
-                }
-            }
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
                     modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = activeEmployee.fullName,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            val profileMeta = buildString {
-                                append(activeEmployee.position.ifBlank { activeEmployee.role.titleRu })
-                                if (activeEmployee.personnelNumber.isNotBlank()) {
-                                    append(" • Таб. № ${activeEmployee.personnelNumber}")
-                                }
-                                if (activeEmployee.siteName.isNotBlank()) {
-                                    append(" • ${activeEmployee.siteName}")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
                                 }
                             }
-                            Text(
-                                text = profileMeta,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isWorkerRole) "Личный профиль работника" else activeEmployee.fullName,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                val profileMeta = buildString {
+                                    append(activeEmployee.position.ifBlank { activeEmployee.role.titleRu })
+                                    if (activeEmployee.personnelNumber.isNotBlank()) {
+                                        append(" • Таб. № ${activeEmployee.personnelNumber}")
+                                    }
+                                    if (activeEmployee.siteName.isNotBlank()) {
+                                        append(" • ${activeEmployee.siteName}")
+                                    }
+                                }
+                                Text(
+                                    text = profileMeta,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                     Row(
@@ -670,7 +1192,10 @@ fun AdminAndAuditScreen(
                         ) {
                             Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Карточка сотрудника", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                text = if (isWorkerRole) "Редактировать в окне" else "Мои личные данные",
+                                style = MaterialTheme.typography.labelMedium
+                            )
                         }
                         OutlinedButton(
                             onClick = onSignOut,
@@ -686,8 +1211,223 @@ fun AdminAndAuditScreen(
             }
         }
 
-        // SECTION 1: Pending Role Assignment Queue
-        if (pendingMembers.isNotEmpty() || canManageUsers) {
+        // Для Рабочего: развёрнутая персональная форма редактирования ТОЛЬКО своих личных данных
+        if (isWorkerRole) {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Мои данные (редактирование личной карточки)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Вы можете изменить свои контактные и учётные данные. Изменения сразу отразятся в сменных заданиях и сводке.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        OutlinedTextField(
+                            value = selfFullName,
+                            onValueChange = { selfFullName = it },
+                            label = { Text("Моё ФИО *") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("worker_self_fullname_input")
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = selfPosition,
+                                onValueChange = { selfPosition = it },
+                                label = { Text("Должность / разряд") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .testTag("worker_self_position_input")
+                            )
+                            OutlinedTextField(
+                                value = selfPersonnelNumber,
+                                onValueChange = { selfPersonnelNumber = it },
+                                label = { Text("Табельный №") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .testTag("worker_self_tab_input")
+                            )
+                        }
+
+                        ExposedDropdownMenuBox(
+                            expanded = selfSubdivisionExpanded,
+                            onExpandedChange = { selfSubdivisionExpanded = !selfSubdivisionExpanded }
+                        ) {
+                            OutlinedTextField(
+                                value = selfGroupName,
+                                onValueChange = { selfGroupName = it },
+                                label = { Text("Моё подразделение / бригада") },
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = selfSubdivisionExpanded)
+                                },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .menuAnchor(MenuAnchorType.PrimaryEditable)
+                                    .fillMaxWidth()
+                            )
+                            ExposedDropdownMenu(
+                                expanded = selfSubdivisionExpanded,
+                                onDismissRequest = { selfSubdivisionExpanded = false }
+                            ) {
+                                availableSubdivisions.forEach { subItem ->
+                                    DropdownMenuItem(
+                                        text = { Text(subItem) },
+                                        onClick = {
+                                            selfGroupName = subItem
+                                            selfSubdivisionExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = selfSiteName,
+                                onValueChange = { selfSiteName = it },
+                                label = { Text("Строительный участок") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedButton(
+                                onClick = { showSelfSiteDialog = true }
+                            ) {
+                                Icon(Icons.Default.Apartment, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Выбрать")
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = selfPhone,
+                                onValueChange = { selfPhone = it },
+                                label = { Text("Контактный телефон") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("worker_self_phone_input")
+                            )
+                            OutlinedTextField(
+                                value = selfEmail,
+                                onValueChange = { selfEmail = it },
+                                label = { Text("Email") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1.2f)
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                val resolvedName = selfFullName.trim().ifBlank { activeEmployee.fullName.ifBlank { "Рабочий" } }
+                                onEditEmployeeDetails(
+                                    currentSelfMember,
+                                    resolvedName,
+                                    selfPosition.trim().ifBlank { activeEmployee.role.titleRu },
+                                    selfPersonnelNumber.trim(),
+                                    selfSiteName.trim().ifBlank { siteName },
+                                    selfGroupName.trim().ifBlank { "Основное подразделение" },
+                                    selfPhone.trim(),
+                                    selfEmail.trim(),
+                                    activeEmployee.role
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("worker_save_self_profile_button")
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Сохранить мои личные данные", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Разделы управления персоналом, заявками и журналом действий — ТОЛЬКО для ИТР / Руководителя / Администратора
+        if (!isWorkerRole) {
+            // SECTION 1: Pending Role Assignment Queue
+            if (pendingMembers.isNotEmpty() || canManageUsers) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (pendingMembers.isNotEmpty()) {
+                                "Ожидают подтверждения (${pendingMembers.size})"
+                            } else {
+                                "Заявки на назначение роли (0)"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = if (pendingMembers.isNotEmpty()) {
+                                Color(0xFFD97706)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        TextButton(
+                            onClick = { onRefreshSiteMembers(true) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.testTag("refresh_pending_members_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Обновить заявки",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Обновить заявки", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                if (pendingMembers.isNotEmpty()) {
+                    items(pendingMembers, key = { it.memberId.ifBlank { it.id } }) { pendingUser ->
+                        PendingUserRoleAssignmentCard(
+                            member = pendingUser,
+                            canManageRoles = canManageUsers,
+                            onAssignRole = { role, group, pos ->
+                                onAssignRoleToMember(pendingUser, role, group, pos)
+                            },
+                            onReject = { onRejectMemberAccess(pendingUser) }
+                        )
+                    }
+                }
+            }
+
+            // SECTION 2: Active Personnel Table + Submenu to Add Employee
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -695,430 +1435,398 @@ fun AdminAndAuditScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (pendingMembers.isNotEmpty()) {
-                            "Ожидают подтверждения (${pendingMembers.size})"
-                        } else {
-                            "Заявки на назначение роли (0)"
-                        },
+                        text = "Список сотрудников (${activeApprovedMembers.size})",
                         style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = if (pendingMembers.isNotEmpty()) {
-                            Color(0xFFD97706)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        fontWeight = FontWeight.Bold
                     )
-                    TextButton(
-                        onClick = { onRefreshSiteMembers(true) },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.testTag("refresh_pending_members_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Обновить заявки",
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Обновить заявки", style = MaterialTheme.typography.labelMedium)
+                    if (canManageUsers) {
+                        TextButton(
+                            onClick = { showPreRegisterForm = !showPreRegisterForm },
+                            modifier = Modifier.testTag("toggle_preregister_button")
+                        ) {
+                            Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (showPreRegisterForm) "Скрыть форму" else "Добавить сотрудника")
+                        }
                     }
                 }
             }
-            if (pendingMembers.isNotEmpty()) {
-                items(pendingMembers, key = { it.memberId.ifBlank { it.id } }) { pendingUser ->
-                    PendingUserRoleAssignmentCard(
-                        member = pendingUser,
-                        canManageRoles = canManageUsers,
-                        onAssignRole = { role, group, pos ->
-                            onAssignRoleToMember(pendingUser, role, group, pos)
-                        },
-                        onReject = { onRejectMemberAccess(pendingUser) }
-                    )
-                }
-            }
-        }
 
-        // SECTION 2: Active Personnel Table + Submenu to Add Employee
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Список сотрудников (${activeApprovedMembers.size})",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                if (canManageUsers) {
-                    TextButton(
-                        onClick = { showPreRegisterForm = !showPreRegisterForm },
-                        modifier = Modifier.testTag("toggle_preregister_button")
+            // Collapsible Add Employee Form
+            if (canManageUsers && showPreRegisterForm) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (showPreRegisterForm) "Скрыть форму" else "Добавить сотрудника")
-                    }
-                }
-            }
-        }
-
-        // Collapsible Add Employee Form
-        if (canManageUsers && showPreRegisterForm) {
-            item {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Новый сотрудник",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        OutlinedTextField(
-                            value = newEmpFullName,
-                            onValueChange = { newEmpFullName = it },
-                            label = { Text("ФИО сотрудника *") },
-                            singleLine = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("preregister_name_input")
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedTextField(
-                                value = newEmpPosition,
-                                onValueChange = { newEmpPosition = it },
-                                label = { Text("Должность") },
-                                singleLine = true,
-                                modifier = Modifier.weight(1.3f)
-                            )
-                            OutlinedTextField(
-                                value = newEmpPersonnelNumber,
-                                onValueChange = { newEmpPersonnelNumber = it },
-                                label = { Text("Таб. номер") },
-                                singleLine = true,
-                                modifier = Modifier.weight(0.9f)
-                            )
-                        }
-                        // Выпадающий список выбора подразделения
-                        ExposedDropdownMenuBox(
-                            expanded = preRegSubdivisionExpanded,
-                            onExpandedChange = { preRegSubdivisionExpanded = !preRegSubdivisionExpanded }
-                        ) {
-                            OutlinedTextField(
-                                value = newEmpSubdivision,
-                                onValueChange = { newEmpSubdivision = it },
-                                readOnly = true,
-                                label = { Text("Принадлежность к подразделению") },
-                                trailingIcon = {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = preRegSubdivisionExpanded)
-                                },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                                    .fillMaxWidth()
-                                    .testTag("preregister_subdivision_dropdown")
-                            )
-                            ExposedDropdownMenu(
-                                expanded = preRegSubdivisionExpanded,
-                                onDismissRequest = { preRegSubdivisionExpanded = false }
-                            ) {
-                                availableSubdivisions.forEach { subItem ->
-                                    DropdownMenuItem(
-                                        text = { Text(subItem) },
-                                        onClick = {
-                                            newEmpSubdivision = subItem
-                                            preRegSubdivisionExpanded = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        // Окно выбора принадлежности к участку
-                        OutlinedButton(
-                            onClick = { showPreRegSiteDialog = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("preregister_site_selector_button")
-                        ) {
-                            Icon(Icons.Default.Apartment, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Принадлежность к участку: ${newEmpSiteName.ifBlank { siteName }} (выбрать)",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = newEmpPhone,
-                                onValueChange = { newEmpPhone = it },
-                                label = { Text("Телефон") },
-                                singleLine = true,
-                                modifier = Modifier.weight(1f)
+                                text = "Новый сотрудник",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
                             )
                             OutlinedTextField(
-                                value = newEmpEmail,
-                                onValueChange = { newEmpEmail = it },
-                                label = { Text("Email (необязательно)") },
+                                value = newEmpFullName,
+                                onValueChange = { newEmpFullName = it },
+                                label = { Text("ФИО сотрудника *") },
                                 singleLine = true,
                                 modifier = Modifier
-                                    .weight(1.2f)
-                                    .testTag("preregister_email_input")
+                                    .fillMaxWidth()
+                                    .testTag("preregister_name_input")
                             )
-                        }
-
-                        Text("Роль:", style = MaterialTheme.typography.labelSmall)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            CorporateRole.entries.forEach { r ->
-                                FilterChip(
-                                    selected = newEmpRole == r,
-                                    onClick = { newEmpRole = r },
-                                    label = { Text(r.shortTitleRu) }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = newEmpPosition,
+                                    onValueChange = { newEmpPosition = it },
+                                    label = { Text("Должность") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1.3f)
+                                )
+                                OutlinedTextField(
+                                    value = newEmpPersonnelNumber,
+                                    onValueChange = { newEmpPersonnelNumber = it },
+                                    label = { Text("Таб. номер") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(0.9f)
                                 )
                             }
-                        }
-
-                        Button(
-                            onClick = {
-                                if (newEmpFullName.isNotBlank()) {
-                                    val resolvedGroup = CorporateSeedData.workGroups.firstOrNull {
-                                        it.name.equals(newEmpSubdivision, ignoreCase = true)
-                                    }?.copy(name = newEmpSubdivision)
-                                        ?: CorporateSeedData.workGroups.first().copy(name = newEmpSubdivision)
-
-                                    onPreRegisterEmployee(
-                                        newEmpEmail,
-                                        newEmpFullName,
-                                        newEmpPosition.ifBlank { newEmpRole.titleRu },
-                                        newEmpRole,
-                                        resolvedGroup,
-                                        newEmpPersonnelNumber,
-                                        newEmpSiteName.ifBlank { siteName },
-                                        newEmpPhone
-                                    )
-                                    newEmpFullName = ""
-                                    newEmpEmail = ""
-                                    newEmpPosition = ""
-                                    newEmpPersonnelNumber = ""
-                                    newEmpPhone = ""
-                                    showPreRegisterForm = false
-                                }
-                            },
-                            enabled = newEmpFullName.isNotBlank(),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("submit_preregister_button")
-                        ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Сохранить сотрудника")
-                        }
-                    }
-                }
-            }
-        }
-
-        // Staff Rows (Clean Table List with Edit button)
-        if (activeApprovedMembers.isEmpty()) {
-            item {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "В списке пока только ваша учётная запись. Добавьте сотрудников или дождитесь их входа.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(14.dp)
-                    )
-                }
-            }
-        } else {
-            items(activeApprovedMembers, key = { it.memberId.ifBlank { it.id } }) { member ->
-                val currentRole = member.parsedRoleOrNull ?: CorporateRole.WORKER
-                val memberKey = member.memberId.ifBlank { member.id }
-                val tabNumber = member.effectivePersonnelNumber
-                val empSite = member.effectiveSiteName.ifBlank { siteName }
-                val empPhone = member.effectivePhone
-
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = member.fullName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                val line1 = buildString {
-                                    append(member.position.ifBlank { currentRole.titleRu })
-                                    if (tabNumber.isNotBlank()) {
-                                        append(" • Таб. № $tabNumber")
-                                    }
-                                }
-                                Text(
-                                    text = line1,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                val line2 = buildString {
-                                    append("Участок: $empSite • ${member.groupName}")
-                                    if (empPhone.isNotBlank()) append(" • $empPhone")
-                                }
-                                Text(
-                                    text = line2,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = { memberBeingEdited = member },
+                            // Выпадающий список выбора подразделения
+                            ExposedDropdownMenuBox(
+                                expanded = preRegSubdivisionExpanded,
+                                onExpandedChange = { preRegSubdivisionExpanded = !preRegSubdivisionExpanded }
+                            ) {
+                                OutlinedTextField(
+                                    value = newEmpSubdivision,
+                                    onValueChange = { newEmpSubdivision = it },
+                                    readOnly = true,
+                                    label = { Text("Принадлежность к подразделению") },
+                                    trailingIcon = {
+                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = preRegSubdivisionExpanded)
+                                    },
+                                    singleLine = true,
                                     modifier = Modifier
-                                        .size(34.dp)
-                                        .testTag("edit_member_${memberKey}")
+                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                        .fillMaxWidth()
+                                        .testTag("preregister_subdivision_dropdown")
+                                )
+                                ExposedDropdownMenu(
+                                    expanded = preRegSubdivisionExpanded,
+                                    onDismissRequest = { preRegSubdivisionExpanded = false }
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Edit,
-                                        contentDescription = "Редактировать сотрудника",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                                if (canManageUsers && memberKey != activeEmployee.id) {
-                                    IconButton(
-                                        onClick = { onDeleteSiteMember(member) },
-                                        modifier = Modifier.size(34.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.DeleteOutline,
-                                            contentDescription = "Удалить сотрудника",
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(18.dp)
+                                    availableSubdivisions.forEach { subItem ->
+                                        DropdownMenuItem(
+                                            text = { Text(subItem) },
+                                            onClick = {
+                                                newEmpSubdivision = subItem
+                                                preRegSubdivisionExpanded = false
+                                            }
                                         )
                                     }
                                 }
                             }
-                        }
 
-                        if (canManageUsers) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(
+                            // Окно выбора принадлежности к участку
+                            OutlinedButton(
+                                onClick = { showPreRegSiteDialog = true },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    .testTag("preregister_site_selector_button")
                             ) {
-                                CorporateRole.entries.forEach { roleOption ->
-                                    val isRoleSelected = currentRole == roleOption
+                                Icon(Icons.Default.Apartment, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Принадлежность к участку: ${newEmpSiteName.ifBlank { siteName }} (выбрать)",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = newEmpPhone,
+                                    onValueChange = { newEmpPhone = it },
+                                    label = { Text("Телефон") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedTextField(
+                                    value = newEmpEmail,
+                                    onValueChange = { newEmpEmail = it },
+                                    label = { Text("Email (необязательно)") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1.2f)
+                                        .testTag("preregister_email_input")
+                                )
+                            }
+
+                            Text("Роль:", style = MaterialTheme.typography.labelSmall)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                CorporateRole.entries.forEach { r ->
                                     FilterChip(
-                                        selected = isRoleSelected,
-                                        onClick = {
-                                            if (!isRoleSelected) {
-                                                val grp = CorporateSeedData.workGroups.firstOrNull {
-                                                    it.id == member.groupId
-                                                } ?: CorporateSeedData.workGroups.first()
-                                                onAssignRoleToMember(member, roleOption, grp, member.position)
-                                            }
-                                        },
-                                        label = {
-                                            Text(
-                                                text = roleOption.shortTitleRu,
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                        }
+                                        selected = newEmpRole == r,
+                                        onClick = { newEmpRole = r },
+                                        label = { Text(r.shortTitleRu) }
                                     )
                                 }
-                                OutlinedButton(
-                                    onClick = { memberBeingEdited = member },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (newEmpFullName.isNotBlank()) {
+                                        val resolvedGroup = CorporateSeedData.workGroups.firstOrNull {
+                                            it.name.equals(newEmpSubdivision, ignoreCase = true)
+                                        }?.copy(name = newEmpSubdivision)
+                                            ?: CorporateSeedData.workGroups.first().copy(name = newEmpSubdivision)
+
+                                        onPreRegisterEmployee(
+                                            newEmpEmail,
+                                            newEmpFullName,
+                                            newEmpPosition.ifBlank { newEmpRole.titleRu },
+                                            newEmpRole,
+                                            resolvedGroup,
+                                            newEmpPersonnelNumber,
+                                            newEmpSiteName.ifBlank { siteName },
+                                            newEmpPhone
+                                        )
+                                        newEmpFullName = ""
+                                        newEmpEmail = ""
+                                        newEmpPosition = ""
+                                        newEmpPersonnelNumber = ""
+                                        newEmpPhone = ""
+                                        showPreRegisterForm = false
+                                    }
+                                },
+                                enabled = newEmpFullName.isNotBlank(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("submit_preregister_button")
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Сохранить сотрудника")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Staff Rows (Clean Table List; non-admin users can only edit their own card)
+            if (activeApprovedMembers.isEmpty()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "В списке пока только ваша учётная запись. Добавьте сотрудников или дождитесь их входа.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(14.dp)
+                        )
+                    }
+                }
+            } else {
+                items(activeApprovedMembers, key = { it.memberId.ifBlank { it.id } }) { member ->
+                    val currentRole = member.parsedRoleOrNull ?: CorporateRole.WORKER
+                    val memberKey = member.memberId.ifBlank { member.id }
+                    val isSelfRow = memberKey == activeEmployee.id ||
+                        (activeEmployee.email.isNotBlank() && member.email.equals(activeEmployee.email, ignoreCase = true))
+                    val canEditThisRow = canManageUsers || isSelfRow
+                    val tabNumber = member.effectivePersonnelNumber
+                    val empSite = member.effectiveSiteName.ifBlank { siteName }
+                    val empPhone = member.effectivePhone
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = member.fullName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    val line1 = buildString {
+                                        append(member.position.ifBlank { currentRole.titleRu })
+                                        if (tabNumber.isNotBlank()) {
+                                            append(" • Таб. № $tabNumber")
+                                        }
+                                    }
+                                    Text(
+                                        text = line1,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    val line2 = buildString {
+                                        append("Участок: $empSite • ${member.groupName}")
+                                        if (empPhone.isNotBlank()) append(" • $empPhone")
+                                    }
+                                    Text(
+                                        text = line2,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (canEditThisRow) {
+                                        IconButton(
+                                            onClick = { memberBeingEdited = member },
+                                            modifier = Modifier
+                                                .size(34.dp)
+                                                .testTag("edit_member_${memberKey}")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Edit,
+                                                contentDescription = "Редактировать сотрудника",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                    if (canManageUsers && !isSelfRow) {
+                                        IconButton(
+                                            onClick = { onDeleteSiteMember(member) },
+                                            modifier = Modifier.size(34.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteOutline,
+                                                contentDescription = "Удалить сотрудника",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (canManageUsers) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Редактировать", style = MaterialTheme.typography.labelSmall)
+                                    CorporateRole.entries.forEach { roleOption ->
+                                        val isRoleSelected = currentRole == roleOption
+                                        FilterChip(
+                                            selected = isRoleSelected,
+                                            onClick = {
+                                                if (!isRoleSelected) {
+                                                    val grp = CorporateSeedData.workGroups.firstOrNull {
+                                                        it.id == member.groupId
+                                                    } ?: CorporateSeedData.workGroups.first()
+                                                    onAssignRoleToMember(member, roleOption, grp, member.position)
+                                                }
+                                            },
+                                            label = {
+                                                Text(
+                                                    text = roleOption.shortTitleRu,
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            }
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = { memberBeingEdited = member },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Редактировать", style = MaterialTheme.typography.labelSmall)
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Collapsible Submenu for Audit Log
-        item {
-            TextButton(
-                onClick = { showAuditLogSection = !showAuditLogSection },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    imageVector = if (showAuditLogSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    if (showAuditLogSection) {
-                        "Скрыть журнал действий"
-                    } else {
-                        "Журнал действий (${auditLogs.size})"
-                    }
-                )
-            }
-        }
-
-        if (showAuditLogSection) {
-            items(auditLogs, key = { it.id.ifBlank { it.details } }) { log ->
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            // Collapsible Submenu for Audit Log
+            item {
+                TextButton(
+                    onClick = { showAuditLogSection = !showAuditLogSection },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(
-                            text = "${log.actionType} • ${log.actorName}",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = log.details,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                    Icon(
+                        imageVector = if (showAuditLogSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        if (showAuditLogSection) {
+                            "Скрыть журнал действий"
+                        } else {
+                            "Журнал действий (${auditLogs.size})"
+                        }
+                    )
+                }
+            }
+
+            if (showAuditLogSection) {
+                items(auditLogs, key = { it.id.ifBlank { it.details } }) { log ->
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "${log.actionType} • ${log.actorName}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = log.details,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    if (showSelfSiteDialog) {
+        SiteSelectionDialog(
+            availableSites = availableSites,
+            selectedSite = selfSiteName.ifBlank { siteName },
+            onSelectSite = { chosenSite ->
+                selfSiteName = chosenSite
+                showSelfSiteDialog = false
+            },
+            onDismiss = { showSelfSiteDialog = false }
+        )
     }
 
     if (showPreRegSiteDialog) {
@@ -1139,6 +1847,7 @@ fun AdminAndAuditScreen(
             defaultSiteName = siteName,
             availableSubdivisions = availableSubdivisions,
             availableSites = availableSites,
+            canEditRole = canManageUsers,
             onDismiss = { memberBeingEdited = null },
             onSave = { fullName, position, personnelNumber, empSite, groupName, phone, email, role ->
                 onEditEmployeeDetails(
@@ -1150,7 +1859,7 @@ fun AdminAndAuditScreen(
                     groupName,
                     phone,
                     email,
-                    role
+                    if (canManageUsers) role else (target.parsedRoleOrNull ?: activeEmployee.role)
                 )
                 memberBeingEdited = null
             }
@@ -1169,6 +1878,7 @@ fun EditEmployeeDialog(
     defaultSiteName: String,
     availableSubdivisions: List<String> = LocalWorkspaceStore.DEFAULT_SUBDIVISIONS,
     availableSites: List<String> = LocalWorkspaceStore.DEFAULT_SITES,
+    canEditRole: Boolean = true,
     onDismiss: () -> Unit,
     onSave: (
         fullName: String,
@@ -1246,7 +1956,7 @@ fun EditEmployeeDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Карточка сотрудника",
+                            text = if (canEditRole) "Карточка сотрудника" else "Мои личные данные",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.weight(1f)
@@ -1399,21 +2109,23 @@ fun EditEmployeeDialog(
                             )
                         }
 
-                        Text(
-                            text = "Роль в системе:",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            CorporateRole.entries.forEach { roleOption ->
-                                FilterChip(
-                                    selected = selectedRole == roleOption,
-                                    onClick = { selectedRole = roleOption },
-                                    label = { Text(roleOption.shortTitleRu) }
-                                )
+                        if (canEditRole) {
+                            Text(
+                                text = "Роль в системе:",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                CorporateRole.entries.forEach { roleOption ->
+                                    FilterChip(
+                                        selected = selectedRole == roleOption,
+                                        onClick = { selectedRole = roleOption },
+                                        label = { Text(roleOption.shortTitleRu) }
+                                    )
+                                }
                             }
                         }
 

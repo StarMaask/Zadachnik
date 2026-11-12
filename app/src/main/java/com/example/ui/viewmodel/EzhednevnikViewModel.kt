@@ -2198,7 +2198,8 @@ class EzhednevnikViewModel(
         sheetLayout: SheetLayout,
         exportFormat: ExportFormat,
         saveToHistory: Boolean,
-        includePhotos: Boolean = true
+        includePhotos: Boolean = true,
+        targetEpochDay: Long? = null
     ) {
         viewModelScope.launch {
             val todayReal = CorporateSeedData.currentDeviceEpochDay()
@@ -2207,7 +2208,7 @@ class EzhednevnikViewModel(
             }
             val actor = activeEmployee.value
             val allTasks = (tasksState.value as? UiState.Success)?.data ?: emptyList()
-            val day = _currentEpochDay.value
+            val day = targetEpochDay ?: _currentEpochDay.value
             val normalizedTemplate = template.copy(
                 name = ReportDocumentGenerator.resolveTemplateDisplayName(template, day),
                 orgHeader = "${_organizationName.value} • ${_siteName.value}"

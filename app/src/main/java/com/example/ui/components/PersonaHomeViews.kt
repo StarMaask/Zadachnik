@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Apartment
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
@@ -39,6 +41,8 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -47,7 +51,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -354,25 +361,22 @@ fun WorkerTodayHeaderCard(
 fun WorkerPersonaTaskCard(
     task: TaskDocument,
     onOpenDetail: () -> Unit,
-    onQuickComplete: () -> Unit,
-    onToggleSubtask: (String) -> Unit,
+    onQuickComplete: () -> Unit = {},
+    onToggleSubtask: (String) -> Unit = {},
     canApprove: Boolean = false,
     onApproveTask: (() -> Unit)? = null,
     onRejectTask: (() -> Unit)? = null
 ) {
     val tokens = LocalAppThemeTokens.current
-    val isDoneOrReview = task.taskStatus == TaskStatus.APPROVED || task.taskStatus == TaskStatus.ON_REVIEW
     val doneColor = tokens.statusDoneColor
     val targetVol = task.effectiveTargetVolume
     val completedVol = task.effectiveCompletedVolume
     val unitLabel = task.effectiveVolumeUnit.ifBlank { "шт" }
-    val progressRatio = if (targetVol > 0.0) {
-        (completedVol / targetVol).toFloat().coerceIn(0f, 1f)
-    } else {
-        (task.completionPercent() / 100f).coerceIn(0f, 1f)
-    }
+    val pct = task.completionPercent()
+    val progressRatio = (pct / 100f).coerceIn(0f, 1f)
     val subtasks = remember(task.subtaskItems) { task.decodedSubtasks() }
-    val requiredPhotos = if (task.requiresPhotoReport) task.minPhotoCount.coerceAtLeast(1L) else 0L
+    val doneCount = subtasks.count { it.isDone }
+    val requiredPhotos = task.minPhotoCount.toInt()
     val currentPhotos = task.photoItems.size
 
     Surface(
@@ -392,274 +396,121 @@ fun WorkerPersonaTaskCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Заголовок и локация
+            // Заголовок + статус (лаконичный бейдж)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = task.title,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            textDecoration = if (task.taskStatus == TaskStatus.APPROVED) TextDecoration.LineThrough else TextDecoration.None
-                        ),
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.LocationOn,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = task.geoLocation.orEmpty().ifBlank { "Участок №1" } + " • до ${task.deadlineTime}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (task.assigneeName.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = if (task.allAssigneeNames.size > 1) {
-                                "Исполнители (${task.allAssigneeNames.size}): ${task.assigneeName}"
-                            } else {
-                                "Исп.: ${task.assigneeName}"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                // Иконка камеры с количеством нужных фото
+                Text(
+                    text = task.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) {
-                        doneColor.copy(alpha = 0.14f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    },
-                    modifier = Modifier.clickable(onClick = onOpenDetail)
+                    shape = RoundedCornerShape(8.dp),
+                    color = statusColor(task.taskStatus).copy(alpha = if (tokens.isDark) 0.18f else 0.12f)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CameraAlt,
-                            contentDescription = "Фотоотчёт",
-                            tint = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) {
-                                doneColor
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(16.dp)
-                        )
-                        val photoBadgeText = if (requiredPhotos > 0) {
-                            "$currentPhotos/$requiredPhotos фото"
-                        } else {
-                            "$currentPhotos фото"
-                        }
-                        Text(
-                            text = photoBadgeText,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) {
-                                doneColor
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
+                    Text(
+                        text = task.taskStatus.titleRu,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = statusColor(task.taskStatus),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
                 }
             }
 
-            // Прогресс-бар и чистые цифры объёма (без дублирования процентов)
-            if (targetVol > 0.0) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Объём выполнения",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isDoneOrReview) doneColor else MaterialTheme.colorScheme.onSurface
-                        )
+            // Тонкий прогресс (2.5dp) и компактная строка
+            if (targetVol > 0.0 || subtasks.isNotEmpty()) {
+                val summaryLabel = when {
+                    targetVol > 0.0 -> "Объём: ${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
+                    subtasks.isNotEmpty() -> "Чек-лист: $doneCount из ${subtasks.size} выполнено"
+                    else -> ""
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (summaryLabel.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = summaryLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (pct > 0) {
+                                Text(
+                                    text = "$pct%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                     LinearProgressIndicator(
                         progress = { progressRatio },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(RoundedCornerShape(4.dp)),
-                        color = if (isDoneOrReview) doneColor else MaterialTheme.colorScheme.primary,
+                            .height(2.5.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                 }
             }
 
-            // Пункты чек-листа (чистые цифры объёма напротив каждого пункта)
-            if (subtasks.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    subtasks.forEach { sub ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onToggleSubtask(sub.id) }
-                                .padding(vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = sub.isDone,
-                                onCheckedChange = { onToggleSubtask(sub.id) },
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = sub.title,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
-                                ),
-                                color = if (sub.isDone) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "${SubtaskItem.formatVolumeNumber(sub.effectiveCompletedVolume)} / ${SubtaskItem.formatVolumeNumber(sub.effectiveTargetVolume)} ${sub.effectiveUnit.ifBlank { unitLabel }}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (sub.isDone) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Огромный чекбокс / кнопка «Выполнено» прямо на карточке
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = if (isDoneOrReview) {
-                    doneColor.copy(alpha = if (tokens.isDark) 0.22f else 0.14f)
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .clickable {
-                        if (!isDoneOrReview) {
-                            onQuickComplete()
-                        } else {
-                            onOpenDetail()
-                        }
-                    }
-                    .testTag("worker_quick_complete_${task.id}")
+            // Нижняя строка: гео/срок + фото
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(
-                        imageVector = if (isDoneOrReview) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                        imageVector = Icons.Default.LocationOn,
                         contentDescription = null,
-                        tint = if (isDoneOrReview) doneColor else MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(22.dp)
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(13.dp)
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = if (isDoneOrReview) {
-                            "Выполнено (${task.taskStatus.titleRu})"
-                        } else {
-                            "Выполнено — сдать работу"
-                        },
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isDoneOrReview) doneColor else MaterialTheme.colorScheme.onPrimary
+                        text = task.geoLocation.orEmpty().ifBlank { "Участок №1" } + " • до ${task.deadlineTime}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-            }
 
-            // Быстрые кнопки проверки и приёмки отчёта для ИТР / Руководителя / Администратора прямо с карточки
-            if (canApprove && task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED &&
-                (task.taskStatus == TaskStatus.ON_REVIEW || progressRatio >= 1f) && onApproveTask != null
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (onRejectTask != null) {
-                        OutlinedButton(
-                            onClick = onRejectTask,
-                            shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.65f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(42.dp)
-                                .testTag("card_reject_task_${task.id}")
-                        ) {
-                            Text(
-                                text = "Отклонить",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFFEF4444)
-                            )
-                        }
-                    }
-                    Button(
-                        onClick = onApproveTask,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF10B981),
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier
-                            .weight(1.3f)
-                            .height(42.dp)
-                            .testTag("card_approve_task_${task.id}")
+                if (task.requiresPhotoReport) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Фотоотчёт",
+                            tint = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) doneColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Принять отчёт",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold
+                            text = if (requiredPhotos > 0) "$currentPhotos/$requiredPhotos фото" else "$currentPhotos фото",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -683,8 +534,14 @@ fun ItrHorizontalDateStrip(
     allVisibleTasks: List<TaskDocument>,
     onSelectDate: (Long) -> Unit,
     onCreateTaskForDate: (Long) -> Unit,
-    onToggleFullCalendar: () -> Unit,
-    isFullCalendarExpanded: Boolean
+    onToggleFullCalendar: () -> Unit = {},
+    isFullCalendarExpanded: Boolean = false,
+    activeEmployee: CorporateEmployee? = null,
+    selectedScope: ItrScopeFilter = ItrScopeFilter.SUBDIVISION,
+    subdivisionCount: Int = 0,
+    siteCount: Int = 0,
+    personalCount: Int = 0,
+    onSelectScope: (ItrScopeFilter) -> Unit = {}
 ) {
     val tokens = LocalAppThemeTokens.current
     val daysWindow = remember(currentEpochDay) {
@@ -696,6 +553,7 @@ fun ItrHorizontalDateStrip(
             .groupBy { it.dueDateEpochDay }
             .mapValues { it.value.size }
     }
+    var scopeMenuExpanded by remember { mutableStateOf(false) }
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -711,95 +569,115 @@ fun ItrHorizontalDateStrip(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Верхняя строка: текущая дата + кнопка разворота календаря с задачами + аккуратная кнопка «+ Задача»
+            // Верхняя строка: компактный селектор области видимости (Бригада / Участок / Личные) + кнопка «+ Задача»
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (isFullCalendarExpanded) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 10.dp)
-                        .clickable { onToggleFullCalendar() }
-                        .testTag("toggle_expand_calendar_button")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                // Компактный чип-селектор области видимости с выпадающим меню
+                Box {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (tokens.isDark) 0.5f else 0.7f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { scopeMenuExpanded = true }
+                            .testTag("itr_scope_dropdown_trigger")
                     ) {
                         Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.CalendarMonth,
-                                contentDescription = "Календарь",
+                                imageVector = when (selectedScope) {
+                                    ItrScopeFilter.SUBDIVISION -> Icons.Default.Groups
+                                    ItrScopeFilter.SITE -> Icons.Default.Apartment
+                                    ItrScopeFilter.PERSONAL -> Icons.Default.Person
+                                },
+                                contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            val scopeLabel = when (selectedScope) {
+                                ItrScopeFilter.SUBDIVISION -> "Моя бригада ($subdivisionCount)"
+                                ItrScopeFilter.SITE -> "Весь участок ($siteCount)"
+                                ItrScopeFilter.PERSONAL -> "Личные ($personalCount)"
+                            }
+                            Text(
+                                text = scopeLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ArrowDropDown,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(18.dp)
                             )
-                            Column {
-                                Text(
-                                    text = ReportDocumentGenerator.formatEpochDay(selectedEpochDay) +
-                                        if (selectedEpochDay == currentEpochDay) " • Сегодня" else "",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = if (isFullCalendarExpanded) {
-                                        "Свернуть календарь с задачами"
-                                    } else {
-                                        "Развернуть календарь с задачами"
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
                         }
-                        Icon(
-                            imageVector = if (isFullCalendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = if (isFullCalendarExpanded) "Свернуть календарь" else "Развернуть календарь",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
+                    }
+
+                    DropdownMenu(
+                        expanded = scopeMenuExpanded,
+                        onDismissRequest = { scopeMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Моя бригада ($subdivisionCount)") },
+                            leadingIcon = { Icon(Icons.Default.Groups, contentDescription = null) },
+                            onClick = {
+                                onSelectScope(ItrScopeFilter.SUBDIVISION)
+                                scopeMenuExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Весь участок ($siteCount)") },
+                            leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
+                            onClick = {
+                                onSelectScope(ItrScopeFilter.SITE)
+                                scopeMenuExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Личные задачи ($personalCount)") },
+                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                            onClick = {
+                                onSelectScope(ItrScopeFilter.PERSONAL)
+                                scopeMenuExpanded = false
+                            }
                         )
                     }
                 }
 
+                // Кнопка создания задачи
                 Button(
                     onClick = { onCreateTaskForDate(selectedEpochDay) },
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                    modifier = Modifier.testTag("itr_header_add_task_button")
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .height(34.dp)
+                        .testTag("itr_header_add_task_button")
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "+ Задача",
-                        style = MaterialTheme.typography.labelMedium,
+                        text = "Задача",
+                        style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            // Горизонтальный скролл дат (полоска дней недели)
+            // Горизонтальный скролл дат (полоска дней недели iOS-стиль)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -825,12 +703,12 @@ fun ItrHorizontalDateStrip(
                             else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
                         },
                         modifier = Modifier
-                            .width(56.dp)
+                            .width(54.dp)
                             .clickable { onSelectDate(dayEpoch) }
                             .testTag("itr_date_pill_$dayEpoch")
                     ) {
                         Column(
-                            modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                            modifier = Modifier.padding(vertical = 7.dp, horizontal = 4.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
@@ -853,16 +731,17 @@ fun ItrHorizontalDateStrip(
                                     MaterialTheme.colorScheme.onSurface
                                 }
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(3.dp))
                             Box(
                                 modifier = Modifier
-                                    .size(5.dp)
+                                    .size(4.5.dp)
                                     .clip(CircleShape)
                                     .background(
                                         when {
                                             count == 0 -> Color.Transparent
                                             isSelected -> MaterialTheme.colorScheme.onPrimary
-                                            else -> MaterialTheme.colorScheme.primary
+                                            isToday -> MaterialTheme.colorScheme.primary
+                                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                         }
                                     )
                             )
@@ -1117,6 +996,7 @@ fun ItrPersonaTaskCard(
     val unitLabel = task.effectiveVolumeUnit.ifBlank { "шт" }
     val pct = task.completionPercent()
     val subtasks = remember(task.subtaskItems) { task.decodedSubtasks() }
+    val doneCount = subtasks.count { it.isDone }
     val initials = remember(task.assigneeName, task.tags) {
         if (task.allAssigneeNames.size > 1) {
             "${task.allAssigneeNames.size}"
@@ -1148,10 +1028,10 @@ fun ItrPersonaTaskCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Заголовок + статус
+            // Заголовок + статус (лаконичный бейдж)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1176,87 +1056,55 @@ fun ItrPersonaTaskCard(
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = statusColor(task.taskStatus),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                     )
                 }
             }
 
-            // Прогресс-бар с чистыми цифрами объёма (190 / 450) без текстового дублирования процентов
-            if (targetVol > 0.0) {
-                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = task.geoLocation.orEmpty().ifBlank { "Участок №1" },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
-                        )
+            // Прогресс: чистый текст («Выполнено X из Y» или «Объём») + ультратонкая линия (2.5dp)
+            if (targetVol > 0.0 || subtasks.isNotEmpty()) {
+                val progressRatio = (pct / 100f).coerceIn(0f, 1f)
+                val summaryLabel = when {
+                    targetVol > 0.0 -> "Объём: ${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
+                    subtasks.isNotEmpty() -> "Чек-лист: $doneCount из ${subtasks.size} выполнено"
+                    else -> ""
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (summaryLabel.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = summaryLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (pct > 0) {
+                                Text(
+                                    text = "$pct%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                     LinearProgressIndicator(
-                        progress = { (pct / 100f).coerceIn(0f, 1f) },
+                        progress = { progressRatio },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
+                            .height(2.5.dp)
+                            .clip(RoundedCornerShape(2.dp)),
                         color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                 }
             }
 
-            // Компактный чек-лист (до 3 пунктов)
-            if (subtasks.isNotEmpty() && onToggleSubtask != null) {
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    subtasks.take(3).forEach { sub ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onToggleSubtask(sub.id) }
-                                .padding(vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = sub.isDone,
-                                onCheckedChange = { onToggleSubtask(sub.id) },
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = sub.title,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
-                                ),
-                                color = if (sub.isDone) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "${SubtaskItem.formatVolumeNumber(sub.effectiveCompletedVolume)} / ${SubtaskItem.formatVolumeNumber(sub.effectiveTargetVolume)} ${sub.effectiveUnit.ifBlank { unitLabel }}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Medium,
-                                color = if (sub.isDone) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Нижняя строка: аватарка исполнителя + ФИО + дата + фото + удаление
+            // Нижняя строка-визитка: аватарка исполнителя + ФИО + локация/срок + иконка фото
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1267,137 +1115,64 @@ fun ItrPersonaTaskCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    // Аватарка исполнителя с инициалами или числом исполнителей
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        modifier = Modifier.size(24.dp)
                     ) {
-                        Text(
-                            text = initials,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = initials,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = task.assigneeName.ifBlank { "Исполнитель" },
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} • до ${task.deadlineTime}" +
-                                if (task.requiresPhotoReport || task.photoItems.isNotEmpty()) {
-                                    " • 📷 ${task.photoItems.size}/${task.minPhotoCount}"
-                                } else {
-                                    ""
-                                },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = if (task.allAssigneeNames.size > 1) {
+                            "Исполнители (${task.allAssigneeNames.size}): ${task.assigneeName}"
+                        } else {
+                            task.assigneeName.ifBlank { "Без исполнителя" }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
-                if (onDelete != null) {
-                    IconButton(
-                        onClick = onDelete,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("delete_task_${task.id}")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.DeleteOutline,
-                            contentDescription = "Удалить задачу",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            }
-
-            // Кнопки быстрой приёмки / подтверждения выполнения прямо на карточке ИТР
-            if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (task.taskStatus != TaskStatus.ON_REVIEW && onQuickComplete != null) {
-                        OutlinedButton(
-                            onClick = onQuickComplete,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(36.dp)
-                                .testTag("itr_quick_complete_${task.id}")
+                    if (task.requiresPhotoReport) {
+                        val currentPhotos = task.photoItems.size
+                        val requiredPhotos = task.minPhotoCount.toInt()
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.CheckCircle,
+                                imageVector = Icons.Default.CameraAlt,
                                 contentDescription = null,
-                                modifier = Modifier.size(15.dp)
+                                tint = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) doneColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(13.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "Сдать работу",
+                                text = if (requiredPhotos > 0) "$currentPhotos/$requiredPhotos" else "$currentPhotos",
                                 style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
-                    if (onRejectTask != null && (task.taskStatus == TaskStatus.ON_REVIEW || pct >= 100)) {
-                        OutlinedButton(
-                            onClick = onRejectTask,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.6f)),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(0.85f)
-                                .height(36.dp)
-                                .testTag("itr_reject_task_${task.id}")
-                        ) {
-                            Text(
-                                text = "Отклонить",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFFEF4444)
-                            )
-                        }
-                    }
-                    if (onApproveTask != null) {
-                        Button(
-                            onClick = onApproveTask,
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF10B981),
-                                contentColor = Color.White
-                            ),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(1.15f)
-                                .height(36.dp)
-                                .testTag("itr_approve_task_${task.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Принять отчёт",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+
+                    if (task.deadlineTime.isNotBlank()) {
+                        Text(
+                            text = "до ${task.deadlineTime}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }

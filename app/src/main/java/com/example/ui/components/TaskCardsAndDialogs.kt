@@ -254,123 +254,83 @@ fun TaskItemCard(
                     )
                 }
 
-                // Индикатор объёма выполнения без дублирования процентов — только чистые цифры (190 / 450)
-                if (targetVol > 0.0) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Объём работ",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(5.dp))
-                    LinearProgressIndicator(
-                        progress = { (pct / 100f).coerceIn(0f, 1f) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(if (tokens.isHighContrastField) 7.dp else 6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                }
-
-                // Интерактивный чек-лист прямо на карточке с чистыми цифрами объёма без дублей %
-                if (subtasks.isNotEmpty() && onToggleSubtask != null) {
+                // Прогресс: чистый текст («Выполнено X из Y» или «Объём») + ультратонкая линия (2.5dp)
+                if (targetVol > 0.0 || subtasks.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
+                    val summaryLabel = when {
+                        targetVol > 0.0 -> "Объём: ${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
+                        subtasks.isNotEmpty() -> "Чек-лист: $doneSubtasks из ${subtasks.size} выполнено"
+                        else -> ""
+                    }
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        subtasks.take(4).forEach { sub ->
-                            val subCompleted = SubtaskItem.formatVolumeNumber(sub.effectiveCompletedVolume)
-                            val subTarget = SubtaskItem.formatVolumeNumber(sub.effectiveTargetVolume)
-                            val subUnit = sub.effectiveUnit.ifBlank { unitLabel }
+                        if (summaryLabel.isNotBlank()) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onToggleSubtask(sub.id) }
-                                    .padding(vertical = 2.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Checkbox(
-                                    checked = sub.isDone,
-                                    onCheckedChange = { onToggleSubtask(sub.id) },
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = sub.title,
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        textDecoration = if (sub.isDone) TextDecoration.LineThrough else TextDecoration.None
-                                    ),
-                                    color = if (sub.isDone) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "$subCompleted / $subTarget $subUnit",
+                                    text = summaryLabel,
                                     style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (sub.isDone) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (pct > 0) {
+                                    Text(
+                                        text = "$pct%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
                         }
+                        LinearProgressIndicator(
+                            progress = { (pct / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.5.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Метаданные мелким серым текстом (исполнитель, дата, фото)
-                FlowRow(
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = task.assigneeName.ifBlank { "Исполнитель" },
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
 
-                    Text(
-                        text = "${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} • ${task.deadlineTime}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (task.requiresPhotoReport || task.photoItems.isNotEmpty()) {
+                            val photoReady = task.hasEnoughPhotos()
+                            Text(
+                                text = "📷 ${task.photoItems.size}/${task.minPhotoCount}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = if (photoReady) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
 
-                    if (subtasks.isNotEmpty()) {
                         Text(
-                            text = "Чек-лист: $doneSubtasks/${subtasks.size}",
+                            text = "${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} • до ${task.deadlineTime}",
                             style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                            color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    if (task.requiresPhotoReport || task.photoItems.isNotEmpty()) {
-                        val photoReady = task.hasEnoughPhotos()
-                        Text(
-                            text = "📷 ${task.photoItems.size}/${task.minPhotoCount} фото",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                            color = if (photoReady) doneColor else Color(0xFFD97706)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -2742,7 +2702,7 @@ fun CreateTaskDialog(
     var assigneeDropdownExpanded by remember { mutableStateOf(false) }
 
     var selectedPriority by remember { mutableStateOf(TaskPriority.MEDIUM) }
-    var priorityAccordionExpanded by remember { mutableStateOf(true) }
+    var priorityAccordionExpanded by remember { mutableStateOf(false) }
 
     var selectedDueEpochDay by remember(initialDueDateEpochDay) { mutableStateOf(initialDueDateEpochDay) }
     var calendarExpanded by remember { mutableStateOf(false) }
@@ -2752,9 +2712,10 @@ fun CreateTaskDialog(
     // Обязательный фотоотчёт с компактным степпером
     var requiresPhoto by remember { mutableStateOf(true) }
     var minPhotoCountText by remember { mutableStateOf("1") }
+    var photoAccordionExpanded by remember { mutableStateOf(false) }
 
     // Чек-лист (аккордеон)
-    var checklistAccordionExpanded by remember { mutableStateOf(true) }
+    var checklistAccordionExpanded by remember { mutableStateOf(false) }
     val draftChecklistItems = remember { mutableStateListOf<SubtaskItem>() }
     var draftItemTitle by remember { mutableStateOf("") }
     var draftItemVolText by remember { mutableStateOf("10") }
@@ -3776,7 +3737,7 @@ fun CreateTaskDialog(
                             }
                         }
 
-                        // АККОРДЕОН 3.2: ОБЯЗАТЕЛЬНЫЙ ФОТООТЧЁТ (Переключатель + компактный степпер без дублирующих чипов)
+                        // АККОРДЕОН 3.2: ОБЯЗАТЕЛЬНЫЙ ФОТООТЧЁТ (Компактный селектор по умолчанию, раскрывающийся по тапу)
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = softBlockBg,
@@ -3787,7 +3748,9 @@ fun CreateTaskDialog(
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { photoAccordionExpanded = !photoAccordionExpanded },
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -3804,102 +3767,129 @@ fun CreateTaskDialog(
                                         )
                                         Column {
                                             Text(
-                                                text = "Обязательный фотоотчёт",
+                                                text = if (requiresPhoto) {
+                                                    "Фотоотчёт: Обязательно (${minPhotoCountText.ifBlank { "1" }} фото)"
+                                                } else {
+                                                    "Фотоотчёт: Не требуется"
+                                                },
                                                 style = MaterialTheme.typography.labelLarge,
                                                 fontWeight = FontWeight.SemiBold
                                             )
-                                            if (requiresPhoto) {
-                                                Text(
-                                                    text = "Минимум ${minPhotoCountText.ifBlank { "1" }} фото для сдачи на проверку",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
+                                            Text(
+                                                text = if (requiresPhoto) "Для сдачи на проверку" else "Без обязательной фотофиксации",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                     }
-                                    Switch(
-                                        checked = requiresPhoto,
-                                        onCheckedChange = { requiresPhoto = it }
+                                    Icon(
+                                        imageVector = if (photoAccordionExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
 
-                                AnimatedVisibility(visible = requiresPhoto) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(softFieldBg)
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                                AnimatedVisibility(visible = photoAccordionExpanded) {
+                                    Column(
+                                        modifier = Modifier.padding(top = 4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Text(
-                                            text = "Минимальное количество фото:",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.Medium,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
                                         Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Surface(
-                                                shape = CircleShape,
-                                                color = MaterialTheme.colorScheme.surface,
-                                                modifier = Modifier
-                                                    .size(32.dp)
-                                                    .clip(CircleShape)
-                                                    .clickable {
-                                                        val cur = minPhotoCountText.toIntOrNull() ?: 1
-                                                        minPhotoCountText = (cur - 1).coerceAtLeast(1).toString()
-                                                    }
-                                            ) {
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Remove,
-                                                        contentDescription = "Уменьшить",
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                            }
-
-                                            BasicTextField(
-                                                value = minPhotoCountText,
-                                                onValueChange = { valDigits ->
-                                                    minPhotoCountText = valDigits.filter { it.isDigit() }.take(2)
-                                                },
-                                                singleLine = true,
-                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                textStyle = MaterialTheme.typography.titleSmall.copy(
-                                                    fontWeight = FontWeight.Bold,
-                                                    textAlign = TextAlign.Center,
-                                                    color = MaterialTheme.colorScheme.onSurface
-                                                ),
-                                                modifier = Modifier
-                                                    .width(42.dp)
-                                                    .clip(RoundedCornerShape(8.dp))
-                                                    .background(MaterialTheme.colorScheme.surface)
-                                                    .padding(vertical = 6.dp)
-                                                    .testTag("min_photo_manual_input")
+                                            Text(
+                                                text = "Требовать фотоотчёт",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Medium
                                             )
+                                            Switch(
+                                                checked = requiresPhoto,
+                                                onCheckedChange = { requiresPhoto = it }
+                                            )
+                                        }
 
-                                            Surface(
-                                                shape = CircleShape,
-                                                color = MaterialTheme.colorScheme.surface,
+                                        if (requiresPhoto) {
+                                            Row(
                                                 modifier = Modifier
-                                                    .size(32.dp)
-                                                    .clip(CircleShape)
-                                                    .clickable {
-                                                        val cur = minPhotoCountText.toIntOrNull() ?: 1
-                                                        minPhotoCountText = (cur + 1).coerceAtMost(99).toString()
-                                                    }
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(softFieldBg)
+                                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Add,
-                                                        contentDescription = "Увеличить",
-                                                        modifier = Modifier.size(16.dp)
+                                                Text(
+                                                    text = "Минимум фото:",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = MaterialTheme.colorScheme.surface,
+                                                        modifier = Modifier
+                                                            .size(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable {
+                                                                val cur = minPhotoCountText.toIntOrNull() ?: 1
+                                                                minPhotoCountText = (cur - 1).coerceAtLeast(1).toString()
+                                                            }
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Remove,
+                                                                contentDescription = "Уменьшить",
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                        }
+                                                    }
+
+                                                    BasicTextField(
+                                                        value = minPhotoCountText,
+                                                        onValueChange = { valDigits ->
+                                                            minPhotoCountText = valDigits.filter { it.isDigit() }.take(2)
+                                                        },
+                                                        singleLine = true,
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                        textStyle = MaterialTheme.typography.titleSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            textAlign = TextAlign.Center,
+                                                            color = MaterialTheme.colorScheme.onSurface
+                                                        ),
+                                                        modifier = Modifier
+                                                            .width(42.dp)
+                                                            .clip(RoundedCornerShape(8.dp))
+                                                            .background(MaterialTheme.colorScheme.surface)
+                                                            .padding(vertical = 6.dp)
+                                                            .testTag("min_photo_manual_input")
                                                     )
+
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = MaterialTheme.colorScheme.surface,
+                                                        modifier = Modifier
+                                                            .size(32.dp)
+                                                            .clip(CircleShape)
+                                                            .clickable {
+                                                                val cur = minPhotoCountText.toIntOrNull() ?: 1
+                                                                minPhotoCountText = (cur + 1).coerceAtMost(99).toString()
+                                                            }
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Add,
+                                                                contentDescription = "Увеличить",
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }

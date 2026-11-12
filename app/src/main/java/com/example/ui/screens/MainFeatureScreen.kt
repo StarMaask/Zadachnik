@@ -340,6 +340,21 @@ fun MainFeatureScreen(
                         if (currentTab == MainNavDestination.TODAY) {
                             IconButton(
                                 onClick = {
+                                    createDialogTargetEpochDay = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                                        selectedCalendarEpochDay
+                                    } else if (selectedFilter == TaskFilterTab.TOMORROW) {
+                                        currentEpochDay + 1L
+                                    } else {
+                                        currentEpochDay
+                                    }
+                                    showCreateTaskDialog = true
+                                },
+                                modifier = Modifier.testTag("top_add_task_button")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Новая задача")
+                            }
+                            IconButton(
+                                onClick = {
                                     showSearchBar = !showSearchBar
                                     if (!showSearchBar) viewModel.updateSearchQuery("")
                                 }
@@ -431,37 +446,7 @@ fun MainFeatureScreen(
                     )
                 )
             },
-            floatingActionButton = {
-                if (currentTab == MainNavDestination.TODAY) {
-                    FloatingActionButton(
-                        onClick = {
-                            createDialogTargetEpochDay = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
-                                selectedCalendarEpochDay
-                            } else if (selectedFilter == TaskFilterTab.TOMORROW) {
-                                currentEpochDay + 1L
-                            } else {
-                                currentEpochDay
-                            }
-                            showCreateTaskDialog = true
-                        },
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .padding(end = 6.dp, bottom = 4.dp)
-                            .testTag("fab_create_task")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Новая задача")
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Новая задача", fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-            },
+            floatingActionButton = {},
             bottomBar = {
                 if (!isWideScreen) {
                     NavigationBar(
@@ -1054,26 +1039,8 @@ private fun TodayTasksContent(
                         onCreateTaskClick = { onOpenCreateDialogForDate(activeWorkerDate) },
                         onSelectDate = { chosenDay ->
                             onSelectCalendarDate(chosenDay)
-                        },
-                        isCalendarExpanded = showFullMonthCalendar,
-                        onToggleExpandCalendar = { showFullMonthCalendar = !showFullMonthCalendar }
+                        }
                     )
-                }
-
-                if (showFullMonthCalendar) {
-                    item {
-                        CorporateCalendarSection(
-                            currentEpochDay = currentEpochDay,
-                            selectedCalendarEpochDay = selectedCalendarEpochDay,
-                            isCalendarFilterActive = selectedFilter == TaskFilterTab.CALENDAR_DATE,
-                            allVisibleTasks = visibleTasks,
-                            onSelectDate = onSelectCalendarDate,
-                            onCreateTaskForDate = onOpenCreateDialogForDate,
-                            onOpenReportingTab = onOpenReportingTab,
-                            canAccessReporting = activeEmployee.role != CorporateRole.WORKER,
-                            onTaskClick = onTaskClick
-                        )
-                    }
                 }
 
                 if (filteredTasks.isEmpty()) {
@@ -1103,17 +1070,6 @@ private fun TodayTasksContent(
             // =========================================================================
             PersonaUiMode.ITR -> {
                 item {
-                    ItrSubdivisionScopeBar(
-                        activeEmployee = activeEmployee,
-                        selectedScope = selectedItrScope,
-                        subdivisionCount = itrSubdivisionCount,
-                        siteCount = itrSiteCount,
-                        personalCount = itrPersonalCount,
-                        onSelectScope = { scope -> selectedItrScope = scope }
-                    )
-                }
-
-                item {
                     ItrHorizontalDateStrip(
                         currentEpochDay = currentEpochDay,
                         selectedEpochDay = selectedCalendarEpochDay,
@@ -1126,24 +1082,13 @@ private fun TodayTasksContent(
                             }
                         },
                         onCreateTaskForDate = onOpenCreateDialogForDate,
-                        onToggleFullCalendar = { showFullMonthCalendar = !showFullMonthCalendar },
-                        isFullCalendarExpanded = showFullMonthCalendar
+                        activeEmployee = activeEmployee,
+                        selectedScope = selectedItrScope,
+                        subdivisionCount = itrSubdivisionCount,
+                        siteCount = itrSiteCount,
+                        personalCount = itrPersonalCount,
+                        onSelectScope = { scope -> selectedItrScope = scope }
                     )
-                }
-
-                if (showFullMonthCalendar) {
-                    item {
-                        CorporateCalendarSection(
-                            currentEpochDay = currentEpochDay,
-                            selectedCalendarEpochDay = selectedCalendarEpochDay,
-                            isCalendarFilterActive = selectedFilter == TaskFilterTab.CALENDAR_DATE,
-                            allVisibleTasks = visibleTasks,
-                            onSelectDate = onSelectCalendarDate,
-                            onCreateTaskForDate = onOpenCreateDialogForDate,
-                            onOpenReportingTab = onOpenReportingTab,
-                            onTaskClick = onTaskClick
-                        )
-                    }
                 }
 
                 item {

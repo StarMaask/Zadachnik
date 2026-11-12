@@ -185,16 +185,27 @@ fun PersonaModeSwitcherBar(
 @Composable
 fun WorkerTodayHeaderCard(
     currentEpochDay: Long,
+    selectedEpochDay: Long = currentEpochDay,
     totalTasksToday: Int,
     completedTasksToday: Int,
-    onCreateTaskClick: () -> Unit,
+    onCreateTaskClick: () -> Unit = {},
+    onSelectDate: (Long) -> Unit = {},
     isCalendarExpanded: Boolean = false,
     onToggleExpandCalendar: () -> Unit = {}
 ) {
     val tokens = LocalAppThemeTokens.current
-    val dateText = remember(currentEpochDay) {
-        ReportDocumentGenerator.formatEpochDay(currentEpochDay)
+    val dateText = remember(selectedEpochDay) {
+        ReportDocumentGenerator.formatEpochDay(selectedEpochDay)
     }
+    val dayRelationText = when (selectedEpochDay) {
+        currentEpochDay -> "Сегодня • $dateText"
+        currentEpochDay + 1L -> "Завтра • $dateText"
+        currentEpochDay - 1L -> "Вчера • $dateText"
+        else -> dateText
+    }
+    val russianLocale = remember { Locale.forLanguageTag("ru-RU") }
+    val dayStripOffsets = remember { (-1..4).toList() }
+
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -206,99 +217,117 @@ fun WorkerTodayHeaderCard(
         },
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable { onToggleExpandCalendar() }
+            // Верхняя строка: минималистичный заголовок «Мои задачи» и компактный выпадающий селектор даты
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CalendarMonth,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(15.dp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Мои задачи",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Сегодня • $dateText",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Icon(
-                        imageVector = if (isCalendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (isCalendarExpanded) "Свернуть календарь" else "Развернуть календарь с задачами",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
+                        text = if (totalTasksToday > 0) {
+                            "Выполнено на смену: $completedTasksToday из $totalTasksToday"
+                        } else {
+                            "Сменное задание и контроль объёмов"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Мои задачи на смену",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Выполнено задач: $completedTasksToday / $totalTasksToday",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+
+                // Компактный выпадающий селектор даты (разворачивает/сворачивает календарь)
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
                     modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
                         .clickable(onClick = onToggleExpandCalendar)
                         .testTag("worker_expand_calendar_button")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Icon(
+                            imageVector = Icons.Default.CalendarMonth,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = dayRelationText,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Icon(
                             imageVector = if (isCalendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = "Развернуть календарь",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
+                            contentDescription = if (isCalendarExpanded) "Свернуть календарь" else "Выбрать дату в календаре",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.clickable(onClick = onCreateTaskClick)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+            }
+
+            // Горизонтальный компактный скролл дат (быстрое переключение дня без раскрытия огромного календаря)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                dayStripOffsets.forEach { offset ->
+                    val dayEpoch = currentEpochDay + offset
+                    val localDate = remember(dayEpoch) { LocalDate.ofEpochDay(dayEpoch) }
+                    val isSelected = dayEpoch == selectedEpochDay
+                    val isToday = dayEpoch == currentEpochDay
+                    val shortDow = remember(localDate) {
+                        localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, russianLocale)
+                            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(russianLocale) else it.toString() }
+                    }
+                    val pillText = when (offset) {
+                        -1 -> "Вчера, ${localDate.dayOfMonth}"
+                        0 -> "Сегодня, ${localDate.dayOfMonth}"
+                        1 -> "Завтра, ${localDate.dayOfMonth}"
+                        else -> "$shortDow, ${localDate.dayOfMonth}.${String.format(Locale.US, "%02d", localDate.monthValue)}"
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = when {
+                            isSelected -> MaterialTheme.colorScheme.primary
+                            isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onSelectDate(dayEpoch) }
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Задача",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                            text = pillText,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Medium,
+                            color = when {
+                                isSelected -> MaterialTheme.colorScheme.onPrimary
+                                isToday -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
                         )
                     }
                 }

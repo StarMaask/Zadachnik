@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
@@ -889,21 +890,23 @@ private fun TodayTasksContent(
             }
         }
 
-        // Переключатель ролевых интерфейсов строго по уровню доступа:
-        // Рабочий -> только Рабочий; ИТР -> Рабочий + ИТР; Руководитель -> все
-        item {
-            PersonaModeSwitcherBar(
-                selectedMode = effectivePersonaMode,
-                allowedModes = allowedModes,
-                onSelectMode = { mode ->
-                    if (mode in allowedModes) {
-                        selectedPersonaMode = mode
-                        if (mode == PersonaUiMode.ITR && selectedFilter == TaskFilterTab.CALENDAR_DATE) {
-                            onSelectFilter(TaskFilterTab.ALL)
+        // Переключатель ролевых интерфейсов показываем только если у пользователя больше 1 доступного режима
+        // (для Рабочего лишняя плашка «Рабочий • Сменное задание на сегодня» скрыта, убирая визуальный шум)
+        if (allowedModes.size > 1) {
+            item {
+                PersonaModeSwitcherBar(
+                    selectedMode = effectivePersonaMode,
+                    allowedModes = allowedModes,
+                    onSelectMode = { mode ->
+                        if (mode in allowedModes) {
+                            selectedPersonaMode = mode
+                            if (mode == PersonaUiMode.ITR && selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                                onSelectFilter(TaskFilterTab.ALL)
+                            }
                         }
                     }
-                }
-            )
+                )
+            }
         }
 
         // Поиск (при необходимости)
@@ -935,15 +938,24 @@ private fun TodayTasksContent(
             // 1. ИНТЕРФЕЙС РАБОЧЕГО (Монтажник)
             // =========================================================================
             PersonaUiMode.WORKER -> {
+                val activeWorkerDate = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                    selectedCalendarEpochDay
+                } else {
+                    currentEpochDay
+                }
                 val doneCount = filteredTasks.count {
                     it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ON_REVIEW
                 }
                 item {
                     WorkerTodayHeaderCard(
                         currentEpochDay = currentEpochDay,
+                        selectedEpochDay = activeWorkerDate,
                         totalTasksToday = filteredTasks.size,
                         completedTasksToday = doneCount,
-                        onCreateTaskClick = { onOpenCreateDialogForDate(currentEpochDay) },
+                        onCreateTaskClick = { onOpenCreateDialogForDate(activeWorkerDate) },
+                        onSelectDate = { chosenDay ->
+                            onSelectCalendarDate(chosenDay)
+                        },
                         isCalendarExpanded = showFullMonthCalendar,
                         onToggleExpandCalendar = { showFullMonthCalendar = !showFullMonthCalendar }
                     )
@@ -967,12 +979,8 @@ private fun TodayTasksContent(
                 if (filteredTasks.isEmpty()) {
                     item {
                         EmptyTasksCleanCard(
-                            targetEpochDay = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) selectedCalendarEpochDay else currentEpochDay,
-                            onCreateClick = {
-                                onOpenCreateDialogForDate(
-                                    if (selectedFilter == TaskFilterTab.CALENDAR_DATE) selectedCalendarEpochDay else currentEpochDay
-                                )
-                            }
+                            targetEpochDay = activeWorkerDate,
+                            onCreateClick = { onOpenCreateDialogForDate(activeWorkerDate) }
                         )
                     }
                 } else {
@@ -1115,49 +1123,142 @@ private fun EmptyTasksCleanCard(
     onCreateClick: () -> Unit
 ) {
     val tokens = LocalAppThemeTokens.current
+    val formattedDate = remember(targetEpochDay) {
+        ReportDocumentGenerator.formatEpochDay(targetEpochDay)
+    }
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = Color(0xFF10B981)
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val cardTint = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(20.dp),
+        color = surfaceColor,
         shadowElevation = tokens.cardShadowElevationDp.dp,
         border = if (tokens.cardBorderWidthDp > 0f) {
             BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
         } else {
             null
         },
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("empty_tasks_state_card")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(24.dp),
+                .padding(horizontal = 28.dp, vertical = 36.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Стилизованная многослойная иллюстрация: стопка листов сменного задания + бренд-бейдж с галочкой
+            Box(
+                modifier = Modifier.size(116.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                // Мягкий ореол под иллюстрацией
+                Box(
+                    modifier = Modifier
+                        .size(104.dp)
+                        .clip(CircleShape)
+                        .background(cardTint)
+                )
+
+                // Нижний лист стопки (под небольшим смещением)
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = primaryColor.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .size(width = 62.dp, height = 74.dp)
+                        .padding(top = 8.dp, start = 10.dp)
+                ) {}
+
+                // Верхний основной лист чек-листа
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = surfaceColor,
+                    shadowElevation = 4.dp,
+                    border = BorderStroke(1.5.dp, primaryColor.copy(alpha = 0.28f)),
+                    modifier = Modifier.size(width = 60.dp, height = 72.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 10.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        // Заголовочная полоска документа
+                        Box(
+                            modifier = Modifier
+                                .width(24.dp)
+                                .height(5.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(primaryColor)
+                        )
+                        // Строки чек-листа
+                        repeat(3) { idx ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (idx == 0) secondaryColor else primaryColor.copy(alpha = 0.3f)
+                                        )
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(if (idx == 2) 0.65f else 0.9f)
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(primaryColor.copy(alpha = 0.18f))
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Акцентный изумрудный чек-бокс в правом нижнем углу иллюстрации
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = secondaryColor,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 10.dp, bottom = 8.dp)
+                        .size(34.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
             Text(
-                text = "Список задач пуст",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
+                text = "На $formattedDate задач пока нет",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.ExtraBold,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Spacer(modifier = Modifier.height(6.dp))
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             Text(
-                text = "Поставьте задачу или запланируйте объём работ на ${ReportDocumentGenerator.formatEpochDay(targetEpochDay)}.",
-                style = MaterialTheme.typography.bodySmall,
+                text = "Сменный план чист. Чтобы добавить новое поручение или объём работ, нажмите кнопку «+ Новая задача» в правом нижнем углу.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(14.dp))
-            Button(
-                onClick = onCreateClick,
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "+ Задача на ${ReportDocumentGenerator.formatEpochDay(targetEpochDay)}",
-                    fontWeight = FontWeight.Bold
-                )
-            }
         }
     }
 }
@@ -1545,25 +1646,6 @@ private fun CorporateCalendarSection(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Button(
-                            onClick = { onCreateTaskForDate(selectedCalendarEpochDay) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1.3f)
-                                .height(36.dp)
-                                .testTag("calendar_add_task_for_date_button")
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "+ Задача на ${formattedSelectedDate.take(5)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
                         OutlinedButton(
                             onClick = {
                                 if (!isCalendarFilterActive) {
@@ -1572,15 +1654,16 @@ private fun CorporateCalendarSection(
                                     onOpenReportingTab()
                                 }
                             },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
-                                .weight(1f)
+                                .fillMaxWidth()
                                 .height(36.dp)
                         ) {
                             Text(
-                                text = if (!isCalendarFilterActive) "Показать день" else "Отчёт за день",
+                                text = if (!isCalendarFilterActive) "Показать задачи за $formattedSelectedDate" else "Перейти к отчёту за $formattedSelectedDate",
                                 style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )

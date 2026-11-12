@@ -356,7 +356,7 @@ fun ReportingCenterScreen(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 36.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. УМНЫЙ ВЕРХНИЙ БЛОК: Заголовок «Отчёты», компактный селектор даты и сворачиваемый аккордеон «Параметры по умолчанию»
+        // 1. УМНЫЙ ВЕРХНИЙ БЛОК: Заголовок «Отчёты», компактный селектор даты и тонкая строка параметров по умолчанию
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Строка заголовка и селектора даты смены
@@ -385,11 +385,7 @@ fun ReportingCenterScreen(
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = 1.dp,
-                        border = BorderStroke(
-                            0.5.dp,
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-                        )
+                        shadowElevation = 1.dp
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -397,7 +393,7 @@ fun ReportingCenterScreen(
                         ) {
                             IconButton(
                                 onClick = { selectedReportEpochDay -= 1L },
-                                modifier = Modifier.size(30.dp)
+                                modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
@@ -427,7 +423,7 @@ fun ReportingCenterScreen(
                             }
                             IconButton(
                                 onClick = { selectedReportEpochDay += 1L },
-                                modifier = Modifier.size(30.dp)
+                                modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -439,15 +435,10 @@ fun ReportingCenterScreen(
                     }
                 }
 
-                // Компактная плашка-аккордеон «Параметры по умолчанию»
+                // Ультра-компактная строка «Параметры по умолчанию» (в одну тонкую линию)
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 2.dp,
-                    border = BorderStroke(
-                        width = 0.5.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -455,73 +446,52 @@ fun ReportingCenterScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { showDefaultParamsAccordion = !showDefaultParamsAccordion }
-                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
                                 .testTag("toggle_default_export_params"),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Tune,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                                Column {
-                                    Text(
-                                        text = "Параметры по умолчанию",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "${selectedFormat.code} • ${if (selectedLayout == SheetLayout.SPLIT_SHEETS) "На 2 страницах (Отчёт / План)" else "На 1 странице (Отчёт + План)"} • ${if (includePhotosInReport) "С фото" else "Без фото"}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "По умолчанию: ${selectedFormat.code} • ${if (selectedLayout == SheetLayout.SPLIT_SHEETS) "2 стр. (Отчёт / План)" else "1 стр. (Отчёт + План)"} • ${if (includePhotosInReport) "С фото" else "Без фото"}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
 
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        text = if (showDefaultParamsAccordion) "Свернуть" else "Изменить",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.width(2.dp))
-                                    Icon(
-                                        imageVector = if (showDefaultParamsAccordion) {
-                                            Icons.Default.ExpandLess
-                                        } else {
-                                            Icons.Default.ExpandMore
-                                        },
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
+                                Text(
+                                    text = if (showDefaultParamsAccordion) "Свернуть" else "Изменить",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Icon(
+                                    imageVector = if (showDefaultParamsAccordion) {
+                                        Icons.Default.ExpandLess
+                                    } else {
+                                        Icons.Default.ExpandMore
+                                    },
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(15.dp)
+                                )
                             }
                         }
 
@@ -534,7 +504,7 @@ fun ReportingCenterScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 HorizontalDivider(
@@ -548,7 +518,6 @@ fun ReportingCenterScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
-                                // Сегментированный переключатель страниц (2 колонки без горизонтального скролла)
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -559,7 +528,7 @@ fun ReportingCenterScreen(
                                         color = if (isSplit) {
                                             MaterialTheme.colorScheme.primary
                                         } else {
-                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                            MaterialTheme.colorScheme.surface
                                         },
                                         modifier = Modifier
                                             .weight(1f)
@@ -595,7 +564,7 @@ fun ReportingCenterScreen(
                                         color = if (isSingle) {
                                             MaterialTheme.colorScheme.primary
                                         } else {
-                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                            MaterialTheme.colorScheme.surface
                                         },
                                         modifier = Modifier
                                             .weight(1f)
@@ -743,7 +712,7 @@ fun ReportingCenterScreen(
                     }
                 }
 
-                // 2. ТАБЫ КАТЕГОРИЙ ОТЧЁТОВ (Все • Ежедневные • Аналитика ИТР • Конструктор)
+                // 2. СЕГМЕНТИРОВАННЫЕ ТАБЫ КАТЕГОРИЙ ОТЧЁТОВ (Все • Ежедневные • Аналитика ИТР • Конструктор)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -766,12 +735,7 @@ fun ReportingCenterScreen(
                             } else {
                                 MaterialTheme.colorScheme.surface
                             },
-                            shadowElevation = if (isSelected) 2.dp else 0.5.dp,
-                            border = if (isSelected) {
-                                null
-                            } else {
-                                BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                            },
+                            shadowElevation = if (isSelected) 2.dp else 1.dp,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
                                 .clickable { selectedCategoryTab = tab }
@@ -828,7 +792,6 @@ fun ReportingCenterScreen(
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = Color(0xFF10B981).copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -880,30 +843,10 @@ fun ReportingCenterScreen(
                 PremiumReportCard(
                     template = tpl,
                     displayName = displayName,
-                    activeEmployee = activeEmployee,
                     selectedLayout = selectedLayout,
                     selectedFormat = selectedFormat,
                     includePhotos = includePhotosInReport,
-                    onOpenActionSheet = { activeActionSheetTemplate = tpl.copy(name = displayName) },
-                    onQuickPreview = {
-                        onGenerateReport(
-                            tpl.copy(name = displayName),
-                            selectedLayout,
-                            selectedFormat,
-                            false,
-                            includePhotosInReport
-                        )
-                    },
-                    onQuickDownload = {
-                        onGenerateReport(
-                            tpl.copy(name = displayName),
-                            selectedLayout,
-                            selectedFormat,
-                            true,
-                            includePhotosInReport
-                        )
-                        lastDownloadedNotice = "Файл «$displayName» (${selectedFormat.code}, ${selectedLayout.shortRu}) сохранён в папку «Загрузки» телефона."
-                    }
+                    onOpenActionSheet = { activeActionSheetTemplate = tpl.copy(name = displayName) }
                 )
             }
         }
@@ -913,7 +856,7 @@ fun ReportingCenterScreen(
             item {
                 ReportCategorySectionHeader(
                     category = ReportCategoryTab.ITR_ANALYTICS,
-                    topAirSpacing = if (selectedCategoryTab == ReportCategoryTab.ALL) 14.dp else 4.dp
+                    topAirSpacing = if (selectedCategoryTab == ReportCategoryTab.ALL) 16.dp else 4.dp
                 )
             }
             items(itrAnalyticsList, key = { "itr_${it.id.ifBlank { it.name }}" }) { tpl ->
@@ -921,30 +864,10 @@ fun ReportingCenterScreen(
                 PremiumReportCard(
                     template = tpl,
                     displayName = displayName,
-                    activeEmployee = activeEmployee,
                     selectedLayout = selectedLayout,
                     selectedFormat = selectedFormat,
                     includePhotos = includePhotosInReport,
-                    onOpenActionSheet = { activeActionSheetTemplate = tpl.copy(name = displayName) },
-                    onQuickPreview = {
-                        onGenerateReport(
-                            tpl.copy(name = displayName),
-                            selectedLayout,
-                            selectedFormat,
-                            false,
-                            includePhotosInReport
-                        )
-                    },
-                    onQuickDownload = {
-                        onGenerateReport(
-                            tpl.copy(name = displayName),
-                            selectedLayout,
-                            selectedFormat,
-                            true,
-                            includePhotosInReport
-                        )
-                        lastDownloadedNotice = "Файл «$displayName» (${selectedFormat.code}, ${selectedLayout.shortRu}) сохранён в папку «Загрузки» телефона."
-                    }
+                    onOpenActionSheet = { activeActionSheetTemplate = tpl.copy(name = displayName) }
                 )
             }
         }
@@ -954,7 +877,7 @@ fun ReportingCenterScreen(
             item {
                 ReportCategorySectionHeader(
                     category = ReportCategoryTab.CONSTRUCTOR,
-                    topAirSpacing = if (selectedCategoryTab == ReportCategoryTab.ALL) 14.dp else 4.dp,
+                    topAirSpacing = if (selectedCategoryTab == ReportCategoryTab.ALL) 16.dp else 4.dp,
                     trailingActionLabel = "+ Шаблон",
                     onTrailingAction = { showCustomTemplateDialog = true }
                 )
@@ -964,30 +887,10 @@ fun ReportingCenterScreen(
                 PremiumReportCard(
                     template = tpl,
                     displayName = displayName,
-                    activeEmployee = activeEmployee,
                     selectedLayout = selectedLayout,
                     selectedFormat = selectedFormat,
                     includePhotos = includePhotosInReport,
-                    onOpenActionSheet = { activeActionSheetTemplate = tpl.copy(name = displayName) },
-                    onQuickPreview = {
-                        onGenerateReport(
-                            tpl.copy(name = displayName),
-                            selectedLayout,
-                            selectedFormat,
-                            false,
-                            includePhotosInReport
-                        )
-                    },
-                    onQuickDownload = {
-                        onGenerateReport(
-                            tpl.copy(name = displayName),
-                            selectedLayout,
-                            selectedFormat,
-                            true,
-                            includePhotosInReport
-                        )
-                        lastDownloadedNotice = "Файл «$displayName» (${selectedFormat.code}, ${selectedLayout.shortRu}) сохранён в папку «Загрузки» телефона."
-                    }
+                    onOpenActionSheet = { activeActionSheetTemplate = tpl.copy(name = displayName) }
                 )
             }
         }
@@ -1008,7 +911,6 @@ fun ReportingCenterScreen(
                     shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surface,
                     shadowElevation = 1.dp,
-                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -1192,235 +1094,170 @@ private fun ReportCategorySectionHeader(
 }
 
 /**
- * Компактная премиальная карточка отчёта в стиле Linear / Notion / Stripe:
- * - Индивидуальная иконка слева в мягком тонированном боксе (44x44.dp);
+ * Полностью кликабельная карточка отчёта в стиле Linear / Notion / Stripe / Apple:
+ * - Без жёстких рамок, только мягкая подложка и деликатная тень;
+ * - Цветная тематическая иконка слева (календарь для ежедневных, график для аналитики, папка для конструктора);
  * - Жирный заголовок + серый подзаголовок;
- * - В углу — премиальный золотисто-фиолетовый бейдж «ИТР+» с иконкой щита (вместо серого замка с ошибкой);
- * - Без дублирующегося переключателя страниц;
- * - При нажатии на карточку открывается Action Sheet (Посмотреть на экране / Скачать PDF / Настройки страниц),
- *   а справа расположена компактная кнопка мгновенного формирования документа.
+ * - Ненавязчивая строка метаданных мелким серым шрифтом с мини-иконками;
+ * - В углу — фиолетовый бейдж со щитом «ИТР+» (вместо серых замков);
+ * - Без дублирующихся кнопок «Сформировать» внутри карточки — вся карточка открывает Bottom Sheet действий.
  */
 @Composable
 private fun PremiumReportCard(
     template: ReportTemplateDocument,
     displayName: String,
-    activeEmployee: CorporateEmployee,
     selectedLayout: SheetLayout,
     selectedFormat: ExportFormat,
     includePhotos: Boolean,
-    onOpenActionSheet: () -> Unit,
-    onQuickPreview: () -> Unit,
-    onQuickDownload: () -> Unit
+    onOpenActionSheet: () -> Unit
 ) {
     val rType = template.parsedReportType
     val visual = rType.visualSpec()
     val requiresItrPlus = rType.isConsolidatedOnly
-    val isLockedForWorker = requiresItrPlus && !activeEmployee.role.canExportConsolidatedPersonnelReport()
 
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 2.dp,
-        border = BorderStroke(
-            width = 0.5.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-        ),
+        shadowElevation = 1.5.dp,
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .clickable { onOpenActionSheet() }
             .testTag("report_card_${rType.code}")
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Top
+            // Тематическая цветная иконка типа отчёта
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(visual.iconBgColor),
+                contentAlignment = Alignment.Center
             ) {
-                // Иконка типа отчёта
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(visual.iconBgColor),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = visual.icon,
-                        contentDescription = null,
-                        tint = visual.iconTint,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                // Текстовый блок: Заголовок + Бейдж ИТР+ в углу + Подзаголовок
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Text(
-                            text = displayName,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        // Элегантный индикатор доступа «ИТР+» или тематический бейдж
-                        if (requiresItrPlus) {
-                            ItrPlusPremiumBadge()
-                        } else if (visual.badgeLabel != null) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = visual.iconBgColor
-                            ) {
-                                Text(
-                                    text = visual.badgeLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = visual.iconTint,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = rType.subtitleRu,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                Icon(
+                    imageVector = visual.icon,
+                    contentDescription = null,
+                    tint = visual.iconTint,
+                    modifier = Modifier.size(23.dp)
+                )
             }
 
-            // Нижняя компактная строка управления: краткий индикатор параметров + Единая кнопка действия
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            // Центральный блок: Заголовок + Бейдж «ИТР+» + Подзаголовок + Ненавязчивая строка параметров
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Ненавязчивая пилюля параметров (нажатие открывает Action Sheet с настройками страниц)
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
-                        .clickable { onOpenActionSheet() }
-                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "${selectedFormat.code} • ${if (selectedLayout == SheetLayout.SPLIT_SHEETS) "2 стр." else "1 стр."} • ${if (includePhotos) "С фото" else "Без фото"}",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = displayName,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
                     )
-                    Icon(
-                        imageVector = Icons.Default.MoreHoriz,
-                        contentDescription = "Опции отчёта",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
 
-                if (isLockedForWorker) {
-                    // Для рабочего вместо серого замка — аккуратная кнопка описания уровня доступа ИТР+
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = Color(0xFF7C3AED).copy(alpha = 0.08f),
-                        border = BorderStroke(0.5.dp, Color(0xFF7C3AED).copy(alpha = 0.28f)),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onOpenActionSheet() }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    if (requiresItrPlus) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        ItrPlusPremiumBadge()
+                    } else if (visual.badgeLabel != null) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = visual.iconBgColor
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.VerifiedUser,
-                                contentDescription = null,
-                                tint = Color(0xFF7C3AED),
-                                modifier = Modifier.size(14.dp)
-                            )
                             Text(
-                                text = "Уровень ИТР+",
+                                text = visual.badgeLabel,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFF7C3AED)
-                            )
-                        }
-                    }
-                } else {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        // Компактная иконка быстрого предпросмотра на экране
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { onQuickPreview() }
-                                .testTag("preview_report_${rType.code}")
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Preview,
-                                    contentDescription = "Посмотреть на экране",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(17.dp)
-                                )
-                            }
-                        }
-
-                        // Единая главная кнопка формирования отчёта
-                        Button(
-                            onClick = onQuickDownload,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier
-                                .height(34.dp)
-                                .testTag("generate_report_${rType.code}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Download,
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = "Сформировать ${selectedFormat.code}",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold
+                                color = visual.iconTint,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                             )
                         }
                     }
                 }
+
+                Text(
+                    text = rType.subtitleRu,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                // Ненавязчивая строка метаданных мелким серым шрифтом с мини-иконками
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    Text(
+                        text = selectedFormat.code,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+                    )
+                    Text(
+                        text = "•",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                    )
+                    Text(
+                        text = if (selectedLayout == SheetLayout.SPLIT_SHEETS) "2 стр. (Отчёт / План)" else "1 стр. (Отчёт + План)",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+                    )
+                    Text(
+                        text = "•",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (includePhotos) Icons.Default.PhotoCamera else Icons.Default.HideImage,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = if (includePhotos) "С фото" else "Без фото",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+                        )
+                    }
+                }
             }
+
+            // Ненавязчивый шеврон перехода к Action Sheet
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "Открыть меню отчёта",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
 
 /**
- * Элегантный золотисто-фиолетовый бейдж «ИТР+» с иконкой щита в углу аналитических карточек.
+ * Элегантный фиолетовый бейдж «ИТР+» со щитом в углу аналитических карточек.
  */
 @Composable
 private fun ItrPlusPremiumBadge() {

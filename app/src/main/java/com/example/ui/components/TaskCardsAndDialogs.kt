@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
@@ -495,6 +496,26 @@ fun TaskDetailDialog(
                 photoComment.ifBlank { "Снимок с камеры #${task.photoItems.size + 1}" }
             )
             burstShotCount++
+        }
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            val effectiveComment = photoComment.ifBlank { "Фотофиксация СМР #${task.photoItems.size + 1}" }
+            val savedPath = PhotoCaptureUtils.savePickedUriWithStamp(
+                context = context,
+                contentUri = uri,
+                taskTitle = task.title,
+                authorName = activeEmployee.shortName,
+                gpsCoords = photoGps,
+                comment = effectiveComment
+            )
+            if (savedPath != null) {
+                onAddPhoto(savedPath, photoGps, effectiveComment)
+                photoComment = ""
+            }
         }
     }
 
@@ -1330,8 +1351,15 @@ fun TaskDetailDialog(
                             if (photos.isNotEmpty()) {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     photos.forEachIndexed { idx, ph ->
-                                        val bitmap = remember(ph.uriString) {
-                                            PhotoCaptureUtils.loadBitmapFromUriOrPath(ph.uriString)
+                                        val bitmap = remember(ph.uriString, ph.comment, ph.capturedAtText, task.title) {
+                                            PhotoCaptureUtils.loadBitmapFromUriOrPath(
+                                                uriOrPath = ph.uriString,
+                                                fallbackComment = ph.comment,
+                                                fallbackAuthor = ph.authorName,
+                                                fallbackTime = ph.capturedAtText,
+                                                fallbackGps = ph.gpsCoords,
+                                                fallbackTaskTitle = task.title
+                                            )
                                         }
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
@@ -1490,37 +1518,63 @@ fun TaskDetailDialog(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             textAlign = TextAlign.Center
                                         )
-                                        TextButton(
-                                            onClick = {
-                                                val savedStampPath = PhotoCaptureUtils.generatePhotoStampFile(
-                                                    context = context,
-                                                    taskTitle = task.title,
-                                                    authorName = activeEmployee.shortName,
-                                                    gpsCoords = photoGps,
-                                                    comment = photoComment.ifBlank { "Контрольный снимок узла" },
-                                                    photoIndex = task.photoItems.size + 1
-                                                )
-                                                onAddPhoto(
-                                                    savedStampPath,
-                                                    photoGps,
-                                                    photoComment.ifBlank { "Фотоштамп СМР #${task.photoItems.size + 1}" }
-                                                )
-                                                photoComment = ""
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                            modifier = Modifier.testTag("instant_photo_stamp_button")
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.AddAPhoto,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(5.dp))
-                                            Text(
-                                                text = "+ Быстрый фотоштамп СМР",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
+                                            TextButton(
+                                                onClick = {
+                                                    photoPickerLauncher.launch(
+                                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                                    )
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                modifier = Modifier.testTag("pick_gallery_photo_button")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PhotoCamera,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(5.dp))
+                                                Text(
+                                                    text = "Из галереи",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                            TextButton(
+                                                onClick = {
+                                                    val savedStampPath = PhotoCaptureUtils.generatePhotoStampFile(
+                                                        context = context,
+                                                        taskTitle = task.title,
+                                                        authorName = activeEmployee.shortName,
+                                                        gpsCoords = photoGps,
+                                                        comment = photoComment.ifBlank { "Контрольный снимок узла" },
+                                                        photoIndex = task.photoItems.size + 1
+                                                    )
+                                                    onAddPhoto(
+                                                        savedStampPath,
+                                                        photoGps,
+                                                        photoComment.ifBlank { "Фотоштамп СМР #${task.photoItems.size + 1}" }
+                                                    )
+                                                    photoComment = ""
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                modifier = Modifier.testTag("instant_photo_stamp_button")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.AddAPhoto,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(5.dp))
+                                                Text(
+                                                    text = "+ Быстрый фотоштамп СМР",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1829,6 +1883,7 @@ fun TaskDetailDialog(
             existingPhotoCount = task.photoItems.size,
             minRequiredPhotos = task.minPhotoCount.toInt().coerceAtLeast(1),
             onOpenSystemCamera = {
+                showModernCameraDialog = false
                 cameraLauncher.launch(null)
             },
             onSaveCapturedPhotos = { capturedItems ->
@@ -1843,6 +1898,7 @@ fun TaskDetailDialog(
     selectedPhotoForPreview?.let { photoItem ->
         FullScreenPhotoDialog(
             photo = photoItem,
+            taskTitle = task.title,
             canDelete = task.taskStatus != TaskStatus.APPROVED,
             onDismiss = { selectedPhotoForPreview = null },
             onDelete = {
@@ -1918,12 +1974,20 @@ fun TaskDetailDialog(
 @Composable
 fun FullScreenPhotoDialog(
     photo: PhotoReportItem,
+    taskTitle: String = "",
     canDelete: Boolean,
     onDismiss: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val bitmap = remember(photo.uriString) {
-        PhotoCaptureUtils.loadBitmapFromUriOrPath(photo.uriString)
+    val bitmap = remember(photo.uriString, photo.comment, photo.capturedAtText, taskTitle) {
+        PhotoCaptureUtils.loadBitmapFromUriOrPath(
+            uriOrPath = photo.uriString,
+            fallbackComment = photo.comment,
+            fallbackAuthor = photo.authorName,
+            fallbackTime = photo.capturedAtText,
+            fallbackGps = photo.gpsCoords,
+            fallbackTaskTitle = taskTitle
+        )
     }
 
     Dialog(

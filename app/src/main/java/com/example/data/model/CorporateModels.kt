@@ -622,8 +622,13 @@ data class TaskDocument(
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
+    @get:com.google.firebase.firestore.Exclude
     val taskStatus: TaskStatus get() = TaskStatus.fromCode(status)
+
+    @get:com.google.firebase.firestore.Exclude
     val taskPriority: TaskPriority get() = TaskPriority.fromCode(priority)
+
+    @get:com.google.firebase.firestore.Exclude
     val recurrence: RecurrenceRule get() = RecurrenceRule.fromCode(recurrenceRule)
 
     private fun parsedVolumeTag(): Triple<Double, Double, String>? {
@@ -636,9 +641,11 @@ data class TaskDocument(
         return Triple(t, c, u)
     }
 
+    @get:com.google.firebase.firestore.Exclude
     private val hasLegacyAutoMainSubtask: Boolean
         get() = subtaskItems.any { it.startsWith("sub_vol_main|") }
 
+    @get:com.google.firebase.firestore.Exclude
     val effectiveTargetVolume: Double
         get() {
             val subs = decodedSubtasks()
@@ -650,6 +657,7 @@ data class TaskDocument(
             return if (subs.isNotEmpty()) subs.sumOf { it.effectiveTargetVolume } else 0.0
         }
 
+    @get:com.google.firebase.firestore.Exclude
     val effectiveCompletedVolume: Double
         get() {
             val subs = decodedSubtasks()
@@ -667,6 +675,7 @@ data class TaskDocument(
             return if (subs.isNotEmpty()) subs.sumOf { it.effectiveCompletedVolume } else 0.0
         }
 
+    @get:com.google.firebase.firestore.Exclude
     val effectiveVolumeUnit: String
         get() {
             val explicit = if (volumeUnit.isNotBlank()) volumeUnit else (parsedVolumeTag()?.third ?: "")
@@ -675,6 +684,7 @@ data class TaskDocument(
             return subs.firstOrNull()?.effectiveUnit ?: "шт"
         }
 
+    @get:com.google.firebase.firestore.Exclude
     val visibleTags: List<String>
         get() = tags.filterNot { it.startsWith("__vol__|") || it.startsWith("__asgn__|") }
 
@@ -687,6 +697,7 @@ data class TaskDocument(
         return Pair(ids, names)
     }
 
+    @get:com.google.firebase.firestore.Exclude
     val allAssigneeIds: List<String>
         get() {
             val fromTag = parsedAssigneesTag()?.first.orEmpty()
@@ -694,6 +705,7 @@ data class TaskDocument(
             return merged
         }
 
+    @get:com.google.firebase.firestore.Exclude
     val allAssigneeNames: List<String>
         get() {
             val fromTag = parsedAssigneesTag()?.second.orEmpty()

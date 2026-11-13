@@ -93,8 +93,10 @@ test("Authenticated user: can read shared site tasks and update status, but cann
   const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
   await assertSucceeds(aliceDb.collection("tasks").doc("task_bob_1").get());
   await assertSucceeds(aliceDb.collection("tasks").get());
+  const sampleBase64Photo = "ph_1|/data/user/0/app/files/cam_1.jpg#b64=" + "A".repeat(32000) + "|emp_1|Плиткин Д.|13.11 16:16|Участок №1|Фотофиксация СМР #1";
   await assertSucceeds(
     aliceDb.collection("tasks").doc("task_bob_1").update({
+      photoItems: [sampleBase64Photo],
       status: "ON_REVIEW",
       updatedAt: new Date(),
     })

@@ -426,9 +426,7 @@ class EzhednevnikViewModel(
                 if (remoteTask == null) {
                     mergedMap[localTask.id] = localTask
                 } else {
-                    val remoteWeight = remoteTask.historyItems.size * 10 + remoteTask.photoItems.size * 5 + remoteTask.commentItems.size * 2
-                    val localWeight = localTask.historyItems.size * 10 + localTask.photoItems.size * 5 + localTask.commentItems.size * 2
-                    mergedMap[localTask.id] = if (remoteWeight > localWeight) remoteTask else localTask
+                    mergedMap[localTask.id] = mergeTaskRevisions(remoteTask, localTask)
                 }
             }
         }
@@ -566,16 +564,18 @@ class EzhednevnikViewModel(
 
     private fun startPeriodicCloudMembersSync() {
         viewModelScope.launch {
-            // Первичная подгрузка очереди заявок из Firestore при старте
+            // Первичная подгрузка очереди заявок и фотоотчётов из Firestore при старте
             delay(1200L)
             if (isCloudAuthenticated) {
                 syncSiteMembersFromCloudSilently()
+                syncTasksAndPhotosWithCloudSilently()
             }
             while (isActive) {
                 delay(12_000L)
                 _isCloudSyncActive.value = isCloudAuthenticated
                 if (isCloudAuthenticated) {
                     syncSiteMembersFromCloudSilently()
+                    syncTasksAndPhotosWithCloudSilently()
                     val cur = _currentMemberRecord.value
                     if (cur != null && cur.isPendingRole) {
                         val grp = CorporateSeedData.workGroups.firstOrNull {
@@ -618,6 +618,105 @@ class EzhednevnikViewModel(
             ) {
                 upsertLocalMember(remote.copy(id = canonicalId, memberId = canonicalId))
             }
+        }
+    }
+
+    private fun mergePhotoListsPreservingBase64(
+        remoteEncoded: List<String>,
+        localEncoded: List<String>
+    ): List<String> {
+        if (remoteEncoded.isEmpty() && localEncoded.isEmpty()) return emptyList()
+        val remoteDecoded = remoteEncoded.map { PhotoReportItem.decode(it) }
+        val localDecoded = localEncoded.map { PhotoReportItem.decode(it) }
+        val mergedByKey = LinkedHashMap<String, PhotoReportItem>()
+
+        (remoteDecoded + localDecoded).forEach { item ->
+            val key = item.id.ifBlank { "${item.capturedAtText}_${item.comment}" }
+            val upgradedUri = PhotoCaptureUtils.ensureCloudSyncedUriString(item.uriString)
+            val candidate = if (upgradedUri != item.uriString) item.copy(uriString = upgradedUri) else item
+            val existing = mergedByKey[key]
+            if (existing == null) {
+                mergedByKey[key] = candidate
+            } else {
+                val candidateHasB64 = candidate.uriString.contains("#b64=") || candidate.uriString.startsWith("data:image")
+                val existingHasB64 = existing.uriString.contains("#b64=") || existing.uriString.startsWith("data:image")
+                if ((candidateHasB64 && !existingHasB64) || candidate.uriString.length > existing.uriString.length) {
+                    mergedByKey[key] = candidate
+                }
+            }
+        }
+        return mergedByKey.values.map { it.encode() }.takeLast(15)
+    }
+
+    private fun mergeTaskRevisions(
+        remoteTask: TaskDocument,
+        localTask: TaskDocument
+    ): TaskDocument {
+        val mergedPhotos = mergePhotoListsPreservingBase64(remoteTask.photoItems, localTask.photoItems)
+        val remoteHasB64 = remoteTask.photoItems.any { it.contains("#b64=") }
+        val localHasB64 = localTask.photoItems.any { it.contains("#b64=") }
+        val remoteWeight = remoteTask.historyItems.size * 10 +
+            remoteTask.photoItems.size * 5 +
+            remoteTask.commentItems.size * 2 +
+            (if (remoteHasB64) 4 else 0)
+        val localWeight = localTask.historyItems.size * 10 +
+            localTask.photoItems.size * 5 +
+            localTask.commentItems.size * 2 +
+            (if (localHasB64) 4 else 0)
+        val winner = if (remoteWeight >= localWeight) remoteTask else localTask
+        return winner.copy(photoItems = mergedPhotos)
+    }
+
+    private suspend fun syncTasksAndPhotosWithCloudSilently() {
+        val remoteTasks = repository.getUserTasks().getOrNull().orEmpty()
+        val deletedIds = _deletedTaskIds.value
+        val currentLocalMap = _localTasks.value.associateBy { it.id }.toMutableMap()
+        var localChanged = false
+
+        remoteTasks.forEach { remote ->
+            if (remote.id.isNotBlank() &&
+                !CorporateSeedData.isLegacyFakeSeedTaskId(remote.id) &&
+                remote.id !in deletedIds
+            ) {
+                val existingLocal = currentLocalMap[remote.id]
+                val merged = if (existingLocal == null) remote else mergeTaskRevisions(remote, existingLocal)
+                if (existingLocal != merged) {
+                    currentLocalMap[remote.id] = merged
+                    localChanged = true
+                }
+            }
+        }
+
+        // Автоматическая догрузка Base64 для фото, снятых на этом телефоне ранее без #b64=
+        currentLocalMap.values.toList().forEach { task ->
+            val decoded = task.decodedPhotos()
+            var taskPhotosUpgraded = false
+            val upgradedPhotos = decoded.map { ph ->
+                val syncedUri = PhotoCaptureUtils.ensureCloudSyncedUriString(ph.uriString)
+                if (syncedUri != ph.uriString) {
+                    taskPhotosUpgraded = true
+                    ph.copy(uriString = syncedUri)
+                } else {
+                    ph
+                }
+            }
+            if (taskPhotosUpgraded) {
+                val updatedTask = task.copy(photoItems = upgradedPhotos.map { it.encode() })
+                currentLocalMap[task.id] = updatedTask
+                localChanged = true
+                repository.saveTaskPhotosToFirestore(updatedTask)
+            } else {
+                val remoteVersion = remoteTasks.firstOrNull { it.id == task.id }
+                val localHasB64 = task.photoItems.any { it.contains("#b64=") }
+                val remoteHasB64 = remoteVersion?.photoItems?.any { it.contains("#b64=") } == true
+                if (localHasB64 && !remoteHasB64) {
+                    repository.saveTaskPhotosToFirestore(task)
+                }
+            }
+        }
+
+        if (localChanged) {
+            persistTasksLocally(currentLocalMap.values.toList())
         }
     }
 
@@ -1025,11 +1124,7 @@ class EzhednevnikViewModel(
         val fromLocal = _localTasks.value.firstOrNull { it.id == taskId }
         val fromState = (tasksState.value as? UiState.Success)?.data?.firstOrNull { it.id == taskId }
         return when {
-            fromLocal != null && fromState != null -> {
-                val stateWeight = fromState.historyItems.size * 10 + fromState.photoItems.size * 5 + fromState.commentItems.size * 2
-                val localWeight = fromLocal.historyItems.size * 10 + fromLocal.photoItems.size * 5 + fromLocal.commentItems.size * 2
-                if (stateWeight > localWeight) fromState else fromLocal
-            }
+            fromLocal != null && fromState != null -> mergeTaskRevisions(fromState, fromLocal)
             fromLocal != null -> fromLocal
             else -> fromState
         }
@@ -1866,9 +1961,10 @@ class EzhednevnikViewModel(
         val actor = activeEmployee.value
         val nowStr = nowText()
         val encodedNew = items.mapIndexed { idx, (uriString, comment) ->
+            val cloudSyncedUri = PhotoCaptureUtils.ensureCloudSyncedUriString(uriString)
             PhotoReportItem(
                 id = "ph_${System.currentTimeMillis()}_${idx}_${(100..999).random()}",
-                uriString = uriString,
+                uriString = cloudSyncedUri,
                 authorId = actor.id,
                 authorName = actor.shortName,
                 capturedAtText = nowStr,
@@ -1876,7 +1972,10 @@ class EzhednevnikViewModel(
                 comment = comment.ifBlank { "Фотофиксация выполнения" }
             ).encode()
         }
-        val updatedPhotos = (currentTask.photoItems + encodedNew).takeLast(30)
+        val existingUpgraded = currentTask.decodedPhotos().map { ph ->
+            ph.copy(uriString = PhotoCaptureUtils.ensureCloudSyncedUriString(ph.uriString)).encode()
+        }
+        val updatedPhotos = (existingUpgraded + encodedNew).takeLast(15)
         val nextStatus = if (currentTask.taskStatus == TaskStatus.NEW) {
             TaskStatus.IN_PROGRESS.code
         } else {
@@ -1897,20 +1996,7 @@ class EzhednevnikViewModel(
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                var runningTask = currentTask
-                items.forEach { (uriString, comment) ->
-                    repository.addPhotoToTask(actor, runningTask, uriString, gpsCoords, comment)
-                    val addedEncoded = PhotoReportItem(
-                        id = "ph_${System.currentTimeMillis()}",
-                        uriString = uriString,
-                        authorId = actor.id,
-                        authorName = actor.shortName,
-                        capturedAtText = nowStr,
-                        gpsCoords = gpsCoords.ifBlank { "Участок №1" },
-                        comment = comment.ifBlank { "Фотофиксация выполнения" }
-                    ).encode()
-                    runningTask = runningTask.copy(photoItems = runningTask.photoItems + addedEncoded)
-                }
+                repository.saveTaskPhotosToFirestore(updatedTask)
             }
         }
     }
@@ -2342,8 +2428,13 @@ class EzhednevnikViewModel(
             }
         }
 
+        val cloudReadyPhotos = currentTask.decodedPhotos().map { ph ->
+            ph.copy(uriString = PhotoCaptureUtils.ensureCloudSyncedUriString(ph.uriString)).encode()
+        }
+
         val updatedTask = currentTask.copy(
             status = nextStatus.code,
+            photoItems = cloudReadyPhotos,
             rejectionReason = null,
             approvedByName = if (nextStatus == TaskStatus.APPROVED) actor.fullName else currentTask.approvedByName,
             historyItems = currentTask.historyItems + StatusHistoryEntry(

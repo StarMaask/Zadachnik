@@ -1072,7 +1072,14 @@ object ReportDocumentGenerator {
                 val boxRect = RectF(x, y, x + cardW, y + cardH)
                 canvas.drawRoundRect(boxRect, 8f, 8f, linePaint)
 
-                val bmp = PhotoCaptureUtils.loadBitmapFromUriOrPath(item.photo.uriString)
+                val bmp = PhotoCaptureUtils.loadBitmapFromUriOrPath(
+                    uriOrPath = item.photo.uriString,
+                    fallbackComment = item.photo.comment,
+                    fallbackAuthor = item.photo.authorName.ifBlank { item.assigneeFio },
+                    fallbackTime = item.photo.capturedAtText,
+                    fallbackGps = item.photo.gpsCoords,
+                    fallbackTaskTitle = item.taskTitle
+                )
                 if (bmp != null) {
                     val dstRect = RectF(x + 6f, y + 6f, x + cardW - 6f, y + 125f)
                     canvas.drawBitmap(bmp, null, dstRect, null)

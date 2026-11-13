@@ -454,6 +454,30 @@ class ExampleUnitTest {
         )
         assertEquals(expectedText, ReportDocumentGenerator.formatEpochDay(todayEpoch))
     }
+
+    @Test
+    fun `PhotoReportItem encode and decode preserves full Base64 JPEG payload across devices`() {
+        val sampleB64 = "A".repeat(28500)
+        val combinedUri = "/data/user/0/com.aistudio.ezhednevnik/files/task_photos/cam_123.jpg#b64=$sampleB64"
+        val item = com.example.data.model.PhotoReportItem(
+            id = "ph_test_1",
+            uriString = combinedUri,
+            authorId = "emp_1",
+            authorName = "Плиткин Д.",
+            capturedAtText = "13.11 16:16",
+            gpsCoords = "Участок №1 — ПГС и Инженер",
+            comment = "Фотофиксация СМР #1"
+        )
+        val encoded = item.encode()
+        val decoded = com.example.data.model.PhotoReportItem.decode(encoded)
+        assertEquals("ph_test_1", decoded.id)
+        assertEquals(combinedUri, decoded.uriString)
+        assertTrue(decoded.uriString.contains("#b64="))
+        assertEquals(sampleB64, decoded.uriString.substringAfter("#b64="))
+        assertEquals("Плиткин Д.", decoded.authorName)
+        assertEquals("Фотофиксация СМР #1", decoded.comment)
+    }
 }
+
 
 

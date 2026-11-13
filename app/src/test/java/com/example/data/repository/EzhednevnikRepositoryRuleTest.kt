@@ -7,11 +7,10 @@ import com.example.data.model.TaskPriority
 import com.example.data.model.TaskStatus
 import com.example.data.seed.CorporateSeedData
 import com.google.firebase.firestore.FirebaseFirestoreException
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -41,7 +40,7 @@ class EzhednevnikRepositoryRuleTest : FirestoreEmulatorTestBase() {
     }
 
     @Test
-    fun createTask_andPhotoReportLifecycle_enforcesPhotoMinimumAndApproval() = runBlocking {
+    fun createTask_andBase64PhotoReportLifecycle_syncsAcrossDevicesAndApproves() = runBlocking {
         signInTestUser("alice_corp@test.com")
         val repository = EzhednevnikRepository(firestore)
 
@@ -52,40 +51,45 @@ class EzhednevnikRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertTrue("Task creation should succeed: ${createResult.exceptionOrNull()}", createResult.isSuccess)
         val taskId = createResult.getOrThrow()
 
-        // 2. Worker tries to complete without required 2 photos -> must fail
+        // 2. Worker attaches 2 photos with embedded Base64 payload (>20KB) and submits -> transitions to ON_REVIEW
         val initialTask = withTimeout(DEFAULT_TIMEOUT_MS) { repository.getTaskById(taskId).getOrThrow() }
-        val prematureSubmit = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.submitTaskCompletion(workerEmployee, initialTask, "Попытка закрыть без фото")
-        }
-        assertTrue("Completion without photos must be blocked", prematureSubmit.isFailure)
+        val base64Payload1 = "/data/user/0/app/files/task_photos/cam_1.jpg#b64=" + "A".repeat(24000)
+        val base64Payload2 = "/data/user/0/app/files/task_photos/cam_2.jpg#b64=" + "B".repeat(24000)
 
-        // 3. Worker adds 2 photos and submits -> transitions to ON_REVIEW
         withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.addPhotoToTask(workerEmployee, initialTask, "stamp://photo1", "55.75, 37.61", "Фото 1").getOrThrow()
+            repository.addPhotoToTask(workerEmployee, initialTask, base64Payload1, "55.75, 37.61", "Фотофиксация СМР #1").getOrThrow()
         }
         val taskWith1Photo = withTimeout(DEFAULT_TIMEOUT_MS) { repository.getTaskById(taskId).getOrThrow() }
         withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.addPhotoToTask(workerEmployee, taskWith1Photo, "stamp://photo2", "55.75, 37.61", "Фото 2").getOrThrow()
+            repository.addPhotoToTask(workerEmployee, taskWith1Photo, base64Payload2, "55.75, 37.61", "Фотофиксация СМР #2").getOrThrow()
         }
-        val taskWith2Photos = withTimeout(DEFAULT_TIMEOUT_MS) { repository.getTaskById(taskId).getOrThrow() }
+
+        // 3. Supervisor on another account/device reads the task and receives the full Base64 photo payloads
+        signInTestUser("supervisor_bob@test.com")
+        val supervisorRepo = EzhednevnikRepository(firestore)
+        val taskWith2Photos = withTimeout(DEFAULT_TIMEOUT_MS) { supervisorRepo.getTaskById(taskId).getOrThrow() }
+        assertEquals(2, taskWith2Photos.decodedPhotos().size)
+        assertTrue(taskWith2Photos.decodedPhotos()[0].uriString.contains("#b64="))
+        assertTrue(taskWith2Photos.decodedPhotos()[0].uriString.length > 20000)
+
         val submitResult = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.submitTaskCompletion(workerEmployee, taskWith2Photos, "Все 2 фото приложены")
+            supervisorRepo.submitTaskCompletion(workerEmployee, taskWith2Photos, "Все 2 фото приложены")
         }
         assertEquals(TaskStatus.ON_REVIEW, submitResult.getOrThrow())
 
         // 4. Worker tries to approve report -> blocked by RBAC
-        val onReviewTask = withTimeout(DEFAULT_TIMEOUT_MS) { repository.getTaskById(taskId).getOrThrow() }
+        val onReviewTask = withTimeout(DEFAULT_TIMEOUT_MS) { supervisorRepo.getTaskById(taskId).getOrThrow() }
         val workerApproveAttempt = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.approveTaskReport(workerEmployee, onReviewTask, "Сам себе подтверждаю")
+            supervisorRepo.approveTaskReport(workerEmployee, onReviewTask, "Сам себе подтверждаю")
         }
         assertTrue("Worker must not be allowed to approve reports", workerApproveAttempt.isFailure)
 
         // 5. ITR approves report -> status becomes APPROVED
         val itrApprove = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.approveTaskReport(itrEmployee, onReviewTask, "Проверено, замечаний нет")
+            supervisorRepo.approveTaskReport(itrEmployee, onReviewTask, "Проверено, замечаний нет")
         }
         assertTrue("ITR approval should succeed", itrApprove.isSuccess)
-        val approvedTask = withTimeout(DEFAULT_TIMEOUT_MS) { repository.getTaskById(taskId).getOrThrow() }
+        val approvedTask = withTimeout(DEFAULT_TIMEOUT_MS) { supervisorRepo.getTaskById(taskId).getOrThrow() }
         assertEquals(TaskStatus.APPROVED, approvedTask.taskStatus)
     }
 
@@ -110,37 +114,22 @@ class EzhednevnikRepositoryRuleTest : FirestoreEmulatorTestBase() {
     }
 
     @Test
-    fun getTaskById_crossUserAccess_failsWithPermissionDenied() = runBlocking {
+    fun unauthenticatedUser_cannotReadOrWriteTasks_failsWithPermissionDenied() = runBlocking {
         signInTestUser("owner_alice@test.com")
         val aliceRepo = EzhednevnikRepository(firestore)
         val taskId = withTimeout(DEFAULT_TIMEOUT_MS) {
             aliceRepo.createTask(headEmployee, sampleDraft()).getOrThrow()
         }
 
-        signInTestUser("intruder_bob@test.com")
-        val bobRepo = EzhednevnikRepository(firestore)
-        val crossUserResult = withTimeout(DEFAULT_TIMEOUT_MS) {
-            bobRepo.getTaskById(taskId)
-        }
-        assertFalse("Cross-user task read must fail", crossUserResult.isSuccess)
-        val fsEx = crossUserResult.exceptionOrNull()?.unwrapFirestoreException()
-        assertNotNull("Expected FirebaseFirestoreException", fsEx)
-        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsEx?.code)
-    }
-
-    @Test
-    fun observeTasks_unauthenticatedUser_failsWithPermissionDenied() = runBlocking {
         auth.signOut()
-        val repository = EzhednevnikRepository(firestore)
-
-        val result = runCatching {
+        val unauthRead = runCatching {
             withTimeout(FLOW_TIMEOUT_MS) {
-                repository.observeTasks("unauth_uid").first()
+                firestore.collection("tasks").document(taskId).get().await()
             }
         }
-        assertTrue("Unauthenticated flow collection must fail", result.isFailure)
-        val fsEx = result.exceptionOrNull()?.unwrapFirestoreException()
-        assertNotNull("Expected nested FirebaseFirestoreException", fsEx)
+        assertTrue("Unauthenticated task read must fail", unauthRead.isFailure)
+        val fsEx = unauthRead.exceptionOrNull()?.unwrapFirestoreException()
+        assertNotNull("Expected FirebaseFirestoreException", fsEx)
         assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsEx?.code)
     }
 

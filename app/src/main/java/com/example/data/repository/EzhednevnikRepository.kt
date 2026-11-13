@@ -1319,14 +1319,14 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
         val newPhoto = PhotoReportItem(
             id = "ph_${System.currentTimeMillis()}",
-            uriString = uriString.take(250),
+            uriString = uriString.take(220_000),
             authorId = actor.id,
             authorName = actor.shortName,
             capturedAtText = nowTimeText(),
             gpsCoords = gpsCoords.ifBlank { "55.7558° N, 37.6173° E" }.take(60),
             comment = comment.ifBlank { "Фотофиксация выполнения на объекте" }.take(180)
         )
-        val updatedPhotos = (task.photoItems + newPhoto.encode()).takeLast(30)
+        val updatedPhotos = (task.photoItems + newPhoto.encode()).takeLast(15)
         val newStatus = if (task.taskStatus == TaskStatus.NEW) TaskStatus.IN_PROGRESS.code else task.status
         val newHistory = (task.historyItems + StatusHistoryEntry(
             timestampText = nowTimeText(),
@@ -1348,8 +1348,69 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            val uid = auth.currentUser?.uid
+            if (uid != null) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            task.copy(
+                                photoItems = updatedPhotos,
+                                status = newStatus,
+                                historyItems = newHistory
+                            )
+                        )
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.UPDATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
+        }
+    }
+
+    suspend fun saveTaskPhotosToFirestore(
+        updatedTask: TaskDocument
+    ): Result<Unit> = runCatching {
+        require(updatedTask.id.isNotBlank()) { "Task ID must not be blank" }
+        val safePhotos = updatedTask.photoItems.takeLast(15).map { it.take(220_000) }
+        val docRef = db.collection("tasks").document(updatedTask.id)
+        try {
+            docRef.update(
+                mapOf(
+                    "photoItems" to safePhotos,
+                    "status" to updatedTask.status,
+                    "historyItems" to updatedTask.historyItems.takeLast(50),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } catch (e: CancellationException) {
             throw e
+        } catch (e: Exception) {
+            val uid = auth.currentUser?.uid
+            if (uid != null) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            updatedTask.copy(photoItems = safePhotos)
+                        )
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.UPDATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
     }
 
@@ -1425,7 +1486,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val uid = requireUserId()
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
 
-        val currentPhotos = task.photoItems.size
+        val safePhotos = task.photoItems.takeLast(15).map { it.take(220_000) }
+        val currentPhotos = safePhotos.size
         val targetStatus = if (task.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
         val historyNote = if (targetStatus == TaskStatus.ON_REVIEW) {
             "Выполнено и отправлено на проверку ИТР/Руководителю (фото: $currentPhotos шт.)"
@@ -1458,6 +1520,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val docRef = db.collection("tasks").document(task.id)
         val updates = mutableMapOf<String, Any>(
             "status" to targetStatus.code,
+            "photoItems" to safePhotos,
+            "subtaskItems" to task.subtaskItems.take(25),
+            "tags" to task.tags.take(10),
             "historyItems" to updatedHistory,
             "commentItems" to updatedComments,
             "updatedAt" to FieldValue.serverTimestamp()
@@ -1471,8 +1536,25 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            try {
+                docRef.set(
+                    taskToCreatePayload(
+                        uid,
+                        task.copy(
+                            status = targetStatus.code,
+                            photoItems = safePhotos,
+                            historyItems = updatedHistory,
+                            commentItems = updatedComments,
+                            approvedByName = if (targetStatus == TaskStatus.APPROVED) actor.fullName else task.approvedByName
+                        )
+                    )
+                ).await()
+            } catch (e2: CancellationException) {
+                throw e2
+            } catch (e2: Exception) {
+                handleFirestoreError(e2, OperationType.UPDATE, docRef.path)
+                throw e2
+            }
         }
 
         // Spawn next instance if recurring task

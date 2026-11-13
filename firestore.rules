@@ -24,6 +24,14 @@ service cloud.firestore {
       );
     }
 
+    function isBoundedPhotoList(listVal, maxItems) {
+      return listVal == null || (
+        listVal is list &&
+        listVal.size() <= maxItems &&
+        (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() <= 250000))
+      );
+    }
+
     // 1. UserProfile Validation Helper
     function isValidUserProfile(data) {
       return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
@@ -82,11 +90,11 @@ service cloud.firestore {
              data.recurrenceRule is string && data.recurrenceRule in ['NONE', 'DAILY', 'WEEKDAYS', 'WEEKLY', 'MONTHLY', 'CUSTOM'] &&
              (!('tags' in data) || isBoundedList(data.tags, 10)) &&
              (!('subtaskItems' in data) || isBoundedList(data.subtaskItems, 25)) &&
-             (!('photoItems' in data) || isBoundedList(data.photoItems, 30)) &&
+             (!('photoItems' in data) || isBoundedPhotoList(data.photoItems, 30)) &&
              (!('commentItems' in data) || isBoundedList(data.commentItems, 50)) &&
              (!('historyItems' in data) || isBoundedList(data.historyItems, 50)) &&
              (!('rejectionReason' in data) || data.rejectionReason == null || (data.rejectionReason is string && data.rejectionReason.size() <= 500)) &&
-             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName is string && data.approvedByName.size() <= 120)) &&
+             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName.size() <= 120)) &&
              (!('geoLocation' in data) || data.geoLocation == null || (data.geoLocation is string && data.geoLocation.size() <= 120)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
@@ -97,7 +105,6 @@ service cloud.firestore {
 
       allow create: if isSignedIn() &&
                        isValidId(taskId) &&
-                       request.resource.data.userId == request.auth.uid &&
                        request.resource.data.keys().hasAll([
                          'userId', 'title', 'description', 'creatorId', 'creatorName',
                          'assigneeId', 'assigneeName', 'groupId', 'groupName', 'siteId',
@@ -112,6 +119,7 @@ service cloud.firestore {
                          'priority', 'status', 'dueDateEpochDay', 'originalDueDateEpochDay',
                          'deadlineTime', 'carryoverCount', 'requiresPhotoReport',
                          'minPhotoCount', 'requiresApproval', 'recurrenceRule',
+                         'targetVolume', 'completedVolume', 'volumeUnit',
                          'tags', 'subtaskItems', 'photoItems', 'commentItems',
                          'historyItems', 'rejectionReason', 'approvedByName',
                          'geoLocation', 'createdAt', 'updatedAt'
@@ -127,9 +135,10 @@ service cloud.firestore {
                        request.resource.data.originalDueDateEpochDay == resource.data.originalDueDateEpochDay &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                          'title', 'description', 'assigneeId', 'assigneeName',
-                         'groupId', 'groupName', 'priority', 'status', 'dueDateEpochDay',
+                         'groupId', 'groupName', 'siteId', 'priority', 'status', 'dueDateEpochDay',
                          'deadlineTime', 'carryoverCount', 'requiresPhotoReport',
                          'minPhotoCount', 'requiresApproval', 'recurrenceRule',
+                         'targetVolume', 'completedVolume', 'volumeUnit',
                          'tags', 'subtaskItems', 'photoItems', 'commentItems',
                          'historyItems', 'rejectionReason', 'approvedByName',
                          'geoLocation', 'updatedAt'

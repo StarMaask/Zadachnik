@@ -1088,24 +1088,30 @@ data class SiteMemberDocument(
     val groupId: String = "grp_monolith",
     val groupName: String = "Бригада №1 • Монолит и ЖБК",
     val approvedByName: String? = null,
-    val personnelNumber: String = "",
-    val siteName: String = "",
-    val phone: String = "",
+    @get:com.google.firebase.firestore.Exclude val personnelNumber: String = "",
+    @get:com.google.firebase.firestore.Exclude val siteName: String = "",
+    @get:com.google.firebase.firestore.Exclude val phone: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
+    @get:com.google.firebase.firestore.Exclude
     val parsedApprovalStatus: MemberApprovalStatus
         get() = MemberApprovalStatus.fromCode(approvalStatus)
 
+    @get:com.google.firebase.firestore.Exclude
     val isPendingRole: Boolean
-        get() = approvalStatus == MemberApprovalStatus.PENDING.code || role == "PENDING"
+        get() = approvalStatus.equals(MemberApprovalStatus.PENDING.code, ignoreCase = true) ||
+            role.equals("PENDING", ignoreCase = true) ||
+            approvalStatus.isBlank()
 
+    @get:com.google.firebase.firestore.Exclude
     val isRejected: Boolean
-        get() = approvalStatus == MemberApprovalStatus.REJECTED.code
+        get() = approvalStatus.equals(MemberApprovalStatus.REJECTED.code, ignoreCase = true)
 
+    @get:com.google.firebase.firestore.Exclude
     val parsedRoleOrNull: CorporateRole?
         get() = when {
-            role == "PENDING" || isPendingRole -> null
+            role.equals("PENDING", ignoreCase = true) || isPendingRole -> null
             extractMetaValue("adm") == "1" || isRootAdminEmail(email) -> CorporateRole.ADMIN
             else -> CorporateRole.fromCode(role)
         }
@@ -1119,15 +1125,19 @@ data class SiteMemberDocument(
             .orEmpty()
     }
 
+    @get:com.google.firebase.firestore.Exclude
     val cleanApprovedByName: String
         get() = (approvedByName ?: "").substringBefore("||").trim()
 
+    @get:com.google.firebase.firestore.Exclude
     val effectivePersonnelNumber: String
         get() = personnelNumber.ifBlank { extractMetaValue("tab") }
 
+    @get:com.google.firebase.firestore.Exclude
     val effectiveSiteName: String
         get() = siteName.ifBlank { extractMetaValue("site").ifBlank { "Участок №1" } }
 
+    @get:com.google.firebase.firestore.Exclude
     val effectivePhone: String
         get() = phone.ifBlank { extractMetaValue("tel") }
 

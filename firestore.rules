@@ -287,9 +287,9 @@ service cloud.firestore {
              data.approvalStatus is string && data.approvalStatus in ['PENDING', 'APPROVED', 'REJECTED'] &&
              data.groupId is string && data.groupId.size() <= 64 &&
              data.groupName is string && data.groupName.size() <= 120 &&
-             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName.size() <= 120)) &&
-             data.createdAt is timestamp && data.createdAt <= request.time &&
-             data.updatedAt is timestamp && data.updatedAt <= request.time;
+             (!('approvedByName' in data) || data.approvedByName == null || (data.approvedByName is string && data.approvedByName.size() <= 300)) &&
+             (!('createdAt' in data) || data.createdAt == null || data.createdAt is timestamp) &&
+             (!('updatedAt' in data) || data.updatedAt == null || data.updatedAt is timestamp);
     }
 
     match /site_members/{memberId} {
@@ -297,28 +297,11 @@ service cloud.firestore {
 
       allow create: if isSignedIn() &&
                        isValidId(memberId) &&
-                       request.resource.data.keys().hasAll([
-                         'memberId', 'email', 'fullName', 'position',
-                         'role', 'approvalStatus', 'groupId', 'groupName',
-                         'createdAt', 'updatedAt'
-                       ]) &&
-                       request.resource.data.keys().hasOnly([
-                         'memberId', 'email', 'fullName', 'position',
-                         'role', 'approvalStatus', 'groupId', 'groupName',
-                         'approvedByName', 'createdAt', 'updatedAt'
-                       ]) &&
                        isValidSiteMemberDocument(request.resource.data);
 
       allow update: if isSignedIn() &&
                        isValidId(memberId) &&
-                       isValidSiteMemberDocument(request.resource.data) &&
-                       request.resource.data.memberId == resource.data.memberId &&
-                       request.resource.data.createdAt == resource.data.createdAt &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                         'email', 'fullName', 'position', 'role',
-                         'approvalStatus', 'groupId', 'groupName',
-                         'approvedByName', 'updatedAt'
-                       ]);
+                       isValidSiteMemberDocument(request.resource.data);
 
       allow delete: if isSignedIn() && isValidId(memberId);
     }

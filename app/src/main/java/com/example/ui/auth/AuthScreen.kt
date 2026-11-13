@@ -257,6 +257,8 @@ fun onGoogleSignInClicked(
     selectedSubdivision: String = "",
     selectedSiteName: String = "",
     selectedPosition: String = "",
+    selectedFullName: String = "",
+    preferredEmail: String = "",
     onAuthSuccess: (CorporateLoginSession) -> Unit,
     onAuthError: (String) -> Unit,
     scope: CoroutineScope,
@@ -283,19 +285,26 @@ fun onGoogleSignInClicked(
                 val tokenCred = GoogleIdTokenCredential.createFrom(credential.data)
                 val email = tokenCred.id.trim().lowercase()
                 val isAdmin = SiteMemberDocument.isRootAdminEmail(email)
-                val displayName = tokenCred.displayName
-                    ?: if (isAdmin) "Администратор" else "Сотрудник участка"
+                val displayName = selectedFullName.trim().ifBlank {
+                    tokenCred.displayName
+                        ?: if (isAdmin) "Администратор" else "Сотрудник участка"
+                }
                 try {
                     val authCredential = GoogleAuthProvider.getCredential(tokenCred.idToken, null)
                     val authResult = Firebase.auth.signInWithCredential(authCredential).await()
                     val fbUser = authResult.user
-                    val resolvedEmail = (fbUser?.email ?: email).trim().lowercase()
+                    val resolvedEmail = preferredEmail.trim().lowercase().ifBlank {
+                        (fbUser?.email ?: email).trim().lowercase()
+                    }
                     val resolvedAdmin = SiteMemberDocument.isRootAdminEmail(resolvedEmail)
+                    val resolvedFullName = selectedFullName.trim().ifBlank {
+                        fbUser?.displayName ?: displayName
+                    }
                     val canonicalId = SiteMemberDocument.canonicalMemberId(fbUser?.uid ?: "", resolvedEmail)
                     val session = CorporateLoginSession(
                         userId = canonicalId,
                         email = resolvedEmail,
-                        fullName = fbUser?.displayName ?: displayName,
+                        fullName = resolvedFullName,
                         isHeadActivated = resolvedAdmin,
                         requestedSubdivision = selectedSubdivision,
                         requestedSiteName = selectedSiteName,
@@ -304,12 +313,14 @@ fun onGoogleSignInClicked(
                     saveCorporateSession(context, session)
                     onAuthSuccess(session)
                 } catch (firebaseEx: Exception) {
-                    val canonicalId = SiteMemberDocument.canonicalMemberId("", email)
+                    val resolvedEmail = preferredEmail.trim().lowercase().ifBlank { email }
+                    val resolvedAdmin = SiteMemberDocument.isRootAdminEmail(resolvedEmail)
+                    val canonicalId = SiteMemberDocument.canonicalMemberId("", resolvedEmail)
                     val session = CorporateLoginSession(
                         userId = canonicalId,
-                        email = email,
+                        email = resolvedEmail,
                         fullName = displayName,
-                        isHeadActivated = isAdmin,
+                        isHeadActivated = resolvedAdmin,
                         requestedSubdivision = selectedSubdivision,
                         requestedSiteName = selectedSiteName,
                         requestedPosition = selectedPosition
@@ -476,6 +487,8 @@ fun AuthScreen(
                                     selectedSubdivision = selectedSubdivision,
                                     selectedSiteName = selectedSite,
                                     selectedPosition = positionInput.trim(),
+                                    selectedFullName = fullNameInput.trim(),
+                                    preferredEmail = emailInput.trim(),
                                     onAuthSuccess = { session ->
                                         isLoading = false
                                         onAuthSuccess(session)
@@ -715,7 +728,7 @@ fun AuthScreen(
                                     }
                                 }
                                 val safeId = "usr_${cleanEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
-                                val session = CorporateLoginSession(
+                                val fallbackSession = CorporateLoginSession(
                                     userId = safeId,
                                     email = cleanEmail,
                                     fullName = cleanName,
@@ -724,8 +737,37 @@ fun AuthScreen(
                                     requestedSiteName = selectedSite,
                                     requestedPosition = positionInput.trim()
                                 )
-                                saveCorporateSession(context, session)
-                                onAuthSuccess(session)
+                                if (Firebase.auth.currentUser != null) {
+                                    saveCorporateSession(context, fallbackSession)
+                                    onAuthSuccess(fallbackSession)
+                                } else {
+                                    errorMessage = null
+                                    isLoading = true
+                                    onGoogleSignInClicked(
+                                        context = context,
+                                        credentialManager = credentialManager,
+                                        selectedSubdivision = selectedSubdivision,
+                                        selectedSiteName = selectedSite,
+                                        selectedPosition = positionInput.trim(),
+                                        selectedFullName = cleanName,
+                                        preferredEmail = cleanEmail,
+                                        onAuthSuccess = { session ->
+                                            isLoading = false
+                                            onAuthSuccess(session)
+                                        },
+                                        onAuthError = {
+                                            isLoading = false
+                                            saveCorporateSession(context, fallbackSession)
+                                            onAuthSuccess(fallbackSession)
+                                        },
+                                        scope = scope,
+                                        onAuthCancelled = {
+                                            isLoading = false
+                                            saveCorporateSession(context, fallbackSession)
+                                            onAuthSuccess(fallbackSession)
+                                        }
+                                    )
+                                }
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -832,6 +874,8 @@ fun PendingRoleApprovalScreen(
     bannerMessage: String?,
     availableSubdivisions: List<String> = LocalWorkspaceStore.DEFAULT_SUBDIVISIONS,
     availableSites: List<String> = LocalWorkspaceStore.DEFAULT_SITES,
+    isCloudSyncActive: Boolean = true,
+    onConnectCloudSync: () -> Unit = {},
     onUpdateRequestDetails: (position: String, group: WorkGroup, siteName: String) -> Unit,
     onRefreshStatus: () -> Unit,
     onSignOut: () -> Unit
@@ -854,6 +898,12 @@ fun PendingRoleApprovalScreen(
         )
     }
     var showSiteDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(member.memberId, isCloudSyncActive) {
+        if (isCloudSyncActive) {
+            onRefreshStatus()
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -913,6 +963,43 @@ fun PendingRoleApprovalScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (!isCloudSyncActive) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Для передачи заявки администратору на другое устройство подтвердите вход через Google",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            Text(
+                                text = "Сейчас заявка сохранена только локально на этом телефоне. Нажмите кнопку ниже, чтобы отправить её в облако руководителю:",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            Button(
+                                onClick = onConnectCloudSync,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("pending_connect_cloud_button"),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Подключить Google и отправить заявку", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
 
                 if (bannerMessage != null) {
                     Card(

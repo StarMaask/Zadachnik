@@ -98,6 +98,16 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
 import java.util.Locale
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.runtime.LaunchedEffect
+import androidx.core.content.ContextCompat
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -111,6 +121,7 @@ import com.example.data.model.CorporateRole
 import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
+import com.example.data.model.SiteMemberDocument
 import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
 import com.example.data.model.TaskStatus
@@ -119,6 +130,7 @@ import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
 import com.example.ui.auth.CorporateLoginSession
 import com.example.ui.auth.PendingRoleApprovalScreen
+import com.example.ui.auth.onGoogleSignInClicked
 import com.example.ui.auth.signOut
 import com.example.ui.components.CreateTaskDialog
 import com.example.ui.components.DirectorExecutiveDashboard
@@ -224,6 +236,24 @@ fun MainFeatureScreen(
     val siteName by viewModel.siteName.collectAsStateWithLifecycle()
     val subdivisionsList by viewModel.subdivisionsList.collectAsStateWithLifecycle()
     val sitesList by viewModel.sitesList.collectAsStateWithLifecycle()
+    val isCloudSyncActive by viewModel.isCloudSyncActive.collectAsStateWithLifecycle()
+
+    val triggerCloudGoogleConnect: (SiteMemberDocument?) -> Unit = { targetMember ->
+        onGoogleSignInClicked(
+            context = context,
+            credentialManager = credentialManager,
+            selectedSubdivision = targetMember?.groupName ?: session.requestedSubdivision,
+            selectedSiteName = targetMember?.effectiveSiteName ?: session.requestedSiteName,
+            selectedPosition = targetMember?.position ?: session.requestedPosition,
+            selectedFullName = targetMember?.fullName ?: session.fullName,
+            preferredEmail = targetMember?.email ?: session.email,
+            onAuthSuccess = {
+                viewModel.onCloudAuthConnected()
+            },
+            onAuthError = {},
+            scope = scope
+        )
+    }
 
     // Экран ожидания назначения роли для новых сотрудников
     val member = currentMemberRecord
@@ -233,6 +263,8 @@ fun MainFeatureScreen(
             bannerMessage = bannerMessage,
             availableSubdivisions = subdivisionsList,
             availableSites = sitesList,
+            isCloudSyncActive = isCloudSyncActive,
+            onConnectCloudSync = { triggerCloudGoogleConnect(member) },
             onUpdateRequestDetails = viewModel::updateMyPendingRequestDetails,
             onRefreshStatus = viewModel::refreshMyRoleAssignmentStatus,
             onSignOut = {
@@ -254,6 +286,24 @@ fun MainFeatureScreen(
     val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
     val isAdminOrHead = activeEmployee.role.isAdminOrHead
     val isPersonalProfileOnlyRole = !isAdminOrHead
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = {}
+    )
+
+    LaunchedEffect(isAdminOrHead) {
+        if (isAdminOrHead && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     val visibleNavDestinations = remember(isWorkerRole) {
         if (isWorkerRole) {
             listOf(
@@ -275,9 +325,10 @@ fun MainFeatureScreen(
     }
 
     val allTasksRaw = (tasksState as? UiState.Success)?.data ?: emptyList()
-    val pendingMembersCount = remember(allSiteMembers) {
-        allSiteMembers.count { it.isPendingRole && !it.isRejected }
+    val pendingMembersList = remember(allSiteMembers) {
+        allSiteMembers.filter { it.isPendingRole && !it.isRejected }
     }
+    val pendingMembersCount = pendingMembersList.size
 
     // Строгая фильтрация видимости задач по уровню доступа:
     // - Рабочий видит информацию только рабочего
@@ -360,6 +411,33 @@ fun MainFeatureScreen(
                                 }
                             ) {
                                 Icon(Icons.Default.Search, contentDescription = "Поиск")
+                            }
+                        }
+
+                        if (isAdminOrHead) {
+                            IconButton(
+                                onClick = {
+                                    viewModel.refreshSiteMembersQueue(showBanner = true)
+                                    currentTab = MainNavDestination.ADMIN
+                                },
+                                modifier = Modifier.testTag("top_pending_members_button")
+                            ) {
+                                if (pendingMembersCount > 0) {
+                                    BadgedBox(
+                                        badge = { Badge { Text(pendingMembersCount.toString()) } }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Notifications,
+                                            contentDescription = "Заявки пользователей ($pendingMembersCount)",
+                                            tint = Color(0xFFD97706)
+                                        )
+                                    }
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Notifications,
+                                        contentDescription = "Заявки пользователей"
+                                    )
+                                }
                             }
                         }
 
@@ -517,7 +595,27 @@ fun MainFeatureScreen(
                             NavigationRailItem(
                                 selected = currentTab == dest,
                                 onClick = { currentTab = dest },
-                                icon = { Icon(tabIcon, contentDescription = tabTitle) },
+                                icon = {
+                                    when {
+                                        dest == MainNavDestination.APPROVALS && reviewQueueCount > 0 -> {
+                                            BadgedBox(
+                                                badge = { Badge { Text(reviewQueueCount.toString()) } }
+                                            ) {
+                                                Icon(tabIcon, contentDescription = tabTitle)
+                                            }
+                                        }
+                                        dest == MainNavDestination.ADMIN && isAdminOrHead && pendingMembersCount > 0 -> {
+                                            BadgedBox(
+                                                badge = { Badge { Text(pendingMembersCount.toString()) } }
+                                            ) {
+                                                Icon(tabIcon, contentDescription = tabTitle)
+                                            }
+                                        }
+                                        else -> {
+                                            Icon(tabIcon, contentDescription = tabTitle)
+                                        }
+                                    }
+                                },
                                 label = { Text(tabTitle) },
                                 modifier = Modifier.testTag("rail_${dest.route}")
                             )
@@ -555,6 +653,196 @@ fun MainFeatureScreen(
                                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                             modifier = Modifier.size(16.dp)
                                         )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Если администратор вошёл локально без Google-сессии, показываем кнопку подключения облака
+                    if (isAdminOrHead && !isCloudSyncActive) {
+                        Surface(
+                            color = Color(0xFFFEF3C7),
+                            border = BorderStroke(1.dp, Color(0xFFD97706)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .testTag("admin_cloud_sync_prompt")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.VerifiedUser,
+                                    contentDescription = null,
+                                    tint = Color(0xFFD97706),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Облачная синхронизация заявок не активна",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF92400E)
+                                    )
+                                    Text(
+                                        text = "Подключите аккаунт Google, чтобы принимать заявки с других телефонов",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF92400E)
+                                    )
+                                }
+                                TextButton(
+                                    onClick = { triggerCloudGoogleConnect(currentMemberRecord) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.testTag("admin_connect_cloud_button")
+                                ) {
+                                    Text(
+                                        text = "Подключить",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFB45309)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Наглядная карточка-извещение о новых пользователях, ожидающих подтверждения (с быстрым назначением роли в 1 клик)
+                    if (isAdminOrHead && pendingMembersList.isNotEmpty() && currentTab != MainNavDestination.ADMIN) {
+                        val firstPending = pendingMembersList.first()
+                        var quickSelectedRole by remember(firstPending.memberId) {
+                            mutableStateOf(CorporateRole.WORKER)
+                        }
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.5.dp, Color(0xFFD97706)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .testTag("global_pending_member_alert_card")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.HourglassTop,
+                                            contentDescription = null,
+                                            tint = Color(0xFFD97706),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Ожидает подтверждения (${pendingMembersList.size}): ${firstPending.fullName}",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = { currentTab = MainNavDestination.ADMIN },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.testTag("open_all_pending_requests_button")
+                                    ) {
+                                        Text(
+                                            text = "Все заявки →",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFD97706)
+                                        )
+                                    }
+                                }
+
+                                val pendingMeta = buildString {
+                                    if (firstPending.email.isNotBlank() && !firstPending.email.endsWith("@site1.ru")) {
+                                        append(firstPending.email)
+                                        append(" • ")
+                                    }
+                                    append(firstPending.position.ifBlank { "Специалист" })
+                                    if (firstPending.groupName.isNotBlank()) append(" • ${firstPending.groupName}")
+                                    if (firstPending.effectiveSiteName.isNotBlank()) append(" • ${firstPending.effectiveSiteName}")
+                                }
+                                Text(
+                                    text = pendingMeta,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CorporateRole.entries.forEach { roleOpt ->
+                                        FilterChip(
+                                            selected = quickSelectedRole == roleOpt,
+                                            onClick = { quickSelectedRole = roleOpt },
+                                            label = {
+                                                Text(
+                                                    text = roleOpt.shortTitleRu,
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            }
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            val grp = CorporateSeedData.workGroups.firstOrNull {
+                                                it.id == firstPending.groupId
+                                            }?.copy(name = firstPending.groupName.ifBlank { "Основное подразделение" })
+                                                ?: CorporateSeedData.workGroups.first().copy(name = firstPending.groupName.ifBlank { "Основное подразделение" })
+                                            viewModel.assignRoleToMember(
+                                                firstPending,
+                                                quickSelectedRole,
+                                                grp,
+                                                firstPending.position
+                                            )
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF10B981),
+                                            contentColor = Color.White
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .weight(1.3f)
+                                            .height(38.dp)
+                                            .testTag("quick_approve_pending_${firstPending.memberId}")
+                                    ) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Подтвердить (${quickSelectedRole.shortTitleRu})", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { viewModel.rejectMemberAccess(firstPending) },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier
+                                            .weight(0.7f)
+                                            .height(38.dp)
+                                    ) {
+                                        Text("Отклонить", style = MaterialTheme.typography.labelMedium)
                                     }
                                 }
                             }

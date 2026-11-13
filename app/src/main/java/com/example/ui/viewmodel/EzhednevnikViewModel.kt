@@ -1,8 +1,16 @@
 package com.example.ui.viewmodel
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.os.Build
+import androidx.core.app.NotificationCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.MainActivity
+import com.example.R
 import com.example.data.local.LocalWorkspaceStore
 import com.example.data.model.AuditLogDocument
 import com.example.data.model.CorporateEmployee
@@ -32,9 +40,12 @@ import com.example.ui.auth.saveCorporateSession
 import com.example.ui.components.PhotoCaptureUtils
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -82,10 +93,23 @@ class EzhednevnikViewModel(
 ) : ViewModel() {
 
     private val isCloudAuthenticated: Boolean
-        get() = Firebase.auth.currentUser != null
+        get() = try {
+            Firebase.auth.currentUser != null
+        } catch (_: Exception) {
+            false
+        }
+
+    private val _isCloudSyncActive = MutableStateFlow(isCloudAuthenticated)
+    val isCloudSyncActive: StateFlow<Boolean> = _isCloudSyncActive.asStateFlow()
+
+    private val notifiedPendingMemberKeys = mutableSetOf<String>()
 
     private val effectiveUserId: String
-        get() = Firebase.auth.currentUser?.uid?.takeIf { it.isNotBlank() } ?: currentUserId
+        get() = try {
+            Firebase.auth.currentUser?.uid?.takeIf { it.isNotBlank() } ?: currentUserId
+        } catch (_: Exception) {
+            currentUserId
+        }
 
     private val _currentEpochDay = MutableStateFlow(CorporateSeedData.currentDeviceEpochDay())
     val currentEpochDay: StateFlow<Long> = _currentEpochDay.asStateFlow()
@@ -239,20 +263,41 @@ class EzhednevnikViewModel(
                 mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
             }
         }
-        // Локальный список объединяется с облачным; если в облаке заявка уже подтверждена (APPROVED), сохраняем подтверждённую роль
+        // Локальный список объединяется с облачным:
+        // - если в облаке заявка ожидает подтверждения (PENDING), облачная заявка имеет приоритет над устаревшей локальной записью,
+        //   кроме случая, когда администратор только что локально утвердил эту заявку (!m.isPendingRole && !m.isRejected).
+        // - если в облаке заявка уже подтверждена (APPROVED), сохраняем подтверждённую роль из облака.
         localList.forEach { m ->
             val rawKey = m.memberId.ifBlank { m.id }
             val normKey = normalizeMemberKey(rawKey)
             val canonicalKey = SiteMemberDocument.canonicalMemberId(rawKey, m.email)
+            val isDeleted = (rawKey in deletedIds || normKey in deletedIds || canonicalKey in deletedIds) && !m.isPendingRole
             if (canonicalKey.isNotBlank() &&
                 !CorporateSeedData.isLegacyFakeSeedMemberId(rawKey) &&
-                !CorporateSeedData.isLegacyFakeSeedMemberId(normKey)
+                !CorporateSeedData.isLegacyFakeSeedMemberId(normKey) &&
+                !isDeleted
             ) {
                 val existingRemote = mergedMap[canonicalKey]
-                if (existingRemote != null && !existingRemote.isPendingRole && !existingRemote.isRejected && m.isPendingRole) {
-                    mergedMap[canonicalKey] = existingRemote
-                } else {
-                    mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
+                when {
+                    existingRemote == null -> {
+                        mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
+                    }
+                    existingRemote.isPendingRole && !existingRemote.isRejected -> {
+                        // В облаке висит активная заявка PENDING: оставляем её видимой для администратора,
+                        // заменяя только если администратор уже утвердил её локально
+                        val isAdminActor = initialHeadActivated || SiteMemberDocument.isRootAdminEmail(currentUserEmail)
+                        if (isAdminActor && !m.isPendingRole && !m.isRejected && m.cleanApprovedByName.isNotBlank() && m.cleanApprovedByName != "Заявка") {
+                            mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
+                        } else {
+                            mergedMap[canonicalKey] = existingRemote
+                        }
+                    }
+                    !existingRemote.isPendingRole && !existingRemote.isRejected && m.isPendingRole -> {
+                        mergedMap[canonicalKey] = existingRemote
+                    }
+                    else -> {
+                        mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
+                    }
                 }
             }
         }
@@ -486,9 +531,152 @@ class EzhednevnikViewModel(
         )
     )
 
+    private val authStateListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+        val connected = firebaseAuth.currentUser != null
+        val wasConnected = _isCloudSyncActive.value
+        _isCloudSyncActive.value = connected
+        if (connected && !wasConnected) {
+            onCloudAuthConnected()
+        }
+    }
+
     init {
+        try {
+            Firebase.auth.addAuthStateListener(authStateListener)
+        } catch (_: Exception) {
+        }
         initializeUserAndRoleStatus()
         observeMemberRoleUpdates()
+        startPeriodicCloudMembersSync()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        try {
+            Firebase.auth.removeAuthStateListener(authStateListener)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun onCloudAuthConnected() {
+        _isCloudSyncActive.value = isCloudAuthenticated
+        initializeUserAndRoleStatus()
+        refreshSiteMembersQueue(showBanner = true)
+    }
+
+    private fun startPeriodicCloudMembersSync() {
+        viewModelScope.launch {
+            // Первичная подгрузка очереди заявок из Firestore при старте
+            delay(1200L)
+            if (isCloudAuthenticated) {
+                syncSiteMembersFromCloudSilently()
+            }
+            while (isActive) {
+                delay(12_000L)
+                _isCloudSyncActive.value = isCloudAuthenticated
+                if (isCloudAuthenticated) {
+                    syncSiteMembersFromCloudSilently()
+                    val cur = _currentMemberRecord.value
+                    if (cur != null && cur.isPendingRole) {
+                        val grp = CorporateSeedData.workGroups.firstOrNull {
+                            it.name.equals(cur.groupName, ignoreCase = true)
+                        }?.copy(name = cur.groupName)
+                            ?: CorporateSeedData.workGroups.first().copy(id = cur.groupId, name = cur.groupName)
+                        val remoteResolved = repository.registerOrResolveSiteMember(
+                            rawMemberId = SiteMemberDocument.canonicalMemberId(cur.memberId.ifBlank { cur.id }, cur.email),
+                            email = cur.email,
+                            fullName = cur.fullName,
+                            position = cur.position,
+                            requestedGroup = grp,
+                            siteName = cur.effectiveSiteName.ifBlank { _siteName.value },
+                            forceHeadActivation = false
+                        ).getOrNull()
+                        if (remoteResolved != null && !remoteResolved.isPendingRole && !remoteResolved.isRejected) {
+                            val canonicalId = SiteMemberDocument.canonicalMemberId(cur.memberId.ifBlank { cur.id }, cur.email)
+                            val unlocked = remoteResolved.copy(id = canonicalId, memberId = canonicalId)
+                            _currentMemberRecord.value = unlocked
+                            upsertLocalMember(unlocked)
+                            _bannerMessage.value = "Доступ открыт! Назначена роль: ${unlocked.parsedRoleOrNull?.titleRu}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun syncSiteMembersFromCloudSilently() {
+        val remoteMembers = repository.fetchAllSiteMembersOnce()
+        if (remoteMembers.isEmpty()) return
+        remoteMembers.forEach { remote ->
+            val canonicalId = SiteMemberDocument.canonicalMemberId(remote.memberId.ifBlank { remote.id }, remote.email)
+            val existingLocal = _localSiteMembers.value.firstOrNull {
+                SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email) == canonicalId
+            }
+            if (existingLocal == null ||
+                (remote.isPendingRole && !remote.isRejected) ||
+                (!remote.isPendingRole && !remote.isRejected && existingLocal.isPendingRole)
+            ) {
+                upsertLocalMember(remote.copy(id = canonicalId, memberId = canonicalId))
+            }
+        }
+    }
+
+    private fun postSystemNotificationForPendingMember(member: SiteMemberDocument, totalPendingCount: Int) {
+        val ctx = appContext ?: return
+        try {
+            val channelId = "pending_user_requests_channel"
+            val notificationManager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId,
+                    "Заявки новых пользователей",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Извещения руководителю и администратору о новых заявках на вход в систему"
+                    enableVibration(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val intent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                ctx,
+                member.memberId.hashCode(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val emailPart = if (member.email.isNotBlank() && !member.email.endsWith("@site1.ru")) {
+                " (${member.email})"
+            } else {
+                ""
+            }
+            val detailsText = buildString {
+                append("${member.fullName}$emailPart ожидает подтверждения роли")
+                if (member.position.isNotBlank()) append(" • ${member.position}")
+                if (member.groupName.isNotBlank()) append(" • ${member.groupName}")
+                if (totalPendingCount > 1) append(" (всего ожидают: $totalPendingCount чел.)")
+            }
+
+            val notification = NotificationCompat.Builder(ctx, channelId)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("Новая заявка на вход в систему")
+                .setContentText(detailsText)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(detailsText))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+            notificationManager.notify(
+                10000 + (member.memberId.ifBlank { member.id }.hashCode() and 0x7FFF),
+                notification
+            )
+        } catch (_: Exception) {
+            // Безопасная обработка при отсутствии разрешения POST_NOTIFICATIONS или в unit-тестах
+        }
     }
 
     private fun observeMemberRoleUpdates() {
@@ -506,6 +694,34 @@ class EzhednevnikViewModel(
                 if (mergedSites.size != _sitesList.value.size) {
                     _sitesList.value = mergedSites
                     appContext?.let { LocalWorkspaceStore.saveSites(it, mergedSites) }
+                }
+
+                // Извещение для Администратора / Руководителя о новых пользователях, ожидающих подтверждения
+                val isCurrentAdminOrHead = initialHeadActivated ||
+                    SiteMemberDocument.isRootAdminEmail(currentUserEmail) ||
+                    activeEmployee.value.role.isAdminOrHead
+
+                if (isCurrentAdminOrHead) {
+                    val activePendingList = members.filter { it.isPendingRole && !it.isRejected }
+                    val newPendingMembers = activePendingList.filter { pending ->
+                        val key = SiteMemberDocument.canonicalMemberId(
+                            pending.memberId.ifBlank { pending.id },
+                            pending.email
+                        )
+                        key.isNotBlank() && key != normalizedCurrentUserId && notifiedPendingMemberKeys.add(key)
+                    }
+                    if (newPendingMembers.isNotEmpty()) {
+                        val newest = newPendingMembers.first()
+                        val emailLabel = newest.email.takeIf { it.isNotBlank() && !it.endsWith("@site1.ru") }?.let { " ($it)" }.orEmpty()
+                        _bannerMessage.value = if (activePendingList.size == 1) {
+                            "Новая заявка на вход: ${newest.fullName}$emailLabel — ожидает подтверждения роли"
+                        } else {
+                            "Новые заявки на вход (${activePendingList.size} чел.): ${newest.fullName}$emailLabel — назначьте роль"
+                        }
+                        newPendingMembers.forEach { pendingUser ->
+                            postSystemNotificationForPendingMember(pendingUser, activePendingList.size)
+                        }
+                    }
                 }
 
                 // If current user was pending and got approved in siteMembersState, unlock immediately
@@ -891,7 +1107,25 @@ class EzhednevnikViewModel(
 
         viewModelScope.launch {
             val remoteFetched = if (isCloudAuthenticated) {
-                repository.fetchSiteMemberByIdOrEmail(currentNorm, current.email)
+                val existing = repository.fetchSiteMemberByIdOrEmail(currentNorm, current.email)
+                if (existing != null) {
+                    existing
+                } else {
+                    val grp = CorporateSeedData.workGroups.firstOrNull {
+                        it.name.equals(current.groupName, ignoreCase = true)
+                    }?.copy(name = current.groupName)
+                        ?: CorporateSeedData.workGroups.first().copy(id = current.groupId, name = current.groupName)
+                    repository.registerOrResolveSiteMember(
+                        rawMemberId = currentNorm,
+                        email = current.email,
+                        fullName = current.fullName,
+                        position = current.position,
+                        requestedGroup = grp,
+                        siteName = current.effectiveSiteName.ifBlank { _siteName.value },
+                        forceHeadActivation = false,
+                        forceUpdatePendingDetails = true
+                    ).getOrNull()
+                }
             } else {
                 null
             }
@@ -911,7 +1145,11 @@ class EzhednevnikViewModel(
                 if (!resolved.isPendingRole) {
                     _bannerMessage.value = "Назначена роль: ${resolved.parsedRoleOrNull?.titleRu}"
                 } else {
-                    _bannerMessage.value = "Заявка ожидает подтверждения администратором"
+                    _bannerMessage.value = if (isCloudAuthenticated) {
+                        "Заявка отправлена в облако и ожидает подтверждения администратором"
+                    } else {
+                        "Подключите Google-синхронизацию для отправки заявки администратору"
+                    }
                 }
             } else {
                 _bannerMessage.value = "Заявка ожидает подтверждения администратором"

@@ -25,6 +25,7 @@ import com.example.data.model.WorkGroup
 import com.example.data.seed.CorporateSeedData
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
@@ -32,10 +33,16 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
@@ -43,6 +50,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
     constructor(context: Context) : this(
@@ -52,6 +60,24 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     )
 
     private val auth = Firebase.auth
+
+    private fun authUidFlow(): Flow<String?> = callbackFlow {
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            trySend(firebaseAuth.currentUser?.uid)
+        }
+        try {
+            auth.addAuthStateListener(listener)
+            trySend(auth.currentUser?.uid)
+        } catch (_: Exception) {
+            trySend(null)
+        }
+        awaitClose {
+            try {
+                auth.removeAuthStateListener(listener)
+            } catch (_: Exception) {
+            }
+        }
+    }.distinctUntilChanged()
 
     private fun requireUserId(): String {
         return auth.currentUser?.uid
@@ -63,12 +89,12 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
     // --- REALTIME OBSERVATION FLOWS ---
 
-    fun observeUserProfile(userId: String = requireUserId()): Flow<UserProfile?> = flow {
-        emit(null)
-        if (auth.currentUser == null) return@flow
-        val uid = if (userId.isNotBlank()) userId else requireUserId()
-        val path = "users/$uid"
-        emitAll(
+    fun observeUserProfile(userId: String = ""): Flow<UserProfile?> = authUidFlow().flatMapLatest { authUid ->
+        if (authUid.isNullOrBlank()) {
+            flowOf(null)
+        } else {
+            val uid = userId.ifBlank { authUid }
+            val path = "users/$uid"
             db.collection("users").document(uid)
                 .snapshots()
                 .map { snapshot ->
@@ -82,18 +108,18 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     }
                 }
                 .catch { error ->
-                    logStreamErrorIfActive(error, OperationType.GET, path, uid)
-                    throw error
+                    if (error is CancellationException) throw error
+                    logStreamErrorIfActive(error, OperationType.GET, path, authUid)
+                    emit(null)
                 }
-        )
+        }
     }
 
-    fun observeTasks(userId: String = requireUserId()): Flow<List<TaskDocument>> = flow {
-        emit(emptyList())
-        if (auth.currentUser == null) return@flow
-        val uid = if (userId.isNotBlank()) userId else requireUserId()
-        val path = "tasks"
-        emitAll(
+    fun observeTasks(userId: String = ""): Flow<List<TaskDocument>> = authUidFlow().flatMapLatest { authUid ->
+        if (authUid.isNullOrBlank()) {
+            flowOf(emptyList())
+        } else {
+            val path = "tasks"
             db.collection(path)
                 .snapshots()
                 .map { querySnapshot ->
@@ -107,18 +133,19 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     )
                 }
                 .catch { error ->
-                    logStreamErrorIfActive(error, OperationType.LIST, path, uid)
-                    throw error
+                    if (error is CancellationException) throw error
+                    logStreamErrorIfActive(error, OperationType.LIST, path, authUid)
+                    emit(emptyList())
                 }
-        )
+        }
     }
 
-    fun observeReportTemplates(userId: String = requireUserId()): Flow<List<ReportTemplateDocument>> = flow {
-        emit(emptyList())
-        if (auth.currentUser == null) return@flow
-        val uid = if (userId.isNotBlank()) userId else requireUserId()
-        val path = "report_templates"
-        emitAll(
+    fun observeReportTemplates(userId: String = ""): Flow<List<ReportTemplateDocument>> = authUidFlow().flatMapLatest { authUid ->
+        if (authUid.isNullOrBlank()) {
+            flowOf(emptyList())
+        } else {
+            val uid = userId.ifBlank { authUid }
+            val path = "report_templates"
             db.collection(path)
                 .whereEqualTo("userId", uid)
                 .snapshots()
@@ -129,18 +156,19 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     )
                 }
                 .catch { error ->
-                    logStreamErrorIfActive(error, OperationType.LIST, path, uid)
-                    throw error
+                    if (error is CancellationException) throw error
+                    logStreamErrorIfActive(error, OperationType.LIST, path, authUid)
+                    emit(emptyList())
                 }
-        )
+        }
     }
 
-    fun observeGeneratedReports(userId: String = requireUserId()): Flow<List<GeneratedReportDocument>> = flow {
-        emit(emptyList())
-        if (auth.currentUser == null) return@flow
-        val uid = if (userId.isNotBlank()) userId else requireUserId()
-        val path = "generated_reports"
-        emitAll(
+    fun observeGeneratedReports(userId: String = ""): Flow<List<GeneratedReportDocument>> = authUidFlow().flatMapLatest { authUid ->
+        if (authUid.isNullOrBlank()) {
+            flowOf(emptyList())
+        } else {
+            val uid = userId.ifBlank { authUid }
+            val path = "generated_reports"
             db.collection(path)
                 .whereEqualTo("userId", uid)
                 .snapshots()
@@ -151,18 +179,19 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     ).sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
                 }
                 .catch { error ->
-                    logStreamErrorIfActive(error, OperationType.LIST, path, uid)
-                    throw error
+                    if (error is CancellationException) throw error
+                    logStreamErrorIfActive(error, OperationType.LIST, path, authUid)
+                    emit(emptyList())
                 }
-        )
+        }
     }
 
-    fun observeAuditLogs(userId: String = requireUserId()): Flow<List<AuditLogDocument>> = flow {
-        emit(emptyList())
-        if (auth.currentUser == null) return@flow
-        val uid = if (userId.isNotBlank()) userId else requireUserId()
-        val path = "audit_logs"
-        emitAll(
+    fun observeAuditLogs(userId: String = ""): Flow<List<AuditLogDocument>> = authUidFlow().flatMapLatest { authUid ->
+        if (authUid.isNullOrBlank()) {
+            flowOf(emptyList())
+        } else {
+            val uid = userId.ifBlank { authUid }
+            val path = "audit_logs"
             db.collection(path)
                 .whereEqualTo("userId", uid)
                 .snapshots()
@@ -173,18 +202,18 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     ).sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
                 }
                 .catch { error ->
-                    logStreamErrorIfActive(error, OperationType.LIST, path, uid)
-                    throw error
+                    if (error is CancellationException) throw error
+                    logStreamErrorIfActive(error, OperationType.LIST, path, authUid)
+                    emit(emptyList())
                 }
-        )
+        }
     }
 
-    fun observeSiteMembers(): Flow<List<SiteMemberDocument>> = flow {
-        emit(emptyList())
-        val uid = auth.currentUser?.uid ?: ""
-        if (uid.isBlank()) return@flow
-        val path = "site_members"
-        emitAll(
+    fun observeSiteMembers(): Flow<List<SiteMemberDocument>> = authUidFlow().flatMapLatest { authUid ->
+        if (authUid.isNullOrBlank()) {
+            flowOf(emptyList())
+        } else {
+            val path = "site_members"
             db.collection(path)
                 .snapshots()
                 .map { querySnapshot ->
@@ -197,12 +226,11 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     )
                 }
                 .catch { error ->
-                    if (uid.isNotBlank()) {
-                        logStreamErrorIfActive(error, OperationType.LIST, path, uid)
-                    }
-                    throw error
+                    if (error is CancellationException) throw error
+                    logStreamErrorIfActive(error, OperationType.LIST, path, authUid)
+                    emit(emptyList())
                 }
-        )
+        }
     }
 
     private fun logStreamErrorIfActive(
@@ -477,10 +505,12 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                             explicitSiteName = updatedSite,
                             isAdminRole = false
                         )
+                        val cleanFullName = fullName.ifBlank { existingObj.fullName }.ifBlank { "Сотрудник участка" }.take(120)
                         runCatching {
                             approvedDoc.reference.update(
                                 mapOf(
-                                    "fullName" to fullName.ifBlank { existingObj.fullName }.take(120),
+                                    "email" to effectiveEmail.take(160),
+                                    "fullName" to cleanFullName,
                                     "position" to updatedPosition.take(120),
                                     "role" to "PENDING",
                                     "approvalStatus" to MemberApprovalStatus.PENDING.code,
@@ -490,9 +520,28 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                                     "updatedAt" to FieldValue.serverTimestamp()
                                 )
                             ).await()
+                        }.onFailure {
+                            runCatching {
+                                approvedDoc.reference.set(
+                                    mapOf(
+                                        "memberId" to safeMemberId,
+                                        "email" to effectiveEmail.take(160),
+                                        "fullName" to cleanFullName,
+                                        "position" to updatedPosition.take(120),
+                                        "role" to "PENDING",
+                                        "approvalStatus" to MemberApprovalStatus.PENDING.code,
+                                        "groupId" to updatedGroupId.ifBlank { "grp_monolith" }.take(64),
+                                        "groupName" to updatedGroupName.ifBlank { "Основное подразделение" }.take(120),
+                                        "approvedByName" to newMeta,
+                                        "createdAt" to (existingObj.createdAt ?: FieldValue.serverTimestamp()),
+                                        "updatedAt" to FieldValue.serverTimestamp()
+                                    )
+                                ).await()
+                            }
                         }
                         return@runCatching existingObj.copy(
-                            fullName = fullName.ifBlank { existingObj.fullName },
+                            email = effectiveEmail,
+                            fullName = cleanFullName,
                             position = updatedPosition,
                             role = "PENDING",
                             approvalStatus = MemberApprovalStatus.PENDING.code,
@@ -527,11 +576,12 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                             explicitSiteName = updatedSite,
                             isAdminRole = false
                         )
+                        val cleanFullName = fullName.ifBlank { existingObj.fullName }.ifBlank { "Сотрудник участка" }.take(120)
                         runCatching {
                             docRef.update(
                                 mapOf(
                                     "email" to effectiveEmail.take(160),
-                                    "fullName" to fullName.ifBlank { existingObj.fullName }.take(120),
+                                    "fullName" to cleanFullName,
                                     "position" to resolvedPosition.take(120),
                                     "role" to "PENDING",
                                     "approvalStatus" to MemberApprovalStatus.PENDING.code,
@@ -541,10 +591,28 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                                     "updatedAt" to FieldValue.serverTimestamp()
                                 )
                             ).await()
+                        }.onFailure {
+                            runCatching {
+                                docRef.set(
+                                    mapOf(
+                                        "memberId" to safeMemberId,
+                                        "email" to effectiveEmail.take(160),
+                                        "fullName" to cleanFullName,
+                                        "position" to resolvedPosition.take(120),
+                                        "role" to "PENDING",
+                                        "approvalStatus" to MemberApprovalStatus.PENDING.code,
+                                        "groupId" to resolvedGroup.id.ifBlank { "grp_monolith" }.take(64),
+                                        "groupName" to resolvedGroup.name.ifBlank { "Основное подразделение" }.take(120),
+                                        "approvedByName" to newMeta,
+                                        "createdAt" to (existingObj.createdAt ?: FieldValue.serverTimestamp()),
+                                        "updatedAt" to FieldValue.serverTimestamp()
+                                    )
+                                ).await()
+                            }
                         }
                         return@runCatching existingObj.copy(
                             email = effectiveEmail,
-                            fullName = fullName.ifBlank { existingObj.fullName },
+                            fullName = cleanFullName,
                             position = resolvedPosition,
                             role = "PENDING",
                             approvalStatus = MemberApprovalStatus.PENDING.code,
@@ -866,8 +934,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             }
             val safeEmail = normalizedMember.email.ifBlank { "$safeId@site1.ru" }.take(160)
             val safeRole = when (normalizedMember.role) {
-                CorporateRole.ADMIN.code -> CorporateRole.HEAD.code
-                in listOf("PENDING", "WORKER", "ITR", "HEAD") -> normalizedMember.role
+                in listOf("PENDING", "WORKER", "ITR", "HEAD", "ADMIN") -> normalizedMember.role
                 else -> CorporateRole.WORKER.code
             }
             val safeStatus = normalizedMember.approvalStatus.takeIf {

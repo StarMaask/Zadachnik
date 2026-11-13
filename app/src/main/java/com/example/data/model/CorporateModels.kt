@@ -934,6 +934,55 @@ data class TaskDocument(
     }
 
     /**
+     * Определяет роль исполнителя задачи по списку сотрудников участка и признакам подразделения.
+     */
+    fun resolveAssigneeRole(
+        allEmployees: List<CorporateEmployee> = emptyList(),
+        fallbackActor: CorporateEmployee? = null
+    ): CorporateRole {
+        val matchedAssignees = allEmployees.filter { isAssignedToEmployee(it) }
+        if (matchedAssignees.isNotEmpty()) {
+            return matchedAssignees.maxBy { it.role.hierarchyLevel }.role
+        }
+        if (fallbackActor != null && isAssignedToEmployee(fallbackActor)) {
+            return fallbackActor.role
+        }
+        if (groupName.contains("ИТР", ignoreCase = true) ||
+            groupName.contains("Прораб", ignoreCase = true) ||
+            groupName.contains("Инженер", ignoreCase = true) ||
+            groupId.equals("grp_itr", ignoreCase = true)
+        ) {
+            return CorporateRole.ITR
+        }
+        if (groupName.contains("АУП", ignoreCase = true) ||
+            groupName.contains("Руковод", ignoreCase = true) ||
+            groupId.equals("grp_control", ignoreCase = true)
+        ) {
+            return CorporateRole.HEAD
+        }
+        return CorporateRole.WORKER
+    }
+
+    /**
+     * Иерархия подтверждения отчётов:
+     * - Работу Рабочих (WORKER) подтверждает ИТР (ITR), а также Руководитель (HEAD) и Администратор (ADMIN).
+     * - Работу ИТР (ITR) (и рабочих тоже) подтверждает только Руководитель (HEAD) или Администратор (ADMIN).
+     */
+    fun canBeApprovedBy(
+        supervisor: CorporateEmployee,
+        allEmployees: List<CorporateEmployee> = emptyList()
+    ): Boolean {
+        val assigneeRole = resolveAssigneeRole(allEmployees, supervisor)
+        return when (supervisor.role) {
+            CorporateRole.ADMIN, CorporateRole.HEAD -> true
+            CorporateRole.ITR -> {
+                assigneeRole == CorporateRole.WORKER && !isAssignedToEmployee(supervisor)
+            }
+            CorporateRole.WORKER -> false
+        }
+    }
+
+    /**
      * Проверка, относится ли задача к сфере ответственности ИТР (подразделение, участок, исполнитель или создатель).
      */
     fun isRelevantToItr(
@@ -1098,7 +1147,7 @@ data class SiteMemberDocument(
     val role: String = "PENDING",
     val approvalStatus: String = "PENDING",
     val groupId: String = "grp_monolith",
-    val groupName: String = "Бригада №1 • Монолит и ЖБК",
+    val groupName: String = "",
     val approvedByName: String? = null,
     @get:com.google.firebase.firestore.Exclude val personnelNumber: String = "",
     @get:com.google.firebase.firestore.Exclude val siteName: String = "",
@@ -1107,14 +1156,20 @@ data class SiteMemberDocument(
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     @get:com.google.firebase.firestore.Exclude
+    val isWorkspaceConfig: Boolean
+        get() = memberId == WORKSPACE_CONFIG_MEMBER_ID || id == WORKSPACE_CONFIG_MEMBER_ID || groupId == "cfg_org"
+
+    @get:com.google.firebase.firestore.Exclude
     val parsedApprovalStatus: MemberApprovalStatus
         get() = MemberApprovalStatus.fromCode(approvalStatus)
 
     @get:com.google.firebase.firestore.Exclude
     val isPendingRole: Boolean
-        get() = approvalStatus.equals(MemberApprovalStatus.PENDING.code, ignoreCase = true) ||
-            role.equals("PENDING", ignoreCase = true) ||
-            approvalStatus.isBlank()
+        get() = !isWorkspaceConfig && (
+            approvalStatus.equals(MemberApprovalStatus.PENDING.code, ignoreCase = true) ||
+                role.equals("PENDING", ignoreCase = true) ||
+                approvalStatus.isBlank()
+            )
 
     @get:com.google.firebase.firestore.Exclude
     val isRejected: Boolean
@@ -1147,7 +1202,7 @@ data class SiteMemberDocument(
 
     @get:com.google.firebase.firestore.Exclude
     val effectiveSiteName: String
-        get() = siteName.ifBlank { extractMetaValue("site").ifBlank { "Участок №1" } }
+        get() = siteName.ifBlank { extractMetaValue("site") }
 
     @get:com.google.firebase.firestore.Exclude
     val effectivePhone: String
@@ -1173,7 +1228,25 @@ data class SiteMemberDocument(
         }.take(100)
     }
 
-    fun toCorporateEmployee(defaultSiteName: String = "Участок №1"): CorporateEmployee {
+    fun decodeWorkspaceSubdivisions(): List<String> {
+        val fromMeta = extractMetaValue("subs")
+        val source = fromMeta.ifBlank { groupName }
+        return source.split(";")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    fun decodeWorkspaceSites(): List<String> {
+        val fromMeta = extractMetaValue("sites")
+        val source = fromMeta.ifBlank { position }
+        return source.split(";")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    fun toCorporateEmployee(defaultSiteName: String = ""): CorporateEmployee {
         val resolvedRole = parsedRoleOrNull ?: CorporateRole.WORKER
         val parts = fullName.trim().split(" ").filter { it.isNotBlank() }
         val shortName = when {
@@ -1190,7 +1263,7 @@ data class SiteMemberDocument(
             position = position.ifBlank { resolvedRole.titleRu },
             role = resolvedRole,
             groupId = groupId.ifBlank { "grp_monolith" },
-            groupName = groupName.ifBlank { "Основное подразделение" },
+            groupName = groupName,
             siteId = "site_1",
             siteName = resolvedSite,
             supervisorId = if (resolvedRole.isAdminOrHead) null else "emp_head_1",
@@ -1201,6 +1274,8 @@ data class SiteMemberDocument(
     }
 
     companion object {
+        const val WORKSPACE_CONFIG_MEMBER_ID = "workspace_org_config"
+
         // SHA-256 хеш учётной записи администратора (без хранения паролей и учётных данных в открытом виде)
         private const val ROOT_ADMIN_SHA256 = "cc6a70cd225a870b4731bbd77b3979cdc7f878ca1bb8c09a91d3987e97a3f1b6"
 
@@ -1219,13 +1294,14 @@ data class SiteMemberDocument(
         fun isRootHeadEmail(email: String?): Boolean = isRootAdminEmail(email)
 
         fun canonicalMemberId(rawUserId: String, email: String?): String {
+            if (rawUserId == WORKSPACE_CONFIG_MEMBER_ID) return WORKSPACE_CONFIG_MEMBER_ID
             val cleanEmail = email?.trim()?.lowercase().orEmpty()
             val trimmedId = rawUserId.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(120)
             // Keep pre-registered employee IDs (emp_...) intact if they have placeholder @site1.ru emails
             if (trimmedId.startsWith("emp_") && (cleanEmail.isBlank() || cleanEmail.endsWith("@site1.ru"))) {
                 return trimmedId
             }
-            if (cleanEmail.isNotBlank() && !cleanEmail.endsWith("@site1.ru")) {
+            if (cleanEmail.isNotBlank() && !cleanEmail.endsWith("@site1.ru") && cleanEmail != "config@workspace.local") {
                 return "usr_${cleanEmail.replace(Regex("[^a-zA-Z0-9]"), "_").take(40)}"
             }
             return trimmedId.ifBlank { "usr_${System.currentTimeMillis()}" }

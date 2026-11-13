@@ -477,7 +477,101 @@ class ExampleUnitTest {
         assertEquals("Плиткин Д.", decoded.authorName)
         assertEquals("Фотофиксация СМР #1", decoded.comment)
     }
+
+    @Test
+    fun `task approval hierarchy enforces ITR approves WORKER and HEAD or ADMIN approves ITR and WORKER`() {
+        val workerEmp = com.example.data.model.CorporateEmployee(
+            id = "emp_w1",
+            fullName = "Сидоров А.В.",
+            shortName = "Сидоров А.В.",
+            position = "Электромонтажник",
+            role = CorporateRole.WORKER,
+            groupId = "grp_1",
+            groupName = "ЛПДС Быково",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = "emp_itr1",
+            phone = "+79001112233",
+            email = "worker@site.ru"
+        )
+        val itrEmp = com.example.data.model.CorporateEmployee(
+            id = "emp_itr1",
+            fullName = "Плиткин Д.А.",
+            shortName = "Плиткин Д.А.",
+            position = "Инженер ПТО",
+            role = CorporateRole.ITR,
+            groupId = "grp_1",
+            groupName = "ЛПДС Быково",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = "emp_head1",
+            phone = "+79002223344",
+            email = "itr@site.ru"
+        )
+        val headEmp = com.example.data.model.CorporateEmployee(
+            id = "emp_head1",
+            fullName = "Ковалёв Д.С.",
+            shortName = "Ковалёв Д.С.",
+            position = "Начальник участка",
+            role = CorporateRole.HEAD,
+            groupId = "grp_1",
+            groupName = "ЛПДС Быково",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = null,
+            phone = "+79003334455",
+            email = "head@site.ru"
+        )
+        val adminEmp = com.example.data.model.CorporateEmployee(
+            id = "emp_admin1",
+            fullName = "Старшинов М.Ю.",
+            shortName = "Старшинов М.Ю.",
+            position = "Администратор",
+            role = CorporateRole.ADMIN,
+            groupId = "grp_1",
+            groupName = "ЛПДС Быково",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = null,
+            phone = "+79004445566",
+            email = "admin@site.ru"
+        )
+        val allEmployees = listOf(workerEmp, itrEmp, headEmp, adminEmp)
+
+        val workerTask = TaskDocument(
+            id = "task_worker_1",
+            userId = "u1",
+            title = "Монтаж заземления",
+            assigneeId = workerEmp.id,
+            assigneeName = workerEmp.shortName
+        )
+        val itrTask = TaskDocument(
+            id = "task_itr_1",
+            userId = "u1",
+            title = "Составить план на декабрь 2026",
+            assigneeId = itrEmp.id,
+            assigneeName = itrEmp.shortName
+        )
+
+        // WORKER task: approved by ITR, HEAD, ADMIN; NOT by WORKER
+        assertFalse(workerTask.canBeApprovedBy(workerEmp, allEmployees))
+        assertTrue(workerTask.canBeApprovedBy(itrEmp, allEmployees))
+        assertTrue(workerTask.canBeApprovedBy(headEmp, allEmployees))
+        assertTrue(workerTask.canBeApprovedBy(adminEmp, allEmployees))
+
+        // ITR task: approved ONLY by HEAD or ADMIN; NOT by ITR or WORKER
+        assertFalse(itrTask.canBeApprovedBy(workerEmp, allEmployees))
+        assertFalse(itrTask.canBeApprovedBy(itrEmp, allEmployees))
+        assertTrue(itrTask.canBeApprovedBy(headEmp, allEmployees))
+        assertTrue(itrTask.canBeApprovedBy(adminEmp, allEmployees))
+
+        // Default SiteMemberDocument has empty subdivision and site fields until selected
+        val freshMember = SiteMemberDocument(id = "usr_new", memberId = "usr_new", email = "new@site.ru")
+        assertEquals("", freshMember.groupName)
+        assertEquals("", freshMember.effectiveSiteName)
+    }
 }
+
 
 
 

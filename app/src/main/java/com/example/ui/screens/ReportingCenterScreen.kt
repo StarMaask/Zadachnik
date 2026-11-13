@@ -105,19 +105,22 @@ import com.example.data.model.GeneratedReportDocument
 import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
+import com.example.data.model.TaskDocument
 import com.example.data.model.TaskStatus
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.GeneratedDocumentResult
 import com.example.domain.reporting.ReportDocumentGenerator
 import com.example.domain.reporting.ReportSectionBlock
 import com.example.domain.reporting.ReportSectionKind
+import com.example.ui.components.TaskItemCard
 import java.io.File
 
 /**
  * Смысловые уровни (категории) отчётов в премиальной дизайн-системе:
- * 1. Ежедневные (Оперативные)
- * 2. Аналитика (Для ИТР)
- * 3. Конструктор
+ * 1. Принятые / Архив заданий (скрытые с главной страницы после подтверждения)
+ * 2. Ежедневные (Оперативные)
+ * 3. Аналитика (Для ИТР)
+ * 4. Конструктор
  */
 private enum class ReportCategoryTab(
     val code: String,
@@ -132,6 +135,13 @@ private enum class ReportCategoryTab(
         sectionTitle = "Все отчёты",
         sectionSubtitle = "Полный каталог оперативных и аналитических сводок",
         accentColor = Color(0xFF2563EB)
+    ),
+    ACCEPTED_ARCHIVE(
+        code = "ACCEPTED_ARCHIVE",
+        tabLabel = "Принятые задания",
+        sectionTitle = "Принятые отчёты и архив заданий",
+        sectionSubtitle = "Подтверждённые отчёты по заданиям, перенесённые с главной страницы",
+        accentColor = Color(0xFF059669)
     ),
     DAILY_OPERATIONAL(
         code = "DAILY_OPERATIONAL",
@@ -260,6 +270,8 @@ fun ReportingCenterScreen(
     activeEmployee: CorporateEmployee,
     templates: List<ReportTemplateDocument>,
     generatedReports: List<GeneratedReportDocument>,
+    allTasks: List<TaskDocument> = emptyList(),
+    onTaskClick: (TaskDocument) -> Unit = {},
     currentEpochDay: Long = CorporateSeedData.BASE_EPOCH_DAY,
     organizationName: String = CorporateSeedData.DEFAULT_ORG_NAME,
     siteName: String = CorporateSeedData.DEFAULT_SITE_NAME,
@@ -358,6 +370,11 @@ fun ReportingCenterScreen(
     }
     val constructorList = remember(allReportCatalog) {
         allReportCatalog.filter { it.parsedReportType.visualSpec().category == ReportCategoryTab.CONSTRUCTOR }
+    }
+    val acceptedAndArchivedTasks = remember(allTasks) {
+        allTasks.filter {
+            it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED
+        }.sortedByDescending { it.dueDateEpochDay }
     }
 
     LazyColumn(
@@ -737,6 +754,7 @@ fun ReportingCenterScreen(
                         val isSelected = selectedCategoryTab == tab
                         val countBadge = when (tab) {
                             ReportCategoryTab.ALL -> allReportCatalog.size
+                            ReportCategoryTab.ACCEPTED_ARCHIVE -> acceptedAndArchivedTasks.size
                             ReportCategoryTab.DAILY_OPERATIONAL -> dailyOperationalList.size
                             ReportCategoryTab.ITR_ANALYTICS -> itrAnalyticsList.size
                             ReportCategoryTab.CONSTRUCTOR -> constructorList.size
@@ -839,6 +857,42 @@ fun ReportingCenterScreen(
                             Icon(Icons.Default.Close, contentDescription = "Закрыть", modifier = Modifier.size(15.dp))
                         }
                     }
+                }
+            }
+        }
+
+        // СЕКЦИЯ 0: Принятые отчёты и архив заданий (перемещённые с главной страницы)
+        if (selectedCategoryTab == ReportCategoryTab.ACCEPTED_ARCHIVE ||
+            (selectedCategoryTab == ReportCategoryTab.ALL && acceptedAndArchivedTasks.isNotEmpty())
+        ) {
+            item {
+                ReportCategorySectionHeader(
+                    category = ReportCategoryTab.ACCEPTED_ARCHIVE,
+                    topAirSpacing = 4.dp
+                )
+            }
+            if (acceptedAndArchivedTasks.isEmpty()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        shadowElevation = 1.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Принятых отчётов пока нет. После подтверждения отчёты скрываются с главной страницы и отображаются здесь.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
+            } else {
+                items(acceptedAndArchivedTasks, key = { "rep_arch_${it.id}" }) { task ->
+                    TaskItemCard(
+                        task = task,
+                        onClick = { onTaskClick(task) }
+                    )
                 }
             }
         }

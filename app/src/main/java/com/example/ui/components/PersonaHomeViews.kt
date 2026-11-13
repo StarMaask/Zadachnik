@@ -515,6 +515,24 @@ fun WorkerPersonaTaskCard(
                     }
                 }
             }
+
+            if (!task.rejectionReason.isNullOrBlank() && task.taskStatus == TaskStatus.REJECTED) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Причина отклонения: ${task.rejectionReason}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -549,7 +567,7 @@ fun ItrHorizontalDateStrip(
     }
     val countByDay = remember(allVisibleTasks) {
         allVisibleTasks
-            .filter { it.taskStatus != TaskStatus.ARCHIVED }
+            .filter { it.taskStatus != TaskStatus.ARCHIVED && it.taskStatus != TaskStatus.APPROVED }
             .groupBy { it.dueDateEpochDay }
             .mapValues { it.value.size }
     }
@@ -1176,6 +1194,24 @@ fun ItrPersonaTaskCard(
                     }
                 }
             }
+
+            if (!task.rejectionReason.isNullOrBlank() && task.taskStatus == TaskStatus.REJECTED) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Причина отклонения: ${task.rejectionReason}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -1225,10 +1261,11 @@ fun DirectorExecutiveDashboard(
 
     val attentionTasks = remember(activeTasks) {
         activeTasks.filter {
-            it.taskStatus == TaskStatus.ON_REVIEW ||
-                it.taskStatus == TaskStatus.OVERDUE ||
-                it.taskStatus == TaskStatus.REJECTED ||
-                it.taskPriority == TaskPriority.CRITICAL
+            it.taskStatus != TaskStatus.APPROVED &&
+                (it.taskStatus == TaskStatus.ON_REVIEW ||
+                 it.taskStatus == TaskStatus.OVERDUE ||
+                 it.taskStatus == TaskStatus.REJECTED ||
+                 it.taskPriority == TaskPriority.CRITICAL)
         }.take(6)
     }
 

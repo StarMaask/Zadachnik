@@ -371,24 +371,26 @@ fun AuthScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    val availableSubdivisions = remember(context) {
-        LocalWorkspaceStore.loadSubdivisions(context)
+    var availableSubdivisions by remember(context) {
+        mutableStateOf(LocalWorkspaceStore.loadSubdivisions(context))
     }
-    val availableSites = remember(context) {
-        LocalWorkspaceStore.loadSites(context)
+    var availableSites by remember(context) {
+        mutableStateOf(LocalWorkspaceStore.loadSites(context))
     }
 
     var fullNameInput by remember { mutableStateOf("") }
     var emailInput by remember { mutableStateOf("") }
     var positionInput by remember { mutableStateOf("") }
 
-    var selectedSubdivision by remember(availableSubdivisions) {
-        mutableStateOf(availableSubdivisions.firstOrNull() ?: "Основное подразделение")
+    // По умолчанию при первом входе поля подразделения и участка оставляем пустыми —
+    // пользователь сам выбирает из доступных вариантов, внесённых администратором
+    var selectedSubdivision by remember {
+        mutableStateOf("")
     }
     var subdivisionDropdownExpanded by remember { mutableStateOf(false) }
 
-    var selectedSite by remember(availableSites) {
-        mutableStateOf(availableSites.firstOrNull() ?: CorporateSeedData.DEFAULT_SITE_NAME)
+    var selectedSite by remember {
+        mutableStateOf("")
     }
     var showSitePickerDialog by remember { mutableStateOf(false) }
 
@@ -585,10 +587,13 @@ fun AuthScreen(
                                     .testTag("login_position_input")
                             )
 
-                            // Выпадающий список выбора принадлежности к подразделению
+                            // Выпадающий список выбора принадлежности к подразделению (по умолчанию пустой)
                             ExposedDropdownMenuBox(
                                 expanded = subdivisionDropdownExpanded,
-                                onExpandedChange = { subdivisionDropdownExpanded = !subdivisionDropdownExpanded },
+                                onExpandedChange = {
+                                    availableSubdivisions = LocalWorkspaceStore.loadSubdivisions(context)
+                                    subdivisionDropdownExpanded = !subdivisionDropdownExpanded
+                                },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 OutlinedTextField(
@@ -596,6 +601,7 @@ fun AuthScreen(
                                     onValueChange = {},
                                     readOnly = true,
                                     label = { Text("Принадлежность к подразделению") },
+                                    placeholder = { Text("Выберите из доступных (внесено администратором)") },
                                     leadingIcon = {
                                         Icon(
                                             imageVector = Icons.Default.Apartment,
@@ -616,26 +622,56 @@ fun AuthScreen(
                                     expanded = subdivisionDropdownExpanded,
                                     onDismissRequest = { subdivisionDropdownExpanded = false }
                                 ) {
-                                    availableSubdivisions.forEach { subdiv ->
+                                    if (availableSubdivisions.isEmpty()) {
                                         DropdownMenuItem(
-                                            text = { Text(subdiv) },
-                                            onClick = {
-                                                selectedSubdivision = subdiv
-                                                subdivisionDropdownExpanded = false
-                                            }
+                                            text = {
+                                                Text(
+                                                    text = "Список подразделений пока не внесён администратором",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            },
+                                            onClick = { subdivisionDropdownExpanded = false }
                                         )
+                                    } else {
+                                        if (selectedSubdivision.isNotBlank()) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = "Очистить выбор",
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                },
+                                                onClick = {
+                                                    selectedSubdivision = ""
+                                                    subdivisionDropdownExpanded = false
+                                                }
+                                            )
+                                        }
+                                        availableSubdivisions.forEach { subdiv ->
+                                            DropdownMenuItem(
+                                                text = { Text(subdiv) },
+                                                onClick = {
+                                                    selectedSubdivision = subdiv
+                                                    subdivisionDropdownExpanded = false
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
 
-                            // Окно выбора принадлежности к участку
+                            // Окно выбора принадлежности к участку (по умолчанию пустое)
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { showSitePickerDialog = true }
+                                    .clickable {
+                                        availableSites = LocalWorkspaceStore.loadSites(context)
+                                        showSitePickerDialog = true
+                                    }
                                     .testTag("registration_site_selector_button")
                             ) {
                                 Row(
@@ -661,10 +697,14 @@ fun AuthScreen(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                             Text(
-                                                text = selectedSite,
+                                                text = selectedSite.ifBlank { "Не выбрано (выберите из внесённых администратором)" },
                                                 style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = MaterialTheme.colorScheme.onSurface
+                                                fontWeight = if (selectedSite.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = if (selectedSite.isNotBlank()) {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                }
                                             )
                                         }
                                     }
@@ -703,7 +743,9 @@ fun AuthScreen(
                                         text = if (isRootAdmin) {
                                             "Вход под Администратором: все права управления без ограничений"
                                         } else {
-                                            "Подразделение: $selectedSubdivision • Участок: $selectedSite"
+                                            val subLabel = selectedSubdivision.ifBlank { "не выбрано" }
+                                            val siteLabel = selectedSite.ifBlank { "не выбран" }
+                                            "Подразделение: $subLabel • Участок: $siteLabel"
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -828,34 +870,54 @@ fun SiteSelectionDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                availableSites.forEach { siteOption ->
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (siteOption == selectedSite) {
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelectSite(siteOption) }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                if (availableSites.isEmpty()) {
+                    Text(
+                        text = "Список строительных участков ещё не внесён администратором системы. Когда администратор добавит участки в настройках организации, они появятся здесь для выбора.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    availableSites.forEach { siteOption ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (siteOption == selectedSite) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectSite(siteOption) }
                         ) {
-                            RadioButton(
-                                selected = siteOption == selectedSite,
-                                onClick = { onSelectSite(siteOption) }
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = siteOption,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (siteOption == selectedSite) FontWeight.SemiBold else FontWeight.Normal
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = siteOption == selectedSite,
+                                    onClick = { onSelectSite(siteOption) }
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = siteOption,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (siteOption == selectedSite) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            }
                         }
                     }
+                }
+            }
+        },
+        dismissButton = {
+            if (selectedSite.isNotBlank()) {
+                TextButton(
+                    onClick = {
+                        onSelectSite("")
+                        onDismiss()
+                    }
+                ) {
+                    Text("Очистить")
                 }
             }
         },
@@ -880,21 +942,27 @@ fun PendingRoleApprovalScreen(
     onRefreshStatus: () -> Unit,
     onSignOut: () -> Unit
 ) {
-    var positionText by remember(member.position) { mutableStateOf(member.position) }
-    var selectedSubdivision by remember(member.groupName, availableSubdivisions) {
+    var positionText by remember(member.position) {
+        mutableStateOf(member.position.takeIf { it != "Специалист участка" && it != "Специалист" }.orEmpty())
+    }
+    var selectedSubdivision by remember(member.groupName) {
         mutableStateOf(
-            member.groupName.ifBlank {
-                availableSubdivisions.firstOrNull() ?: "Основное подразделение"
-            }
+            member.groupName.takeIf {
+                it.isNotBlank() &&
+                    it != "Основное подразделение" &&
+                    it != "Бригада №1 • Монолит и ЖБК"
+            }.orEmpty()
         )
     }
     var subdivisionExpanded by remember { mutableStateOf(false) }
 
-    var selectedSite by remember(member.effectiveSiteName, availableSites) {
+    var selectedSite by remember(member.effectiveSiteName) {
         mutableStateOf(
-            member.effectiveSiteName.ifBlank {
-                availableSites.firstOrNull() ?: CorporateSeedData.DEFAULT_SITE_NAME
-            }
+            member.effectiveSiteName.takeIf {
+                it.isNotBlank() &&
+                    it != CorporateSeedData.DEFAULT_SITE_NAME &&
+                    it != "Участок №1"
+            }.orEmpty()
         )
     }
     var showSiteDialog by remember { mutableStateOf(false) }
@@ -1043,12 +1111,13 @@ fun PendingRoleApprovalScreen(
                             value = positionText,
                             onValueChange = { positionText = it },
                             label = { Text("Должность / специальность") },
+                            placeholder = { Text("Укажите вашу должность") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         )
 
-                        // Выпадающий список подразделения
+                        // Выпадающий список подразделения (из внесённых администратором)
                         ExposedDropdownMenuBox(
                             expanded = subdivisionExpanded,
                             onExpandedChange = { subdivisionExpanded = !subdivisionExpanded },
@@ -1059,6 +1128,7 @@ fun PendingRoleApprovalScreen(
                                 onValueChange = {},
                                 readOnly = true,
                                 label = { Text("Подразделение") },
+                                placeholder = { Text("Выберите из внесённых администратором") },
                                 trailingIcon = {
                                     ExposedDropdownMenuDefaults.TrailingIcon(expanded = subdivisionExpanded)
                                 },
@@ -1071,14 +1141,27 @@ fun PendingRoleApprovalScreen(
                                 expanded = subdivisionExpanded,
                                 onDismissRequest = { subdivisionExpanded = false }
                             ) {
-                                availableSubdivisions.forEach { subdiv ->
+                                if (availableSubdivisions.isEmpty()) {
                                     DropdownMenuItem(
-                                        text = { Text(subdiv) },
-                                        onClick = {
-                                            selectedSubdivision = subdiv
-                                            subdivisionExpanded = false
-                                        }
+                                        text = {
+                                            Text(
+                                                text = "Подразделения ещё не внесены администратором",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        },
+                                        onClick = { subdivisionExpanded = false }
                                     )
+                                } else {
+                                    availableSubdivisions.forEach { subdiv ->
+                                        DropdownMenuItem(
+                                            text = { Text(subdiv) },
+                                            onClick = {
+                                                selectedSubdivision = subdiv
+                                                subdivisionExpanded = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1104,13 +1187,18 @@ fun PendingRoleApprovalScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        text = selectedSite,
+                                        text = selectedSite.ifBlank { "Не выбрано (выберите из внесённых администратором)" },
                                         style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold
+                                        fontWeight = if (selectedSite.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (selectedSite.isNotBlank()) {
+                                            MaterialTheme.colorScheme.onSurface
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
                                     )
                                 }
                                 Text(
-                                    text = "Изменить",
+                                    text = "Выбрать",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.Bold
@@ -1127,7 +1215,7 @@ fun PendingRoleApprovalScreen(
                                     val resolvedGroup = CorporateSeedData.workGroups.firstOrNull {
                                         it.name.equals(selectedSubdivision, ignoreCase = true)
                                     } ?: WorkGroup(
-                                        id = "grp_${selectedSubdivision.hashCode()}",
+                                        id = if (selectedSubdivision.isNotBlank()) "grp_${selectedSubdivision.hashCode()}" else "grp_monolith",
                                         name = selectedSubdivision,
                                         siteId = "site_1",
                                         siteName = selectedSite,

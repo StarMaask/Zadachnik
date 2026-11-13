@@ -188,7 +188,8 @@ class EzhednevnikViewModel(
     private val _localSiteMembers = MutableStateFlow(
         appContext?.let { ctx ->
             LocalWorkspaceStore.loadMembers(ctx).filterNot {
-                CorporateSeedData.isLegacyFakeSeedMemberId(it.memberId.ifBlank { it.id })
+                it.isWorkspaceConfig ||
+                    CorporateSeedData.isLegacyFakeSeedMemberId(it.memberId.ifBlank { it.id })
             }
         } ?: emptyList()
     )
@@ -251,6 +252,7 @@ class EzhednevnikViewModel(
     ) { remoteList, localList, deletedIds ->
         val mergedMap = LinkedHashMap<String, SiteMemberDocument>()
         remoteList.forEach { m ->
+            if (m.isWorkspaceConfig) return@forEach
             val rawKey = m.memberId.ifBlank { m.id }
             val normKey = normalizeMemberKey(rawKey)
             val canonicalKey = SiteMemberDocument.canonicalMemberId(rawKey, m.email)
@@ -268,6 +270,7 @@ class EzhednevnikViewModel(
         //   кроме случая, когда администратор только что локально утвердил эту заявку (!m.isPendingRole && !m.isRejected).
         // - если в облаке заявка уже подтверждена (APPROVED), сохраняем подтверждённую роль из облака.
         localList.forEach { m ->
+            if (m.isWorkspaceConfig) return@forEach
             val rawKey = m.memberId.ifBlank { m.id }
             val normKey = normalizeMemberKey(rawKey)
             val canonicalKey = SiteMemberDocument.canonicalMemberId(rawKey, m.email)
@@ -607,7 +610,11 @@ class EzhednevnikViewModel(
     private suspend fun syncSiteMembersFromCloudSilently() {
         val remoteMembers = repository.fetchAllSiteMembersOnce()
         if (remoteMembers.isEmpty()) return
+        remoteMembers.firstOrNull { it.isWorkspaceConfig }?.let { configDoc ->
+            applyWorkspaceConfigDocument(configDoc)
+        }
         remoteMembers.forEach { remote ->
+            if (remote.isWorkspaceConfig) return@forEach
             val canonicalId = SiteMemberDocument.canonicalMemberId(remote.memberId.ifBlank { remote.id }, remote.email)
             val existingLocal = _localSiteMembers.value.firstOrNull {
                 SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email) == canonicalId
@@ -617,6 +624,25 @@ class EzhednevnikViewModel(
                 (!remote.isPendingRole && !remote.isRejected && existingLocal.isPendingRole)
             ) {
                 upsertLocalMember(remote.copy(id = canonicalId, memberId = canonicalId))
+            }
+        }
+    }
+
+    private fun applyWorkspaceConfigDocument(configDoc: SiteMemberDocument) {
+        val cloudSubdivisions = configDoc.decodeWorkspaceSubdivisions()
+        if (cloudSubdivisions.isNotEmpty()) {
+            val mergedSubs = (_subdivisionsList.value + cloudSubdivisions).distinct()
+            if (mergedSubs != _subdivisionsList.value) {
+                _subdivisionsList.value = mergedSubs
+                appContext?.let { LocalWorkspaceStore.saveSubdivisions(it, mergedSubs) }
+            }
+        }
+        val cloudSites = configDoc.decodeWorkspaceSites()
+        if (cloudSites.isNotEmpty()) {
+            val mergedSites = (_sitesList.value + cloudSites).distinct()
+            if (mergedSites != _sitesList.value) {
+                _sitesList.value = mergedSites
+                appContext?.let { LocalWorkspaceStore.saveSites(it, mergedSites) }
             }
         }
     }
@@ -780,15 +806,25 @@ class EzhednevnikViewModel(
 
     private fun observeMemberRoleUpdates() {
         viewModelScope.launch {
+            firestoreSiteMembersFlow.collect { remoteRaw ->
+                remoteRaw.firstOrNull { it.isWorkspaceConfig }?.let { configDoc ->
+                    applyWorkspaceConfigDocument(configDoc)
+                }
+            }
+        }
+        viewModelScope.launch {
             siteMembersState.collect { members ->
-                // Sync subdivisions and sites from discovered member records
-                val remoteSubdivisions = members.map { it.groupName.trim() }.filter { it.isNotBlank() }
+                // Sync subdivisions and sites from approved member records configured by Admin
+                val approvedMembers = members.filter { !it.isPendingRole && !it.isRejected && !it.isWorkspaceConfig }
+                val remoteSubdivisions = approvedMembers.map { it.groupName.trim() }
+                    .filter { it.isNotBlank() && it != "Бригада №1 • Монолит и ЖБК" }
                 val mergedSubdivisions = (_subdivisionsList.value + remoteSubdivisions).distinct()
                 if (mergedSubdivisions.size != _subdivisionsList.value.size) {
                     _subdivisionsList.value = mergedSubdivisions
                     appContext?.let { LocalWorkspaceStore.saveSubdivisions(it, mergedSubdivisions) }
                 }
-                val remoteSites = members.map { it.effectiveSiteName.trim() }.filter { it.isNotBlank() }
+                val remoteSites = approvedMembers.map { it.effectiveSiteName.trim() }
+                    .filter { it.isNotBlank() && it != CorporateSeedData.DEFAULT_SITE_NAME }
                 val mergedSites = (_sitesList.value + remoteSites).distinct()
                 if (mergedSites.size != _sitesList.value.size) {
                     _sitesList.value = mergedSites
@@ -1017,25 +1053,12 @@ class EzhednevnikViewModel(
                 }
                 adminDoc
             } else {
-                val resolvedSubdivision = initialSubdivision.ifBlank {
-                    _subdivisionsList.value.firstOrNull() ?: CorporateSeedData.workGroups.first().name
-                }
-                val resolvedSite = initialSiteName.ifBlank { _siteName.value }
+                val resolvedSubdivision = initialSubdivision.trim()
+                val resolvedSite = initialSiteName.trim()
                 val resolvedPos = initialPosition.ifBlank { "Специалист" }
                 val matchedGroup = CorporateSeedData.workGroups.firstOrNull {
-                    it.name.equals(resolvedSubdivision, ignoreCase = true)
+                    resolvedSubdivision.isNotBlank() && it.name.equals(resolvedSubdivision, ignoreCase = true)
                 } ?: CorporateSeedData.workGroups.first().copy(name = resolvedSubdivision)
-
-                if (resolvedSite.isNotBlank() && resolvedSite !in _sitesList.value) {
-                    val updatedSites = (_sitesList.value + resolvedSite).distinct()
-                    _sitesList.value = updatedSites
-                    appContext?.let { LocalWorkspaceStore.saveSites(it, updatedSites) }
-                }
-                if (resolvedSubdivision.isNotBlank() && resolvedSubdivision !in _subdivisionsList.value) {
-                    val updatedSubdivisions = (_subdivisionsList.value + resolvedSubdivision).distinct()
-                    _subdivisionsList.value = updatedSubdivisions
-                    appContext?.let { LocalWorkspaceStore.saveSubdivisions(it, updatedSubdivisions) }
-                }
 
                 val baseLocalPending = SiteMemberDocument(
                     id = normalizedCurrentUserId,
@@ -1263,7 +1286,11 @@ class EzhednevnikViewModel(
         viewModelScope.launch {
             if (isCloudAuthenticated) {
                 val remoteMembers = repository.fetchAllSiteMembersOnce()
+                remoteMembers.firstOrNull { it.isWorkspaceConfig }?.let { configDoc ->
+                    applyWorkspaceConfigDocument(configDoc)
+                }
                 remoteMembers.forEach { remote ->
+                    if (remote.isWorkspaceConfig) return@forEach
                     val canonicalId = SiteMemberDocument.canonicalMemberId(remote.memberId.ifBlank { remote.id }, remote.email)
                     val existsLocally = _localSiteMembers.value.any {
                         SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email) == canonicalId
@@ -1621,7 +1648,12 @@ class EzhednevnikViewModel(
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateOrganizationAndSiteProfile(cleanOrg, cleanSite)
+                repository.updateOrganizationAndSiteProfile(
+                    orgName = cleanOrg,
+                    siteName = cleanSite,
+                    subdivisions = cleanSubdivisions,
+                    sites = cleanSites
+                )
             }
         }
     }
@@ -2514,50 +2546,90 @@ class EzhednevnikViewModel(
     fun approveReport(task: TaskDocument, comment: String) {
         val currentTask = findTaskById(task.id) ?: task
         val supervisor = activeEmployee.value
+        val employees = availableEmployees.value
+        val assigneeRole = currentTask.resolveAssigneeRole(employees, supervisor)
+        if (!currentTask.canBeApprovedBy(supervisor, employees)) {
+            _bannerMessage.value = "Недостаточно прав: работу ИТР подтверждает Руководитель"
+            return
+        }
+        val cleanComment = comment.trim()
+        val updatedComments = if (cleanComment.isNotBlank()) {
+            (currentTask.commentItems + TaskCommentItem(
+                id = "cmt_${System.currentTimeMillis()}",
+                authorId = supervisor.id,
+                authorName = supervisor.shortName,
+                authorRole = supervisor.role.code,
+                text = "Подтверждено: $cleanComment",
+                mentionedUser = currentTask.assigneeName,
+                createdAtText = nowText(),
+                isRead = false
+            ).encode()).takeLast(50)
+        } else {
+            currentTask.commentItems
+        }
         val updatedTask = currentTask.copy(
             status = TaskStatus.APPROVED.code,
             approvedByName = supervisor.fullName,
             rejectionReason = null,
+            commentItems = updatedComments,
             historyItems = currentTask.historyItems + StatusHistoryEntry(
                 nowText(),
                 supervisor.shortName,
                 TaskStatus.APPROVED.code,
-                comment.ifBlank { "Отчёт подтверждён" }
+                cleanComment.ifBlank { "Отчёт подтверждён (${supervisor.role.titleRu})" }
             ).encode()
         )
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Выполнение задачи подтверждено"
+        _bannerMessage.value = "Выполнение задачи подтверждено и перенесено в архив принятых отчётов"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.approveTaskReport(supervisor, currentTask, comment)
+                repository.approveTaskReport(supervisor, currentTask, cleanComment, assigneeRole)
             }
         }
     }
 
     fun rejectReport(task: TaskDocument, reason: String) {
-        if (reason.isBlank()) {
-            _bannerMessage.value = "Укажите причину возврата задачи"
+        val cleanReason = reason.trim()
+        if (cleanReason.isBlank()) {
+            _bannerMessage.value = "Укажите причину отклонения задачи"
             return
         }
         val currentTask = findTaskById(task.id) ?: task
         val supervisor = activeEmployee.value
+        val employees = availableEmployees.value
+        val assigneeRole = currentTask.resolveAssigneeRole(employees, supervisor)
+        if (!currentTask.canBeApprovedBy(supervisor, employees)) {
+            _bannerMessage.value = "Недостаточно прав: работу ИТР проверяет и отклоняет Руководитель"
+            return
+        }
+        val rejectComment = TaskCommentItem(
+            id = "cmt_${System.currentTimeMillis()}",
+            authorId = supervisor.id,
+            authorName = supervisor.shortName,
+            authorRole = supervisor.role.code,
+            text = "@${currentTask.assigneeName} Причина отклонения: $cleanReason",
+            mentionedUser = currentTask.assigneeName,
+            createdAtText = nowText(),
+            isRead = false
+        ).encode()
         val updatedTask = currentTask.copy(
             status = TaskStatus.REJECTED.code,
-            rejectionReason = reason.trim(),
+            rejectionReason = cleanReason,
+            commentItems = (currentTask.commentItems + rejectComment).takeLast(50),
             historyItems = currentTask.historyItems + StatusHistoryEntry(
                 nowText(),
                 supervisor.shortName,
                 TaskStatus.REJECTED.code,
-                "Отклонено: ${reason.trim()}"
+                "Отклонено: $cleanReason"
             ).encode()
         )
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Отчёт отклонён и возвращён на доработку"
+        _bannerMessage.value = "Задание отклонено: $cleanReason"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.rejectTaskReport(supervisor, currentTask, reason)
+                repository.rejectTaskReport(supervisor, currentTask, cleanReason, assigneeRole)
             }
         }
     }

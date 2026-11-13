@@ -337,11 +337,29 @@ fun TaskItemCard(
                 }
 
                 if (!task.rejectionReason.isNullOrBlank() && task.taskStatus == TaskStatus.REJECTED) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Причина отклонения: ${task.rejectionReason}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                } else if (task.taskStatus == TaskStatus.APPROVED && !task.approvedByName.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Возврат: ${task.rejectionReason}",
+                        text = "Подтвердил: ${task.approvedByName}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Medium,
+                        color = doneColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -469,6 +487,9 @@ fun TaskDetailDialog(
     var supervisorNote by remember { mutableStateOf("") }
     var rejectionReasonInput by remember { mutableStateOf("") }
     var showRejectDialog by remember { mutableStateOf(false) }
+    var showRejectedOutcomeDialog by remember { mutableStateOf(false) }
+    var submittedRejectionComment by remember { mutableStateOf("") }
+    var showApprovedOutcomeDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showExtraSections by remember { mutableStateOf(false) }
 
@@ -527,11 +548,12 @@ fun TaskDetailDialog(
     }
 
     val tokens = LocalAppThemeTokens.current
-    val seedAssignee = remember(task.assigneeId) {
-        CorporateSeedData.employees.firstOrNull { it.id == task.assigneeId }
+    val assigneeRole = remember(task, availableEmployees, activeEmployee) {
+        task.resolveAssigneeRole(availableEmployees, activeEmployee)
     }
-    val assigneeRole = seedAssignee?.role ?: com.example.data.model.CorporateRole.WORKER
-    val canApproveThisTask = activeEmployee.role.canApproveReportOf(assigneeRole)
+    val canApproveThisTask = remember(task, activeEmployee, availableEmployees) {
+        task.canBeApprovedBy(activeEmployee, availableEmployees)
+    }
     val isApproved = task.taskStatus == TaskStatus.APPROVED
     val textDeco = if (isApproved) TextDecoration.LineThrough else TextDecoration.None
     val completionPct = task.completionPercent()
@@ -675,6 +697,62 @@ fun TaskDetailDialog(
                             .padding(horizontal = 20.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(18.dp)
                     ) {
+                        if (!task.rejectionReason.isNullOrBlank()) {
+                            Surface(
+                                color = crimsonSecondary.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, crimsonSecondary.copy(alpha = 0.45f)),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("task_detail_rejection_banner")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "Задание отклонено — комментарий проверяющего:",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = crimsonSecondary
+                                    )
+                                    Text(
+                                        text = task.rejectionReason,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+
+                        if (task.taskStatus == TaskStatus.APPROVED && !task.approvedByName.isNullOrBlank()) {
+                            Surface(
+                                color = emeraldPrimary.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, emeraldPrimary.copy(alpha = 0.4f)),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = emeraldPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Отчёт принят и подтверждён: ${task.approvedByName}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = emeraldPrimary
+                                    )
+                                }
+                            }
+                        }
+
                         // =====================================================================
                         // 2. БЛОК ИНФОРМАЦИИ (МЕТАДАННЫЕ)
                         // Исполнитель, срок и объём в единой мягкой подложке без рамки.
@@ -1764,7 +1842,7 @@ fun TaskDetailDialog(
                                     Button(
                                         onClick = {
                                             onApproveReport(supervisorNote)
-                                            onDismiss()
+                                            showApprovedOutcomeDialog = true
                                         },
                                         shape = RoundedCornerShape(12.dp),
                                         colors = ButtonDefaults.buttonColors(
@@ -1789,9 +1867,7 @@ fun TaskDetailDialog(
                                         )
                                     }
                                 }
-                            }
-
-                            if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
+                            } else if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
                                 val hasEnoughPhotosNow = task.hasEnoughPhotos()
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -1824,7 +1900,8 @@ fun TaskDetailDialog(
 
                                     val submitLabel = when {
                                         task.taskStatus == TaskStatus.ON_REVIEW -> "Обновить отчёт (На проверке)"
-                                        task.requiresApproval -> "Подтвердить выполнение"
+                                        assigneeRole == com.example.data.model.CorporateRole.ITR -> "Сдать отчёт руководителю"
+                                        task.requiresApproval -> "Сдать работу на проверку"
                                         else -> "Завершить задачу"
                                     }
                                     Button(
@@ -1835,16 +1912,8 @@ fun TaskDetailDialog(
                                         enabled = true,
                                         shape = RoundedCornerShape(12.dp),
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (canApproveThisTask) {
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                                            } else {
-                                                emeraldPrimary
-                                            },
-                                            contentColor = if (canApproveThisTask) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                Color.White
-                                            }
+                                            containerColor = emeraldPrimary,
+                                            contentColor = Color.White
                                         ),
                                         modifier = Modifier
                                             .weight(1f)
@@ -1934,30 +2003,67 @@ fun TaskDetailDialog(
     }
 
     if (showRejectDialog) {
+        val quickRejectReasons = remember {
+            listOf(
+                "Недостаточно фотоотчёта",
+                "Объём выполнен не полностью",
+                "Замечание по качеству СМР",
+                "Требуется корректировка данных"
+            )
+        }
         AlertDialog(
             onDismissRequest = { showRejectDialog = false },
-            title = { Text("Причина возврата на доработку") },
+            title = { Text("Отклонение задания") },
             text = {
-                OutlinedTextField(
-                    value = rejectionReasonInput,
-                    onValueChange = { rejectionReasonInput = it },
-                    label = { Text("Укажите замечание *") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("rejection_reason_input")
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Укажите комментарий, почему задание возвращается исполнителю на доработку:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        quickRejectReasons.forEach { preset ->
+                            FilterChip(
+                                selected = rejectionReasonInput == preset,
+                                onClick = { rejectionReasonInput = preset },
+                                label = {
+                                    Text(
+                                        text = preset,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = rejectionReasonInput,
+                        onValueChange = { rejectionReasonInput = it },
+                        label = { Text("Комментарий (причина отклонения) *") },
+                        placeholder = { Text("Опишите замечание для исполнителя...") },
+                        minLines = 2,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("rejection_reason_input")
+                    )
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (rejectionReasonInput.isNotBlank()) {
-                            onRejectReport(rejectionReasonInput)
+                        val cleanReason = rejectionReasonInput.trim()
+                        if (cleanReason.isNotBlank()) {
+                            submittedRejectionComment = cleanReason
+                            onRejectReport(cleanReason)
                             showRejectDialog = false
-                            onDismiss()
+                            showRejectedOutcomeDialog = true
                         }
                     },
                     enabled = rejectionReasonInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.testTag("confirm_reject_dialog_button")
                 ) {
                     Text("Отклонить", color = Color.White)
                 }
@@ -1965,6 +2071,105 @@ fun TaskDetailDialog(
             dismissButton = {
                 TextButton(onClick = { showRejectDialog = false }) {
                     Text("Отмена")
+                }
+            }
+        )
+    }
+
+    if (showRejectedOutcomeDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showRejectedOutcomeDialog = false
+                onDismiss()
+            },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = null,
+                        tint = crimsonSecondary
+                    )
+                    Text("Задание отклонено")
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Задание «${task.title}» отклонено и возвращено исполнителю (${task.assigneeName}) на доработку.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (submittedRejectionComment.isNotBlank()) {
+                        Surface(
+                            color = crimsonSecondary.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "Комментарий: $submittedRejectionComment",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = crimsonSecondary,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showRejectedOutcomeDialog = false
+                        onDismiss()
+                    },
+                    modifier = Modifier.testTag("confirm_rejected_outcome_button")
+                ) {
+                    Text("ОК")
+                }
+            }
+        )
+    }
+
+    if (showApprovedOutcomeDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showApprovedOutcomeDialog = false
+                onDismiss()
+            },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = emeraldPrimary
+                    )
+                    Text("Отчёт принят")
+                }
+            },
+            text = {
+                Text(
+                    text = "Выполнение задания «${task.title}» подтверждено (${activeEmployee.shortName}). Принятый отчёт скрыт с главной страницы и перемещён на вкладку принятых заданий (Приёмка / Архив).",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showApprovedOutcomeDialog = false
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = emeraldPrimary,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("confirm_approved_outcome_button")
+                ) {
+                    Text("ОК")
                 }
             }
         )

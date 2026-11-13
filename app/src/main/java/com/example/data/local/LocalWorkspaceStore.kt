@@ -20,18 +20,22 @@ object LocalWorkspaceStore {
     private const val KEY_DELETED_MEMBER_IDS = "deleted_member_ids"
     private const val KEY_ORG_NAME = "organization_name"
     private const val KEY_SITE_NAME = "site_name"
-    private const val KEY_SUBDIVISIONS = "admin_subdivisions_json"
-    private const val KEY_SITES = "admin_sites_json"
+    private const val KEY_SUBDIVISIONS = "admin_subdivisions_v2_json"
+    private const val KEY_SITES = "admin_sites_v2_json"
 
-    val DEFAULT_SUBDIVISIONS = listOf(
+    val DEFAULT_SUBDIVISIONS: List<String> = emptyList()
+
+    val DEFAULT_SITES: List<String> = emptyList()
+
+    private val LEGACY_FAKE_SUBDIVISIONS = setOf(
         "Бригада №1 • Монолит и ЖБК",
         "Бригада №2 • Инженерные сети (ЭОМ и ОВиК)",
         "Служба ИТР и стройконтроля",
         "Административно-управленческий персонал"
     )
 
-    val DEFAULT_SITES = listOf(
-        CorporateSeedData.DEFAULT_SITE_NAME,
+    private val LEGACY_FAKE_SITES = setOf(
+        "Участок №1 — ПГС и Инженерные сети",
         "Участок №2 — СМР и Отделка",
         "Участок №3 — Наружные сети и Благоустройство"
     )
@@ -58,42 +62,16 @@ object LocalWorkspaceStore {
             .putString(KEY_SITE_NAME, cleanSite)
             .apply()
         val currentSites = loadSites(context)
-        if (cleanSite !in currentSites) {
+        if (cleanSite.isNotBlank() && cleanSite !in LEGACY_FAKE_SITES && cleanSite !in currentSites) {
             saveSites(context, listOf(cleanSite) + currentSites)
         }
     }
 
     fun loadSubdivisions(context: Context): List<String> {
-        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_SUBDIVISIONS, null)
-        if (raw.isNullOrBlank()) return DEFAULT_SUBDIVISIONS
-        return runCatching {
-            val arr = JSONArray(raw)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val item = arr.optString(i).trim()
-                    if (item.isNotBlank()) add(item)
-                }
-            }.ifEmpty { DEFAULT_SUBDIVISIONS }
-        }.getOrDefault(DEFAULT_SUBDIVISIONS)
-    }
-
-    fun saveSubdivisions(context: Context, subdivisions: List<String>) {
-        val cleaned = subdivisions.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-            .ifEmpty { DEFAULT_SUBDIVISIONS }
-        val arr = JSONArray(cleaned)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_SUBDIVISIONS, arr.toString())
-            .apply()
-    }
-
-    fun loadSites(context: Context): List<String> {
-        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_SITES, null)
-        val activeSite = loadSiteName(context)
-        val base = if (raw.isNullOrBlank()) {
-            DEFAULT_SITES
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_SUBDIVISIONS, null)
+        val fromStore = if (raw.isNullOrBlank()) {
+            emptyList()
         } else {
             runCatching {
                 val arr = JSONArray(raw)
@@ -102,19 +80,60 @@ object LocalWorkspaceStore {
                         val item = arr.optString(i).trim()
                         if (item.isNotBlank()) add(item)
                     }
-                }.ifEmpty { DEFAULT_SITES }
-            }.getOrDefault(DEFAULT_SITES)
+                }
+            }.getOrDefault(emptyList())
         }
-        return if (activeSite.isNotBlank() && activeSite !in base) {
-            listOf(activeSite) + base
+        val fromApprovedMembers = loadMembers(context)
+            .filter { !it.isPendingRole && !it.isRejected && !it.isWorkspaceConfig }
+            .map { it.groupName.trim() }
+            .filter { it.isNotBlank() && it !in LEGACY_FAKE_SUBDIVISIONS && it != "Основное подразделение" }
+        val fromConfig = loadMembers(context)
+            .firstOrNull { it.isWorkspaceConfig }
+            ?.decodeWorkspaceSubdivisions()
+            .orEmpty()
+        return (fromStore + fromConfig + fromApprovedMembers).distinct()
+    }
+
+    fun saveSubdivisions(context: Context, subdivisions: List<String>) {
+        val cleaned = subdivisions.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        val arr = JSONArray(cleaned)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_SUBDIVISIONS, arr.toString())
+            .apply()
+    }
+
+    fun loadSites(context: Context): List<String> {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_SITES, null)
+        val fromStore = if (raw.isNullOrBlank()) {
+            emptyList()
         } else {
-            base
+            runCatching {
+                val arr = JSONArray(raw)
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optString(i).trim()
+                        if (item.isNotBlank()) add(item)
+                    }
+                }
+            }.getOrDefault(emptyList())
         }
+        val fromApprovedMembers = loadMembers(context)
+            .filter { !it.isPendingRole && !it.isRejected && !it.isWorkspaceConfig }
+            .map { it.effectiveSiteName.trim() }
+            .filter { it.isNotBlank() && it !in LEGACY_FAKE_SITES }
+        val fromConfig = loadMembers(context)
+            .firstOrNull { it.isWorkspaceConfig }
+            ?.decodeWorkspaceSites()
+            .orEmpty()
+        val activeSite = prefs.getString(KEY_SITE_NAME, null)?.trim().orEmpty()
+        val extraActive = if (activeSite.isNotBlank() && activeSite !in LEGACY_FAKE_SITES) listOf(activeSite) else emptyList()
+        return (fromStore + fromConfig + extraActive + fromApprovedMembers).distinct()
     }
 
     fun saveSites(context: Context, sites: List<String>) {
         val cleaned = sites.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-            .ifEmpty { DEFAULT_SITES }
         val arr = JSONArray(cleaned)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()

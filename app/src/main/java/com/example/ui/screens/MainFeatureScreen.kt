@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Update
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -275,6 +276,7 @@ fun MainFeatureScreen(
     }
 
     var currentTab by remember { mutableStateOf(MainNavDestination.TODAY) }
+    var approvalsOpenArchiveByDefault by remember { mutableStateOf(false) }
     var showCreateTaskDialog by remember { mutableStateOf(false) }
     var createDialogTargetEpochDay by remember(currentEpochDay) { mutableLongStateOf(currentEpochDay) }
     var selectedTaskId by remember { mutableStateOf<String?>(null) }
@@ -489,6 +491,15 @@ fun MainFeatureScreen(
                                 )
                                 if (!isWorkerRole) {
                                     DropdownMenuItem(
+                                        text = { Text("Принятые отчёты (Архив заданий)") },
+                                        leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
+                                        onClick = {
+                                            showTopOverflowMenu = false
+                                            approvalsOpenArchiveByDefault = true
+                                            currentTab = MainNavDestination.APPROVALS
+                                        }
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("Сформировать план / отчёт") },
                                         leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
                                         onClick = {
@@ -544,7 +555,12 @@ fun MainFeatureScreen(
                             }
                             NavigationBarItem(
                                 selected = currentTab == dest,
-                                onClick = { currentTab = dest },
+                                onClick = {
+                                    if (dest == MainNavDestination.APPROVALS) {
+                                        approvalsOpenArchiveByDefault = false
+                                    }
+                                    currentTab = dest
+                                },
                                 icon = {
                                     when {
                                         dest == MainNavDestination.APPROVALS && reviewQueueCount > 0 -> {
@@ -868,6 +884,14 @@ fun MainFeatureScreen(
                                 onSelectCalendarDate = viewModel::selectCalendarDate,
                                 onSearchChange = viewModel::updateSearchQuery,
                                 onOpenRoleAssignments = { currentTab = MainNavDestination.ADMIN },
+                                onOpenAcceptedArchive = {
+                                    if (isWorkerRole) {
+                                        currentTab = MainNavDestination.STATS
+                                    } else {
+                                        approvalsOpenArchiveByDefault = true
+                                        currentTab = MainNavDestination.APPROVALS
+                                    }
+                                },
                                 onOpenCreateDialogForDate = { targetDay ->
                                     createDialogTargetEpochDay = targetDay
                                     showCreateTaskDialog = true
@@ -876,7 +900,7 @@ fun MainFeatureScreen(
                                 onTaskClick = { selectedTaskId = it.id },
                                 onQuickCompleteTask = viewModel::quickCompleteTaskFromCard,
                                 onApproveTask = { viewModel.approveReport(it, "Принято руководителем") },
-                                onRejectTask = { viewModel.rejectReport(it, "Возвращено на доработку руководителем") },
+                                onRejectTask = { task, reason -> viewModel.rejectReport(task, reason) },
                                 onDeleteTask = viewModel::deleteTask,
                                 onToggleSubtask = viewModel::toggleSubtask
                             )
@@ -885,6 +909,8 @@ fun MainFeatureScreen(
                             ApprovalsQueueScreen(
                                 activeEmployee = activeEmployee,
                                 allTasks = roleVisibleTasks,
+                                availableEmployees = availableEmployees,
+                                initialShowArchive = approvalsOpenArchiveByDefault,
                                 onTaskClick = { selectedTaskId = it.id },
                                 onApproveTask = { viewModel.approveReport(it, "Принято руководителем") },
                                 onRejectTask = { task, reason -> viewModel.rejectReport(task, reason) }
@@ -903,6 +929,8 @@ fun MainFeatureScreen(
                                 activeEmployee = activeEmployee,
                                 templates = tpls,
                                 generatedReports = genReps,
+                                allTasks = roleVisibleTasks,
+                                onTaskClick = { selectedTaskId = it.id },
                                 currentEpochDay = currentEpochDay,
                                 organizationName = organizationName,
                                 siteName = siteName,
@@ -930,6 +958,7 @@ fun MainFeatureScreen(
                                 stats = stats,
                                 allTasks = roleVisibleTasks,
                                 currentEpochDay = currentEpochDay,
+                                onTaskClick = { selectedTaskId = it.id },
                                 onExportStats = { fmt ->
                                     val statTpl = ReportTemplateDocument(
                                         id = "tpl_stats_export",
@@ -1070,12 +1099,13 @@ private fun TodayTasksContent(
     onSelectCalendarDate: (Long) -> Unit,
     onSearchChange: (String) -> Unit,
     onOpenRoleAssignments: () -> Unit,
+    onOpenAcceptedArchive: () -> Unit = {},
     onOpenCreateDialogForDate: (Long) -> Unit,
     onOpenReportingTab: () -> Unit,
     onTaskClick: (TaskDocument) -> Unit,
     onQuickCompleteTask: (TaskDocument) -> Unit,
     onApproveTask: (TaskDocument) -> Unit,
-    onRejectTask: (TaskDocument) -> Unit,
+    onRejectTask: (TaskDocument, String) -> Unit,
     onDeleteTask: (TaskDocument) -> Unit,
     onToggleSubtask: (TaskDocument, String) -> Unit
 ) {
@@ -1095,8 +1125,24 @@ private fun TodayTasksContent(
     var selectedItrScope by remember { mutableStateOf(ItrScopeFilter.SUBDIVISION) }
     var showFullMonthCalendar by remember { mutableStateOf(false) }
 
-    val itrScopeTasks = remember(visibleTasks, selectedItrScope, activeEmployee) {
-        visibleTasks.filter { task ->
+    var homeTaskPendingReject by remember { mutableStateOf<TaskDocument?>(null) }
+    var homeRejectCommentInput by remember { mutableStateOf("") }
+    var homeRejectedOutcomeInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var homeApprovedOutcomeTask by remember { mutableStateOf<TaskDocument?>(null) }
+
+    // Принятые/подтверждённые отчёты скрыты с главной страницы и перемещены на отдельную вкладку (Приёмка / Архив)
+    val acceptedAndArchivedCount = remember(visibleTasks) {
+        visibleTasks.count { it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED }
+    }
+
+    val activeHomeTasks = remember(visibleTasks) {
+        visibleTasks.filter {
+            it.taskStatus != TaskStatus.APPROVED && it.taskStatus != TaskStatus.ARCHIVED
+        }
+    }
+
+    val itrScopeTasks = remember(activeHomeTasks, selectedItrScope, activeEmployee) {
+        activeHomeTasks.filter { task ->
             when (selectedItrScope) {
                 ItrScopeFilter.SUBDIVISION -> {
                     task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
@@ -1116,31 +1162,29 @@ private fun TodayTasksContent(
         }
     }
 
-    val itrSubdivisionCount = remember(visibleTasks, activeEmployee) {
-        visibleTasks.count {
-            it.taskStatus != TaskStatus.ARCHIVED &&
-                (it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
-                 it.creatorId == activeEmployee.id ||
-                 it.isAssignedToEmployee(activeEmployee))
+    val itrSubdivisionCount = remember(activeHomeTasks, activeEmployee) {
+        activeHomeTasks.count {
+            it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                it.creatorId == activeEmployee.id ||
+                it.isAssignedToEmployee(activeEmployee)
         }
     }
-    val itrSiteCount = remember(visibleTasks, activeEmployee) {
-        visibleTasks.count {
-            it.taskStatus != TaskStatus.ARCHIVED &&
-                (it.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
-                 it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
-                 it.creatorId == activeEmployee.id ||
-                 it.isAssignedToEmployee(activeEmployee))
+    val itrSiteCount = remember(activeHomeTasks, activeEmployee) {
+        activeHomeTasks.count {
+            it.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
+                it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                it.creatorId == activeEmployee.id ||
+                it.isAssignedToEmployee(activeEmployee)
         }
     }
-    val itrPersonalCount = remember(visibleTasks, activeEmployee) {
-        visibleTasks.count {
-            it.taskStatus != TaskStatus.ARCHIVED && it.isAssignedToEmployee(activeEmployee)
+    val itrPersonalCount = remember(activeHomeTasks, activeEmployee) {
+        activeHomeTasks.count {
+            it.isAssignedToEmployee(activeEmployee)
         }
     }
 
     val filteredTasks = remember(
-        visibleTasks,
+        activeHomeTasks,
         itrScopeTasks,
         effectivePersonaMode,
         selectedItrFilter,
@@ -1150,7 +1194,7 @@ private fun TodayTasksContent(
         currentEpochDay,
         selectedCalendarEpochDay
     ) {
-        val baseList = if (effectivePersonaMode == PersonaUiMode.ITR) itrScopeTasks else visibleTasks
+        val baseList = if (effectivePersonaMode == PersonaUiMode.ITR) itrScopeTasks else activeHomeTasks
         baseList.filter { task ->
             val matchesQuery = searchQuery.isBlank() ||
                 task.title.contains(searchQuery, ignoreCase = true) ||
@@ -1164,7 +1208,7 @@ private fun TodayTasksContent(
                     } else {
                         true
                     }
-                    task.taskStatus != TaskStatus.ARCHIVED && matchesDate
+                    matchesDate
                 }
                 PersonaUiMode.ITR -> {
                     val matchesDateOrAll = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
@@ -1184,7 +1228,7 @@ private fun TodayTasksContent(
                                 task.taskStatus == TaskStatus.REJECTED ||
                                 task.carryoverCount > 0L
                         }
-                        ItrQuickFilter.ALL -> task.taskStatus != TaskStatus.ARCHIVED
+                        ItrQuickFilter.ALL -> true
                     }
                     matchesDateOrAll && matchesItrPill
                 }
@@ -1208,7 +1252,7 @@ private fun TodayTasksContent(
         }
     }
     val itrAllActiveCount = remember(itrScopeTasks) {
-        itrScopeTasks.count { it.taskStatus != TaskStatus.ARCHIVED }
+        itrScopeTasks.size
     }
 
     LazyColumn(
@@ -1346,9 +1390,59 @@ private fun TodayTasksContent(
                             onQuickComplete = { onQuickCompleteTask(task) },
                             onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
                             canApprove = activeEmployee.role.canApproveReportOf(CorporateRole.WORKER),
-                            onApproveTask = { onApproveTask(task) },
-                            onRejectTask = { onRejectTask(task) }
+                            onApproveTask = {
+                                onApproveTask(task)
+                                homeApprovedOutcomeTask = task
+                            },
+                            onRejectTask = {
+                                homeRejectCommentInput = ""
+                                homeTaskPendingReject = task
+                            }
                         )
+                    }
+                }
+                if (acceptedAndArchivedCount > 0) {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFF10B981).copy(alpha = 0.1f),
+                            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpenAcceptedArchive() }
+                                .testTag("open_accepted_archive_banner")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = Color(0xFF059669),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Принятые и подтверждённые отчёты ($acceptedAndArchivedCount) — в архиве",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF059669)
+                                    )
+                                }
+                                Text(
+                                    text = "Открыть →",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF059669)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1439,10 +1533,60 @@ private fun TodayTasksContent(
                                     onDelete = { onDeleteTask(task) },
                                     onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
                                     canApprove = activeEmployee.role.canApproveReportOf(CorporateRole.WORKER),
-                                    onApproveTask = { onApproveTask(task) },
-                                    onRejectTask = { onRejectTask(task) },
+                                    onApproveTask = {
+                                        onApproveTask(task)
+                                        homeApprovedOutcomeTask = task
+                                    },
+                                    onRejectTask = {
+                                        homeRejectCommentInput = ""
+                                        homeTaskPendingReject = task
+                                    },
                                     onQuickComplete = { onQuickCompleteTask(task) }
                                 )
+                            }
+                        }
+                        if (acceptedAndArchivedCount > 0) {
+                            item {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF10B981).copy(alpha = 0.1f),
+                                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onOpenAcceptedArchive() }
+                                        .testTag("open_accepted_archive_banner")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = null,
+                                                tint = Color(0xFF059669),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = "Принятые отчёты ($acceptedAndArchivedCount) — во вкладке Приёмка / Архив",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF059669)
+                                            )
+                                        }
+                                        Text(
+                                            text = "Открыть →",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF059669)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1458,13 +1602,109 @@ private fun TodayTasksContent(
                         allTasks = visibleTasks,
                         activeStaffCount = activeStaffCount,
                         auditLogs = auditLogs,
-                        onApproveTask = onApproveTask,
-                        onRejectTask = onRejectTask,
+                        onApproveTask = { task ->
+                            onApproveTask(task)
+                            homeApprovedOutcomeTask = task
+                        },
+                        onRejectTask = { task ->
+                            homeRejectCommentInput = ""
+                            homeTaskPendingReject = task
+                        },
                         onOpenTaskDetail = onTaskClick
                     )
                 }
             }
         }
+    }
+
+    homeTaskPendingReject?.let { targetTask ->
+        AlertDialog(
+            onDismissRequest = { homeTaskPendingReject = null },
+            title = { Text("Отклонение задания") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Укажите комментарий, почему произошло отклонение задания «${targetTask.title}»:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = homeRejectCommentInput,
+                        onValueChange = { homeRejectCommentInput = it },
+                        label = { Text("Комментарий (причина отклонения) *") },
+                        minLines = 2,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("home_rejection_reason_input")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val cleanReason = homeRejectCommentInput.trim()
+                        if (cleanReason.isNotBlank()) {
+                            onRejectTask(targetTask, cleanReason)
+                            homeTaskPendingReject = null
+                            homeRejectedOutcomeInfo = targetTask.title to cleanReason
+                        }
+                    },
+                    enabled = homeRejectCommentInput.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Отклонить", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { homeTaskPendingReject = null }) {
+                    Text("Отмена")
+                }
+            }
+        )
+    }
+
+    homeRejectedOutcomeInfo?.let { (taskTitle, commentText) ->
+        AlertDialog(
+            onDismissRequest = { homeRejectedOutcomeInfo = null },
+            title = { Text("Задание отклонено") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Задание «$taskTitle» отклонено и возвращено на доработку.")
+                    Text(
+                        text = "Комментарий: $commentText",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { homeRejectedOutcomeInfo = null }) {
+                    Text("ОК")
+                }
+            }
+        )
+    }
+
+    homeApprovedOutcomeTask?.let { acceptedTask ->
+        AlertDialog(
+            onDismissRequest = { homeApprovedOutcomeTask = null },
+            title = { Text("Отчёт принят") },
+            text = {
+                Text("Выполнение задания «${acceptedTask.title}» подтверждено. Принятый отчёт перемещён с главной страницы в раздел принятых заданий (Приёмка / Архив).")
+            },
+            confirmButton = {
+                Button(
+                    onClick = { homeApprovedOutcomeTask = null },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF10B981),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text("ОК")
+                }
+            }
+        )
     }
 }
 

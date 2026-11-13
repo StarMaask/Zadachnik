@@ -987,7 +987,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
 
     suspend fun updateOrganizationAndSiteProfile(
         orgName: String,
-        siteName: String
+        siteName: String,
+        subdivisions: List<String> = emptyList(),
+        sites: List<String> = emptyList()
     ): Result<Unit> = runCatching {
         val currentUid = auth.currentUser?.uid ?: return@runCatching
         val combinedSiteLabel = "${orgName.trim()} • ${siteName.trim()}".take(160)
@@ -1006,6 +1008,34 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
+        }
+
+        // Сохраняем справочник подразделений и участков администратора в облако для всех устройств
+        runCatching {
+            val configRef = db.collection("site_members")
+                .document(SiteMemberDocument.WORKSPACE_CONFIG_MEMBER_ID)
+            val encodedSubdivisions = subdivisions.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+                .joinToString(";;").take(120)
+            val encodedSites = sites.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+                .joinToString(";;").take(120)
+            val configSnap = configRef.get().await()
+            val payload = mapOf(
+                "memberId" to SiteMemberDocument.WORKSPACE_CONFIG_MEMBER_ID,
+                "email" to "config@site1.ru",
+                "fullName" to orgName.trim().ifBlank { CorporateSeedData.DEFAULT_ORG_NAME }.take(120),
+                "position" to encodedSites,
+                "role" to CorporateRole.HEAD.code,
+                "approvalStatus" to MemberApprovalStatus.APPROVED.code,
+                "groupId" to "grp_control",
+                "groupName" to encodedSubdivisions,
+                "approvedByName" to siteName.trim().ifBlank { CorporateSeedData.DEFAULT_SITE_NAME }.take(120),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (configSnap.exists()) {
+                configRef.update(payload).await()
+            } else {
+                configRef.set(payload + ("createdAt" to FieldValue.serverTimestamp())).await()
+            }
         }
     }
 
@@ -1604,12 +1634,11 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     suspend fun approveTaskReport(
         supervisor: CorporateEmployee,
         task: TaskDocument,
-        comment: String = ""
+        comment: String = "",
+        assigneeRole: CorporateRole = task.resolveAssigneeRole(emptyList(), supervisor)
     ): Result<Unit> = runCatching {
         val uid = requireUserId()
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
-        val seedAssignee = CorporateSeedData.employees.firstOrNull { it.id == task.assigneeId }
-        val assigneeRole = seedAssignee?.role ?: CorporateRole.WORKER
 
         if (!supervisor.role.canApproveReportOf(assigneeRole)) {
             throw IllegalAccessException(
@@ -1670,7 +1699,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     suspend fun rejectTaskReport(
         supervisor: CorporateEmployee,
         task: TaskDocument,
-        reason: String
+        reason: String,
+        assigneeRole: CorporateRole = task.resolveAssigneeRole(emptyList(), supervisor)
     ): Result<Unit> = runCatching {
         val uid = requireUserId()
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
@@ -1679,8 +1709,6 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             throw IllegalArgumentException("При отклонении фотоотчёта необходимо указать обязательную причину возврата")
         }
 
-        val seedAssignee = CorporateSeedData.employees.firstOrNull { it.id == task.assigneeId }
-        val assigneeRole = seedAssignee?.role ?: CorporateRole.WORKER
         if (!supervisor.role.canApproveReportOf(assigneeRole)) {
             throw IllegalAccessException(
                 "Недостаточно прав: роль «${supervisor.role.titleRu}» не может отклонять отчёт сотрудника «${task.assigneeName}»"

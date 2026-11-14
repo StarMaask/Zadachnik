@@ -689,4 +689,145 @@ class ExampleUnitTest {
         )
         assertTrue(workerRejectEval.eventsToNotify.first().body.contains("Не видно маркировку кабеля"))
     }
+
+    @Test
+    fun `role updates clear sticky admin flag and report formatting matches org subdivision site and signature rules`() {
+        // 1. No "прораб" anywhere in role or persona titles
+        CorporateRole.entries.forEach { role ->
+            assertFalse(role.titleRu.contains("прораб", ignoreCase = true))
+            assertFalse(role.shortTitleRu.contains("прораб", ignoreCase = true))
+            assertFalse(role.badgeDescription.contains("прораб", ignoreCase = true))
+        }
+        com.example.ui.components.PersonaUiMode.entries.forEach { mode ->
+            assertFalse(mode.titleRu.contains("прораб", ignoreCase = true))
+            assertFalse(mode.subtitleRu.contains("прораб", ignoreCase = true))
+        }
+
+        // 2. Role change WORKER <-> ITR and demoting ADMIN clears sticky adm=1
+        val adminMember = SiteMemberDocument(
+            id = "usr_smu",
+            memberId = "usr_smu",
+            email = "smu@site.ru",
+            fullName = "СМЮ",
+            position = "Электромеханик по САиПТО",
+            role = CorporateRole.ADMIN.code,
+            approvalStatus = "APPROVED",
+            groupId = "grp_1",
+            groupName = "ЛПДС \"Быково\"",
+            siteName = "УЭСАиТМ"
+        ).let { m ->
+            m.copy(approvedByName = m.encodeApprovedByForFirestore(approverName = "Админ", isAdminRole = true))
+        }
+        assertEquals(CorporateRole.ADMIN, adminMember.parsedRoleOrNull)
+
+        val demotedToItr = adminMember.copy(
+            role = CorporateRole.ITR.code,
+            approvedByName = adminMember.copy(role = CorporateRole.ITR.code)
+                .encodeApprovedByForFirestore(approverName = "Админ")
+        )
+        assertEquals(CorporateRole.ITR, demotedToItr.parsedRoleOrNull)
+
+        val demotedToWorker = demotedToItr.copy(
+            role = CorporateRole.WORKER.code,
+            approvedByName = demotedToItr.copy(role = CorporateRole.WORKER.code)
+                .encodeApprovedByForFirestore(approverName = "Админ")
+        )
+        assertEquals(CorporateRole.WORKER, demotedToWorker.parsedRoleOrNull)
+
+        // 3. Report org header and prepared-by signature format
+        val orgHeader = ReportDocumentGenerator.formatOrgHeader(
+            organizationName = "ООО «Транснефть-Балтика»",
+            subdivisionName = "ЛПДС \"Быково\"",
+            siteName = "УЭСАиТМ"
+        )
+        assertEquals("ООО «Транснефть-Балтика», ЛПДС \"Быково\", УЭСАиТМ", orgHeader)
+
+        val itrActor = com.example.data.model.CorporateEmployee(
+            id = "emp_itr",
+            fullName = "Плиткин Д.А.",
+            shortName = "Плиткин Д.А.",
+            position = "Инженер по КИПиА",
+            role = CorporateRole.ITR,
+            groupId = "grp_1",
+            groupName = "ЛПДС \"Быково\"",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = null,
+            phone = "",
+            email = "itr@site.ru"
+        )
+        val sig = ReportDocumentGenerator.formatPreparedBySignature(itrActor)
+        assertEquals("____________________ (подпись), Плиткин Д.А., Инженер по КИПиА, Участок: УЭСАиТМ", sig)
+
+        // 4. Aspect-fit bounds preserve aspect ratio for both portrait and landscape photos
+        val portraitFit = ReportDocumentGenerator.computeAspectFitBounds(
+            srcWidth = 900,
+            srcHeight = 1600,
+            frameLeft = 0f,
+            frameTop = 0f,
+            frameRight = 240f,
+            frameBottom = 160f
+        )
+        val fitWidthP = portraitFit.right - portraitFit.left
+        val fitHeightP = portraitFit.bottom - portraitFit.top
+        assertEquals(160f, fitHeightP, 0.5f)
+        assertEquals(90f, fitWidthP, 0.5f)
+
+        val landscapeFit = ReportDocumentGenerator.computeAspectFitBounds(
+            srcWidth = 1600,
+            srcHeight = 900,
+            frameLeft = 0f,
+            frameTop = 0f,
+            frameRight = 240f,
+            frameBottom = 180f
+        )
+        val fitWidthL = landscapeFit.right - landscapeFit.left
+        val fitHeightL = landscapeFit.bottom - landscapeFit.top
+        assertEquals(240f, fitWidthL, 0.5f)
+        assertEquals(135f, fitHeightL, 0.5f)
+
+        // 5. ITR relevance includes workers on ITR's site and excludes workers on a different site
+        val workerSameSite = com.example.data.model.CorporateEmployee(
+            id = "emp_w_same",
+            fullName = "СМЮ",
+            shortName = "СМЮ",
+            position = "Электромеханик",
+            role = CorporateRole.WORKER,
+            groupId = "grp_other",
+            groupName = "Другое подразделение",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = null,
+            phone = "",
+            email = "w1@site.ru"
+        )
+        val workerOtherSite = workerSameSite.copy(
+            id = "emp_w_other",
+            fullName = "Другой Р.",
+            shortName = "Другой Р.",
+            siteName = "НПС-2"
+        )
+        val allEmps = listOf(itrActor, workerSameSite, workerOtherSite)
+
+        val taskWorkerSameSite = TaskDocument(
+            id = "t_same",
+            title = "Монтаж датчика",
+            assigneeId = workerSameSite.id,
+            assigneeName = workerSameSite.fullName,
+            groupId = workerSameSite.groupId,
+            groupName = workerSameSite.groupName,
+            geoLocation = "УЭСАиТМ"
+        )
+        val taskWorkerOtherSite = TaskDocument(
+            id = "t_other",
+            title = "Монтаж на другом объекте",
+            assigneeId = workerOtherSite.id,
+            assigneeName = workerOtherSite.fullName,
+            groupId = workerOtherSite.groupId,
+            groupName = workerOtherSite.groupName,
+            geoLocation = "НПС-2"
+        )
+        assertTrue(taskWorkerSameSite.isRelevantToItr(itrActor, allEmps))
+        assertFalse(taskWorkerOtherSite.isRelevantToItr(itrActor, allEmps))
+    }
 }

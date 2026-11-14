@@ -917,7 +917,10 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val safeId = updatedMember.memberId.ifBlank { updatedMember.id }
             .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
             .take(120)
-        val encodedApprovedBy = updatedMember.encodeApprovedByForFirestore(actor.fullName)
+        val encodedApprovedBy = updatedMember.encodeApprovedByForFirestore(
+            approverName = actor.fullName,
+            isAdminRole = updatedMember.role.equals(CorporateRole.ADMIN.code, ignoreCase = true)
+        )
         val normalizedMember = updatedMember.copy(
             id = safeId,
             memberId = safeId,
@@ -943,36 +946,41 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 it in listOf("PENDING", "APPROVED", "REJECTED")
             } ?: MemberApprovalStatus.APPROVED.code
 
+            val updateMap = mapOf(
+                "email" to safeEmail,
+                "fullName" to normalizedMember.fullName.ifBlank { "Сотрудник" }.take(120),
+                "position" to normalizedMember.position.take(120),
+                "role" to safeRole,
+                "approvalStatus" to safeStatus,
+                "groupId" to normalizedMember.groupId.ifBlank { "grp_monolith" }.take(64),
+                "groupName" to normalizedMember.groupName.ifBlank { "Основное подразделение" }.take(120),
+                "approvedByName" to encodedApprovedBy,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
             if (snap != null && snap.exists()) {
-                docRef.update(
-                    mapOf(
-                        "email" to safeEmail,
-                        "fullName" to normalizedMember.fullName.ifBlank { "Сотрудник" }.take(120),
-                        "position" to normalizedMember.position.take(120),
-                        "role" to safeRole,
-                        "approvalStatus" to safeStatus,
-                        "groupId" to normalizedMember.groupId.ifBlank { "grp_monolith" }.take(64),
-                        "groupName" to normalizedMember.groupName.ifBlank { "Основное подразделение" }.take(120),
-                        "approvedByName" to encodedApprovedBy,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+                docRef.update(updateMap).await()
             } else {
                 docRef.set(
-                    mapOf(
+                    updateMap + mapOf(
                         "memberId" to safeId,
-                        "email" to safeEmail,
-                        "fullName" to normalizedMember.fullName.ifBlank { "Сотрудник" }.take(120),
-                        "position" to normalizedMember.position.take(120),
-                        "role" to safeRole,
-                        "approvalStatus" to safeStatus,
-                        "groupId" to normalizedMember.groupId.ifBlank { "grp_monolith" }.take(64),
-                        "groupName" to normalizedMember.groupName.ifBlank { "Основное подразделение" }.take(120),
-                        "approvedByName" to encodedApprovedBy,
-                        "createdAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "createdAt" to FieldValue.serverTimestamp()
                     )
                 ).await()
+            }
+
+            val cleanEmail = safeEmail.trim().lowercase()
+            if (cleanEmail.isNotBlank() && !cleanEmail.endsWith("@site1.ru")) {
+                runCatching {
+                    val byEmail = db.collection("site_members")
+                        .whereEqualTo("email", cleanEmail)
+                        .get()
+                        .await()
+                    byEmail.documents.forEach { doc ->
+                        if (doc.id != safeId) {
+                            doc.reference.update(updateMap).await()
+                        }
+                    }
+                }
             }
 
             appendAuditLog(

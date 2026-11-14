@@ -115,6 +115,32 @@ class EzhednevnikViewModel(
     val failedPhotoSyncTaskIds: StateFlow<Set<String>> = _failedPhotoSyncTaskIds.asStateFlow()
 
     private val uploadedCloudPhotoDocIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val optimisticMemberWrites = java.util.concurrent.ConcurrentHashMap<String, Pair<SiteMemberDocument, Long>>()
+
+    private fun isSameMemberSyncState(a: SiteMemberDocument, b: SiteMemberDocument): Boolean =
+        a.role.equals(b.role, ignoreCase = true) &&
+            a.approvalStatus.equals(b.approvalStatus, ignoreCase = true) &&
+            a.groupName == b.groupName &&
+            a.groupId == b.groupId &&
+            a.position == b.position &&
+            a.fullName == b.fullName &&
+            a.effectiveSiteName == b.effectiveSiteName &&
+            a.effectivePhone == b.effectivePhone &&
+            a.effectivePersonnelNumber == b.effectivePersonnelNumber
+
+    private fun getActiveOptimisticMember(canonicalKey: String, remote: SiteMemberDocument?): SiteMemberDocument? {
+        val entry = optimisticMemberWrites[canonicalKey] ?: return null
+        val (optimisticMember, expiresAt) = entry
+        if (System.currentTimeMillis() > expiresAt) {
+            optimisticMemberWrites.remove(canonicalKey)
+            return null
+        }
+        if (remote != null && isSameMemberSyncState(remote, optimisticMember)) {
+            optimisticMemberWrites.remove(canonicalKey)
+            return null
+        }
+        return optimisticMember
+    }
 
     private val notifiedPendingMemberKeys = mutableSetOf<String>()
     private val notifiedTaskEventKeys = mutableSetOf<String>().apply {
@@ -315,10 +341,12 @@ class EzhednevnikViewModel(
                         }
                     }
                     !existingRemote.isPendingRole && !existingRemote.isRejected && m.isPendingRole -> {
-                        mergedMap[canonicalKey] = existingRemote
+                        val optimistic = getActiveOptimisticMember(canonicalKey, existingRemote)
+                        mergedMap[canonicalKey] = optimistic ?: existingRemote
                     }
                     else -> {
-                        mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
+                        val optimistic = getActiveOptimisticMember(canonicalKey, existingRemote)
+                        mergedMap[canonicalKey] = optimistic ?: existingRemote
                     }
                 }
             }
@@ -338,7 +366,7 @@ class EzhednevnikViewModel(
         siteMembersState,
         _siteName
     ) { memberRecord, allMembers, currentSiteName ->
-        // Сначала проверяем обновлённый _currentMemberRecord, затем ищем в списке участников
+        // Актуальная запись из объединённого облачно-локального списка приоритетна, чтобы смена роли вступала в силу мгновенно
         val matchedFromList = allMembers.firstOrNull { m ->
             val mNorm = normalizeMemberKey(m.memberId.ifBlank { m.id })
             mNorm == normalizedCurrentUserId ||
@@ -347,7 +375,7 @@ class EzhednevnikViewModel(
                 (memberRecord != null && mNorm == normalizeMemberKey(memberRecord.memberId.ifBlank { memberRecord.id })) ||
                 (currentUserEmail.isNotBlank() && m.email.equals(currentUserEmail, ignoreCase = true))
         }
-        val matched = memberRecord ?: matchedFromList
+        val matched = matchedFromList ?: memberRecord
 
         if (matched != null) {
             matched.toCorporateEmployee(defaultSiteName = currentSiteName)
@@ -476,13 +504,18 @@ class EzhednevnikViewModel(
         firestoreTemplatesFlow,
         _localTemplates,
         _currentEpochDay,
-        _organizationName,
-        _siteName
-    ) { remote, local, epochDay, org, site ->
+        combine(_organizationName, _siteName, ::Pair),
+        activeEmployee
+    ) { remote, local, epochDay, orgSite, emp ->
+        val (org, site) = orgSite
         val baseList = if (remote.isNotEmpty()) remote else local
+        val resolvedHeader = ReportDocumentGenerator.formatOrgHeader(
+            organizationName = org,
+            subdivisionName = emp.groupName,
+            siteName = emp.siteName.ifBlank { site }
+        )
         val normalized = baseList.map { tpl ->
             val resolvedName = ReportDocumentGenerator.resolveTemplateDisplayName(tpl, epochDay)
-            val resolvedHeader = "$org • $site"
             tpl.copy(
                 name = resolvedName,
                 orgHeader = resolvedHeader
@@ -636,14 +669,17 @@ class EzhednevnikViewModel(
         remoteMembers.forEach { remote ->
             if (remote.isWorkspaceConfig) return@forEach
             val canonicalId = SiteMemberDocument.canonicalMemberId(remote.memberId.ifBlank { remote.id }, remote.email)
+            val normalizedRemote = remote.copy(id = canonicalId, memberId = canonicalId)
+            if (getActiveOptimisticMember(canonicalId, normalizedRemote) != null) return@forEach
             val existingLocal = _localSiteMembers.value.firstOrNull {
                 SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email) == canonicalId
             }
             if (existingLocal == null ||
                 (remote.isPendingRole && !remote.isRejected) ||
-                (!remote.isPendingRole && !remote.isRejected && existingLocal.isPendingRole)
+                (!remote.isPendingRole && !remote.isRejected && existingLocal.isPendingRole) ||
+                !isSameMemberSyncState(existingLocal, normalizedRemote)
             ) {
-                upsertLocalMember(remote.copy(id = canonicalId, memberId = canonicalId))
+                upsertLocalMember(normalizedRemote)
             }
         }
     }
@@ -753,12 +789,14 @@ class EzhednevnikViewModel(
         return winner.copy(photoItems = mergedPhotos)
     }
 
-    fun hydrateTaskPhotosFromCloud(task: TaskDocument, forceRefresh: Boolean = false) {
-        val ctx = appContext ?: return
-        if (!isCloudAuthenticated || task.id.isBlank()) return
+    private suspend fun hydrateMissingTaskPhotosBlocking(
+        task: TaskDocument,
+        forceRefresh: Boolean = false
+    ): Int {
+        val ctx = appContext ?: return 0
+        if (!isCloudAuthenticated || task.id.isBlank()) return 0
         val photos = task.decodedPhotos()
-        if (photos.isEmpty()) return
-        if (task.id in _hydratingPhotoTaskIds.value) return
+        if (photos.isEmpty()) return 0
 
         val missingDocIds = photos.mapNotNull { ph ->
             val docId = PhotoCaptureUtils.extractCloudPhotoDocId(ph.uriString) ?: ph.id.takeIf { it.isNotBlank() }
@@ -768,34 +806,50 @@ class EzhednevnikViewModel(
                 null
             }
         }.distinct()
-        if (missingDocIds.isEmpty()) return
+        if (missingDocIds.isEmpty()) return 0
+
+        return withContext(Dispatchers.IO) {
+            var count = 0
+            val cachedIds = mutableSetOf<String>()
+            val byTaskDocs = repository.fetchTaskPhotosForTaskFromCloud(task.id).getOrNull().orEmpty()
+            byTaskDocs.forEach { photoDoc ->
+                val docId = photoDoc.photoId.ifBlank { photoDoc.id }
+                if (docId.isNotBlank() && photoDoc.imageBase64.isNotBlank()) {
+                    if (PhotoCaptureUtils.saveCloudPhotoBytesToLocalCache(ctx, docId, photoDoc.imageBase64) != null) {
+                        cachedIds.add(docId)
+                        count++
+                    }
+                }
+            }
+            missingDocIds.filterNot { it in cachedIds }.forEach { docId ->
+                val singleDoc = repository.fetchTaskPhotoFromCloud(docId).getOrNull()
+                if (singleDoc != null && singleDoc.imageBase64.isNotBlank()) {
+                    if (PhotoCaptureUtils.saveCloudPhotoBytesToLocalCache(ctx, docId, singleDoc.imageBase64) != null) {
+                        count++
+                    }
+                }
+            }
+            count
+        }
+    }
+
+    fun hydrateTaskPhotosFromCloud(task: TaskDocument, forceRefresh: Boolean = false) {
+        val ctx = appContext ?: return
+        if (!isCloudAuthenticated || task.id.isBlank()) return
+        val photos = task.decodedPhotos()
+        if (photos.isEmpty()) return
+        if (task.id in _hydratingPhotoTaskIds.value) return
+
+        val hasMissing = photos.any { ph ->
+            val docId = PhotoCaptureUtils.extractCloudPhotoDocId(ph.uriString) ?: ph.id.takeIf { it.isNotBlank() }
+            docId != null && (forceRefresh || !PhotoCaptureUtils.hasCachedCloudPhoto(ctx, docId))
+        }
+        if (!hasMissing) return
 
         _hydratingPhotoTaskIds.value = _hydratingPhotoTaskIds.value + task.id
         viewModelScope.launch {
             try {
-                val downloadedCount = withContext(Dispatchers.IO) {
-                    var count = 0
-                    val cachedIds = mutableSetOf<String>()
-                    val byTaskDocs = repository.fetchTaskPhotosForTaskFromCloud(task.id).getOrNull().orEmpty()
-                    byTaskDocs.forEach { photoDoc ->
-                        val docId = photoDoc.photoId.ifBlank { photoDoc.id }
-                        if (docId.isNotBlank() && photoDoc.imageBase64.isNotBlank()) {
-                            if (PhotoCaptureUtils.saveCloudPhotoBytesToLocalCache(ctx, docId, photoDoc.imageBase64) != null) {
-                                cachedIds.add(docId)
-                                count++
-                            }
-                        }
-                    }
-                    missingDocIds.filterNot { it in cachedIds }.forEach { docId ->
-                        val singleDoc = repository.fetchTaskPhotoFromCloud(docId).getOrNull()
-                        if (singleDoc != null && singleDoc.imageBase64.isNotBlank()) {
-                            if (PhotoCaptureUtils.saveCloudPhotoBytesToLocalCache(ctx, docId, singleDoc.imageBase64) != null) {
-                                count++
-                            }
-                        }
-                    }
-                    count
-                }
+                val downloadedCount = hydrateMissingTaskPhotosBlocking(task, forceRefresh)
                 if (downloadedCount > 0 || forceRefresh) {
                     _cloudPhotoCacheVersion.value = _cloudPhotoCacheVersion.value + 1
                 }
@@ -1209,18 +1263,37 @@ class EzhednevnikViewModel(
                     }
                 }
 
-                // If current user was pending and got approved in siteMembersState, unlock immediately
+                // При любом изменении роли/профиля текущего пользователя в облаке обновляем локальную сессию мгновенно
                 val cur = _currentMemberRecord.value ?: return@collect
-                if (cur.isPendingRole) {
-                    val curCanonical = SiteMemberDocument.canonicalMemberId(cur.memberId.ifBlank { cur.id }, cur.email)
+                val curCanonical = SiteMemberDocument.canonicalMemberId(cur.memberId.ifBlank { cur.id }, cur.email)
+                if (getActiveOptimisticMember(curCanonical, null) == null) {
                     val matched = members.firstOrNull { m ->
                         val mCanonical = SiteMemberDocument.canonicalMemberId(m.memberId.ifBlank { m.id }, m.email)
                         mCanonical == curCanonical ||
                             (cur.email.isNotBlank() && !cur.email.endsWith("@site1.ru") && m.email.equals(cur.email, ignoreCase = true))
                     }
-                    if (matched != null && !matched.isPendingRole && !matched.isRejected) {
+                    if (matched != null && (!isSameMemberSyncState(cur, matched) || cur.isPendingRole != matched.isPendingRole)) {
+                        val roleChanged = !cur.role.equals(matched.role, ignoreCase = true)
                         _currentMemberRecord.value = matched
                         upsertLocalMember(matched)
+                        appContext?.let { ctx ->
+                            saveCorporateSession(
+                                ctx,
+                                CorporateLoginSession(
+                                    userId = currentUserId,
+                                    email = matched.email.ifBlank { currentUserEmail },
+                                    fullName = matched.fullName.ifBlank { currentUserName },
+                                    isHeadActivated = !matched.isPendingRole && !matched.isRejected &&
+                                        (matched.parsedRoleOrNull?.isAdminOrHead == true || SiteMemberDocument.isRootAdminEmail(currentUserEmail)),
+                                    requestedSubdivision = matched.groupName,
+                                    requestedSiteName = matched.effectiveSiteName,
+                                    requestedPosition = matched.position
+                                )
+                            )
+                        }
+                        if (roleChanged && !matched.isPendingRole && !matched.isRejected) {
+                            _bannerMessage.value = "Ваш статус обновлён: ${matched.parsedRoleOrNull?.titleRu ?: matched.role}"
+                        }
                     }
                 }
             }
@@ -1356,13 +1429,13 @@ class EzhednevnikViewModel(
                     null
                 }
 
-                if (remoteSynced != null && !remoteSynced.isPendingRole && !remoteSynced.isRejected && preserved.isPendingRole) {
-                    val unlocked = remoteSynced.copy(
+                if (remoteSynced != null && !remoteSynced.isPendingRole && !remoteSynced.isRejected) {
+                    val synced = remoteSynced.copy(
                         id = normalizedCurrentUserId,
                         memberId = normalizedCurrentUserId
                     )
-                    upsertLocalMember(unlocked)
-                    unlocked
+                    upsertLocalMember(synced)
+                    synced
                 } else {
                     preserved
                 }
@@ -1643,11 +1716,13 @@ class EzhednevnikViewModel(
                 remoteMembers.forEach { remote ->
                     if (remote.isWorkspaceConfig) return@forEach
                     val canonicalId = SiteMemberDocument.canonicalMemberId(remote.memberId.ifBlank { remote.id }, remote.email)
-                    val existsLocally = _localSiteMembers.value.any {
+                    val normalizedRemote = remote.copy(id = canonicalId, memberId = canonicalId)
+                    if (getActiveOptimisticMember(canonicalId, normalizedRemote) != null) return@forEach
+                    val existingLocal = _localSiteMembers.value.firstOrNull {
                         SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email) == canonicalId
                     }
-                    if (!existsLocally || remote.isPendingRole) {
-                        upsertLocalMember(remote.copy(id = canonicalId, memberId = canonicalId))
+                    if (existingLocal == null || remote.isPendingRole || !isSameMemberSyncState(existingLocal, normalizedRemote)) {
+                        upsertLocalMember(normalizedRemote)
                     }
                 }
             }
@@ -1674,14 +1749,18 @@ class EzhednevnikViewModel(
             .ifBlank { "usr_${System.currentTimeMillis()}" }
         val newPosition = customPosition?.takeIf { it.isNotBlank() }
             ?: targetMember.position.ifBlank { assignedRole.titleRu }
+        val preservedGroup = assignedGroup.copy(
+            id = targetMember.groupId.ifBlank { assignedGroup.id },
+            name = targetMember.groupName.ifBlank { assignedGroup.name }
+        )
 
         val draftApproved = targetMember.copy(
             id = key,
             memberId = key,
             role = assignedRole.code,
             approvalStatus = MemberApprovalStatus.APPROVED.code,
-            groupId = targetMember.groupId.ifBlank { assignedGroup.id },
-            groupName = targetMember.groupName.ifBlank { assignedGroup.name },
+            groupId = preservedGroup.id,
+            groupName = preservedGroup.name,
             position = newPosition
         )
         val approvedMember = draftApproved.copy(
@@ -1691,7 +1770,8 @@ class EzhednevnikViewModel(
             )
         )
 
-        // Мгновенно обновляем локальный список и сохраняем на устройство
+        // Фиксируем оптимистичную запись на 10 сек., чтобы старый снимок из Firestore не перезаписал новую роль
+        optimisticMemberWrites[key] = approvedMember to (System.currentTimeMillis() + 10_000L)
         upsertLocalMember(approvedMember, previousKey = originalRawKey)
         val currentRecKey = _currentMemberRecord.value?.let {
             SiteMemberDocument.canonicalMemberId(it.memberId.ifBlank { it.id }, it.email)
@@ -1714,7 +1794,7 @@ class EzhednevnikViewModel(
                     actor = actor,
                     targetMember = approvedMember,
                     assignedRole = assignedRole,
-                    assignedGroup = assignedGroup,
+                    assignedGroup = preservedGroup,
                     customPosition = newPosition
                 )
             }
@@ -1881,11 +1961,13 @@ class EzhednevnikViewModel(
             approverName = actor.fullName,
             explicitPersonnelNumber = cleanTab,
             explicitSiteName = resolvedSite,
-            explicitPhone = cleanPhone
+            explicitPhone = cleanPhone,
+            isAdminRole = (role == CorporateRole.ADMIN)
         )
         val updatedMember = draftUpdated.copy(approvedByName = encodedMeta)
 
-        // Мгновенно сохраняем локально и перезаписываем предыдущую запись
+        // Мгновенно сохраняем локально и защищаем от отката кэша Firestore на 10 сек.
+        optimisticMemberWrites[key] = updatedMember to (System.currentTimeMillis() + 10_000L)
         upsertLocalMember(updatedMember, previousKey = originalRawKey)
 
         // Проверяем, является ли редактируемый сотрудник текущим пользователем
@@ -1904,7 +1986,7 @@ class EzhednevnikViewModel(
                         userId = currentUserId,
                         email = cleanEmail,
                         fullName = cleanName,
-                        isHeadActivated = role.isAdminOrHead || initialHeadActivated,
+                        isHeadActivated = role.isAdminOrHead || SiteMemberDocument.isRootAdminEmail(currentUserEmail),
                         requestedSubdivision = resolvedGroupName,
                         requestedSiteName = resolvedSite,
                         requestedPosition = resolvedPosition
@@ -1976,13 +2058,20 @@ class EzhednevnikViewModel(
             LocalWorkspaceStore.saveSites(ctx, cleanSites)
         }
 
-        val newHeader = "$cleanOrg • $cleanSite"
+        val newHeader = ReportDocumentGenerator.formatOrgHeader(
+            organizationName = cleanOrg,
+            subdivisionName = activeEmployee.value.groupName,
+            siteName = cleanSite
+        )
         _localTemplates.value = _localTemplates.value.map { it.copy(orgHeader = newHeader) }
 
         _currentMemberRecord.value?.let { cur ->
             val updatedCur = cur.copy(
                 siteName = cleanSite,
-                approvedByName = cur.encodeApprovedByForFirestore(explicitSiteName = cleanSite)
+                approvedByName = cur.encodeApprovedByForFirestore(
+                    explicitSiteName = cleanSite,
+                    isAdminRole = cur.role.equals(CorporateRole.ADMIN.code, ignoreCase = true)
+                )
             )
             _currentMemberRecord.value = updatedCur
             upsertLocalMember(updatedCur)
@@ -2107,11 +2196,16 @@ class EzhednevnikViewModel(
 
     fun createNewTask(draft: TaskDraft) {
         val actor = activeEmployee.value
-        val candidateIds = (draft.assigneeIds + listOfNotNull(draft.assigneeId.takeIf { it.isNotBlank() })).distinct()
-        val resolvedAssignees = resolveOrCreateEmployees(
-            selectedIds = candidateIds,
-            customNamesRaw = draft.customAssigneeName
-        ).ifEmpty { listOf(actor) }
+        val resolvedAssignees = if (!actor.role.canAssignToOtherEmployees()) {
+            // Рабочий может назначать задания только самому себе
+            listOf(actor)
+        } else {
+            val candidateIds = (draft.assigneeIds + listOfNotNull(draft.assigneeId.takeIf { it.isNotBlank() })).distinct()
+            resolveOrCreateEmployees(
+                selectedIds = candidateIds,
+                customNamesRaw = draft.customAssigneeName
+            ).ifEmpty { listOf(actor) }
+        }
 
         val assignee = resolvedAssignees.first()
         val allAssigneeIds = resolvedAssignees.map { it.id }
@@ -3137,11 +3231,27 @@ class EzhednevnikViewModel(
             val actor = activeEmployee.value
             val allTasks = (tasksState.value as? UiState.Success)?.data ?: emptyList()
             val day = targetEpochDay ?: _currentEpochDay.value
+            val orgHeader = ReportDocumentGenerator.formatOrgHeader(
+                organizationName = _organizationName.value,
+                subdivisionName = actor.groupName,
+                siteName = actor.siteName.ifBlank { _siteName.value }
+            )
             val normalizedTemplate = template.copy(
                 name = ReportDocumentGenerator.resolveTemplateDisplayName(template, day),
-                orgHeader = "${_organizationName.value} • ${_siteName.value}"
+                orgHeader = orgHeader
             )
             val result = runCatching {
+                if (includePhotos && isCloudAuthenticated) {
+                    var hydratedTotal = 0
+                    allTasks.forEach { task ->
+                        if (task.photoItems.isNotEmpty()) {
+                            hydratedTotal += hydrateMissingTaskPhotosBlocking(task, forceRefresh = false)
+                        }
+                    }
+                    if (hydratedTotal > 0) {
+                        _cloudPhotoCacheVersion.value = _cloudPhotoCacheVersion.value + 1
+                    }
+                }
                 withContext(Dispatchers.IO) {
                     ReportDocumentGenerator.generateAndSaveDocument(
                         context = context,

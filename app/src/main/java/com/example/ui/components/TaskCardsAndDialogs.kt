@@ -3014,7 +3014,66 @@ fun CreateTaskDialog(
                             )
                         }
 
-                        // БЛОК 2.2: ИСПОЛНИТЕЛИ (Мультивыбор одного или нескольких сотрудников + опция ручного ввода)
+                        // БЛОК 2.2: ИСПОЛНИТЕЛИ (Для Рабочего — только самоназначение; для ИТР+ — мультивыбор и ручной ввод)
+                        if (!activeEmployee.role.canAssignToOtherEmployees()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "Исполнитель (личное задание)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = softFieldBg,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("self_assignee_readonly_card")
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        val selfInitials = activeEmployee.fullName
+                                            .split(" ")
+                                            .filter { it.isNotBlank() }
+                                            .take(2)
+                                            .joinToString("") { it.take(1).uppercase() }
+                                            .ifBlank { "Я" }
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                            modifier = Modifier.size(38.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = selfInitials,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = activeEmployee.fullName,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "${activeEmployee.position} • Назначение себе",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -3350,6 +3409,7 @@ fun CreateTaskDialog(
                                         .testTag("custom_assignee_name_input")
                                 )
                             }
+                        }
                         }
 
                         // БЛОК 2.3: СРОКИ (ДАТА) — Горизонтальный скролл дат + кнопка разворота календаря с задачами

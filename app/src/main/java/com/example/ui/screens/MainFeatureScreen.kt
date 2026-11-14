@@ -840,10 +840,18 @@ fun MainFeatureScreen(
                                 ) {
                                     Button(
                                         onClick = {
-                                            val grp = CorporateSeedData.workGroups.firstOrNull {
+                                            val grp = (CorporateSeedData.workGroups.firstOrNull {
                                                 it.id == firstPending.groupId
-                                            }?.copy(name = firstPending.groupName.ifBlank { "Основное подразделение" })
-                                                ?: CorporateSeedData.workGroups.first().copy(name = firstPending.groupName.ifBlank { "Основное подразделение" })
+                                            } ?: CorporateSeedData.workGroups.first()).let { base ->
+                                                if (firstPending.groupName.isNotBlank()) {
+                                                    base.copy(
+                                                        id = firstPending.groupId.ifBlank { base.id },
+                                                        name = firstPending.groupName
+                                                    )
+                                                } else {
+                                                    base
+                                                }
+                                            }
                                             viewModel.assignRoleToMember(
                                                 firstPending,
                                                 quickSelectedRole,
@@ -884,6 +892,7 @@ fun MainFeatureScreen(
                             val logs = (auditLogsState as? UiState.Success)?.data ?: emptyList()
                             TodayTasksContent(
                                 activeEmployee = activeEmployee,
+                                availableEmployees = availableEmployees,
                                 tasksState = tasksState,
                                 visibleTasks = roleVisibleTasks,
                                 activeStaffCount = availableEmployees.size.coerceAtLeast(1),
@@ -1106,6 +1115,7 @@ fun MainFeatureScreen(
 @Composable
 private fun TodayTasksContent(
     activeEmployee: CorporateEmployee,
+    availableEmployees: List<CorporateEmployee>,
     tasksState: UiState<List<TaskDocument>>,
     visibleTasks: List<TaskDocument>,
     activeStaffCount: Int,
@@ -1143,7 +1153,15 @@ private fun TodayTasksContent(
     }
 
     var selectedItrFilter by remember { mutableStateOf(ItrQuickFilter.ALL) }
-    var selectedItrScope by remember { mutableStateOf(ItrScopeFilter.SUBDIVISION) }
+    var selectedItrScope by remember(activeEmployee.role) {
+        mutableStateOf(
+            if (activeEmployee.role == CorporateRole.ITR) {
+                ItrScopeFilter.PERSONAL
+            } else {
+                ItrScopeFilter.SUBDIVISION
+            }
+        )
+    }
     var showFullMonthCalendar by remember { mutableStateOf(false) }
     var workerShowCompletedTab by remember { mutableStateOf(false) }
 
@@ -1157,7 +1175,6 @@ private fun TodayTasksContent(
             it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED
         }.sortedByDescending { it.dueDateEpochDay }
     }
-    val acceptedAndArchivedCount = completedHomeTasks.size
 
     val activeHomeTasks = remember(visibleTasks) {
         visibleTasks.filter {
@@ -1165,7 +1182,32 @@ private fun TodayTasksContent(
         }
     }
 
-    val itrScopeTasks = remember(activeHomeTasks, selectedItrScope, activeEmployee) {
+    val isWorkerTabForSupervisor = activeEmployee.role != CorporateRole.WORKER
+
+    val workerTabActiveTasks = remember(activeHomeTasks, activeEmployee, availableEmployees, isWorkerTabForSupervisor) {
+        if (!isWorkerTabForSupervisor) {
+            activeHomeTasks
+        } else {
+            activeHomeTasks.filter { task ->
+                task.resolveAssigneeRole(availableEmployees, activeEmployee) == CorporateRole.WORKER &&
+                    (activeEmployee.siteName.isBlank() || task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees))
+            }
+        }
+    }
+
+    val workerTabCompletedTasks = remember(completedHomeTasks, activeEmployee, availableEmployees, isWorkerTabForSupervisor) {
+        if (!isWorkerTabForSupervisor) {
+            completedHomeTasks
+        } else {
+            completedHomeTasks.filter { task ->
+                task.resolveAssigneeRole(availableEmployees, activeEmployee) == CorporateRole.WORKER &&
+                    (activeEmployee.siteName.isBlank() || task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees))
+            }
+        }
+    }
+    val acceptedAndArchivedCount = workerTabCompletedTasks.size
+
+    val itrScopeTasks = remember(activeHomeTasks, selectedItrScope, activeEmployee, availableEmployees) {
         activeHomeTasks.filter { task ->
             when (selectedItrScope) {
                 ItrScopeFilter.SUBDIVISION -> {
@@ -1174,7 +1216,7 @@ private fun TodayTasksContent(
                         task.isAssignedToEmployee(activeEmployee)
                 }
                 ItrScopeFilter.SITE -> {
-                    task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
+                    task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees) ||
                         task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
                         task.creatorId == activeEmployee.id ||
                         task.isAssignedToEmployee(activeEmployee)
@@ -1186,7 +1228,7 @@ private fun TodayTasksContent(
         }
     }
 
-    val itrCompletedScopeTasks = remember(completedHomeTasks, selectedItrScope, activeEmployee) {
+    val itrCompletedScopeTasks = remember(completedHomeTasks, selectedItrScope, activeEmployee, availableEmployees) {
         completedHomeTasks.filter { task ->
             when (selectedItrScope) {
                 ItrScopeFilter.SUBDIVISION -> {
@@ -1195,7 +1237,7 @@ private fun TodayTasksContent(
                         task.isAssignedToEmployee(activeEmployee)
                 }
                 ItrScopeFilter.SITE -> {
-                    task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
+                    task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees) ||
                         task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
                         task.creatorId == activeEmployee.id ||
                         task.isAssignedToEmployee(activeEmployee)
@@ -1214,9 +1256,9 @@ private fun TodayTasksContent(
                 it.isAssignedToEmployee(activeEmployee)
         }
     }
-    val itrSiteCount = remember(activeHomeTasks, activeEmployee) {
+    val itrSiteCount = remember(activeHomeTasks, activeEmployee, availableEmployees) {
         activeHomeTasks.count {
-            it.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
+            it.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees) ||
                 it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
                 it.creatorId == activeEmployee.id ||
                 it.isAssignedToEmployee(activeEmployee)
@@ -1230,7 +1272,8 @@ private fun TodayTasksContent(
 
     val filteredTasks = remember(
         activeHomeTasks,
-        completedHomeTasks,
+        workerTabActiveTasks,
+        workerTabCompletedTasks,
         itrScopeTasks,
         itrCompletedScopeTasks,
         effectivePersonaMode,
@@ -1247,7 +1290,7 @@ private fun TodayTasksContent(
                 if (selectedItrFilter == ItrQuickFilter.COMPLETED) itrCompletedScopeTasks else itrScopeTasks
             }
             PersonaUiMode.WORKER -> {
-                if (workerShowCompletedTab) completedHomeTasks else activeHomeTasks
+                if (workerShowCompletedTab) workerTabCompletedTasks else workerTabActiveTasks
             }
             PersonaUiMode.DIRECTOR -> activeHomeTasks
         }
@@ -1378,16 +1421,25 @@ private fun TodayTasksContent(
             }
         }
 
-        // Переключатель ролевых интерфейсов показываем только для Администратора / Руководителя
-        if (activeEmployee.role.isAdminOrHead && allowedModes.size > 1) {
+        // Переключатель ролевых интерфейсов: ИТР видит «Рабочие | ИТР», Руководитель/Админ видит «Рабочие | ИТР | Руководитель»
+        if (allowedModes.size > 1) {
             item {
                 PersonaModeSwitcherBar(
                     selectedMode = effectivePersonaMode,
                     allowedModes = allowedModes,
+                    labelTransform = { mode ->
+                        if (mode == PersonaUiMode.WORKER && isWorkerTabForSupervisor) {
+                            "Рабочие"
+                        } else {
+                            mode.titleRu
+                        }
+                    },
                     onSelectMode = { mode ->
                         if (mode in allowedModes) {
                             selectedPersonaMode = mode
-                            if (mode == PersonaUiMode.ITR && selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                            if ((mode == PersonaUiMode.ITR || (mode == PersonaUiMode.WORKER && isWorkerTabForSupervisor)) &&
+                                selectedFilter == TaskFilterTab.CALENDAR_DATE
+                            ) {
                                 onSelectFilter(TaskFilterTab.ALL)
                             }
                         }
@@ -1422,7 +1474,7 @@ private fun TodayTasksContent(
 
         when (effectivePersonaMode) {
             // =========================================================================
-            // 1. ИНТЕРФЕЙС РАБОЧЕГО (Монтажник)
+            // 1. ИНТЕРФЕЙС РАБОЧЕГО / ВКЛАДКА «РАБОЧИЕ» ДЛЯ ИТР И РУКОВОДИТЕЛЯ
             // =========================================================================
             PersonaUiMode.WORKER -> {
                 val activeWorkerDate = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
@@ -1430,15 +1482,23 @@ private fun TodayTasksContent(
                 } else {
                     currentEpochDay
                 }
-                val doneCount = completedHomeTasks.size + activeHomeTasks.count {
+                val doneCount = workerTabCompletedTasks.size + workerTabActiveTasks.count {
                     it.taskStatus == TaskStatus.ON_REVIEW
                 }
                 item {
                     WorkerTodayHeaderCard(
                         currentEpochDay = currentEpochDay,
                         selectedEpochDay = activeWorkerDate,
-                        totalTasksToday = activeHomeTasks.size + completedHomeTasks.size,
+                        totalTasksToday = workerTabActiveTasks.size + workerTabCompletedTasks.size,
                         completedTasksToday = doneCount,
+                        headerTitle = if (isWorkerTabForSupervisor) "Задачи рабочих" else "Мои задачи",
+                        headerSubtitle = if (isWorkerTabForSupervisor) {
+                            "Участок: ${activeEmployee.siteName.ifBlank { "Все" }} • В работе: ${workerTabActiveTasks.size}"
+                        } else {
+                            null
+                        },
+                        isAllDatesSelected = selectedFilter != TaskFilterTab.CALENDAR_DATE,
+                        onSelectAllDates = { onSelectFilter(TaskFilterTab.ALL) },
                         onCreateTaskClick = { onOpenCreateDialogForDate(activeWorkerDate) },
                         onSelectDate = { chosenDay ->
                             onSelectCalendarDate(chosenDay)
@@ -1446,7 +1506,7 @@ private fun TodayTasksContent(
                     )
                 }
 
-                // Наглядный переключатель для Рабочего: В работе | Выполненные задачи
+                // Наглядный переключатель: В работе | Выполненные задачи
                 item {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -1469,7 +1529,7 @@ private fun TodayTasksContent(
                                     .testTag("worker_tab_active")
                             ) {
                                 Text(
-                                    text = "В работе (${activeHomeTasks.size})",
+                                    text = "В работе (${workerTabActiveTasks.size})",
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = if (!workerShowCompletedTab) FontWeight.Bold else FontWeight.Medium,
                                     color = if (!workerShowCompletedTab) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1487,7 +1547,7 @@ private fun TodayTasksContent(
                                     .testTag("worker_tab_completed")
                             ) {
                                 Text(
-                                    text = "Выполненные (${completedHomeTasks.size})",
+                                    text = "Выполненные (${workerTabCompletedTasks.size})",
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = if (workerShowCompletedTab) FontWeight.Bold else FontWeight.Medium,
                                     color = if (workerShowCompletedTab) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1513,7 +1573,8 @@ private fun TodayTasksContent(
                             onOpenDetail = { onTaskClick(task) },
                             onQuickComplete = { onQuickCompleteTask(task) },
                             onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
-                            canApprove = activeEmployee.role.canApproveReportOf(CorporateRole.WORKER),
+                            canApprove = task.canBeApprovedBy(activeEmployee, availableEmployees),
+                            showAssigneeName = isWorkerTabForSupervisor,
                             onApproveTask = {
                                 onApproveTask(task)
                                 homeApprovedOutcomeTask = task
@@ -1572,7 +1633,7 @@ private fun TodayTasksContent(
             }
 
             // =========================================================================
-            // 2. ИНТЕРФЕЙС ИТР (Прораб, Мастер)
+            // 2. ИНТЕРФЕЙС ИТР (Инженер, Мастер)
             // =========================================================================
             PersonaUiMode.ITR -> {
                 item {
@@ -1657,7 +1718,7 @@ private fun TodayTasksContent(
                                     onClick = { onTaskClick(task) },
                                     onDelete = { onDeleteTask(task) },
                                     onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
-                                    canApprove = activeEmployee.role.canApproveReportOf(CorporateRole.WORKER),
+                                    canApprove = task.canBeApprovedBy(activeEmployee, availableEmployees),
                                     onApproveTask = {
                                         onApproveTask(task)
                                         homeApprovedOutcomeTask = task

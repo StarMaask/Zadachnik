@@ -21,7 +21,7 @@ enum class CorporateRole(
     ),
     ITR(
         code = "ITR",
-        titleRu = "ИТР (Прораб / Инженер)",
+        titleRu = "ИТР",
         hierarchyLevel = 2,
         badgeDescription = "Постановка задач рабочим, приёмка фотоотчётов, сводный отчёт по подразделению"
     ),
@@ -956,15 +956,34 @@ data class TaskDocument(
     /**
      * Проверка принадлежности задачи к строительному участку / объекту.
      */
-    fun belongsToSite(targetSiteName: String, targetSiteId: String): Boolean {
+    fun belongsToSite(
+        targetSiteName: String,
+        targetSiteId: String,
+        allEmployees: List<CorporateEmployee> = emptyList()
+    ): Boolean {
+        val cleanTargetName = targetSiteName.trim()
+        val loc = geoLocation.orEmpty().trim()
+        val matchedAssignees = if (allEmployees.isNotEmpty()) {
+            allEmployees.filter { isAssignedToEmployee(it) }
+        } else {
+            emptyList()
+        }
+        if (cleanTargetName.isNotBlank()) {
+            if (loc.isNotBlank()) {
+                return loc.contains(cleanTargetName, ignoreCase = true) ||
+                    cleanTargetName.contains(loc, ignoreCase = true)
+            }
+            val assigneeSites = matchedAssignees.map { it.siteName.trim() }.filter { it.isNotBlank() }
+            if (assigneeSites.isNotEmpty()) {
+                return assigneeSites.any {
+                    it.equals(cleanTargetName, ignoreCase = true) ||
+                        it.contains(cleanTargetName, ignoreCase = true) ||
+                        cleanTargetName.contains(it, ignoreCase = true)
+                }
+            }
+        }
         if (targetSiteId.isNotBlank() && siteId.isNotBlank() && siteId.equals(targetSiteId, ignoreCase = true)) {
             return true
-        }
-        val loc = geoLocation.orEmpty().trim()
-        if (targetSiteName.isNotBlank()) {
-            if (loc.isNotBlank() && (loc.contains(targetSiteName, ignoreCase = true) || targetSiteName.contains(loc, ignoreCase = true))) {
-                return true
-            }
         }
         return false
     }
@@ -984,7 +1003,6 @@ data class TaskDocument(
             return fallbackActor.role
         }
         if (groupName.contains("ИТР", ignoreCase = true) ||
-            groupName.contains("Прораб", ignoreCase = true) ||
             groupName.contains("Инженер", ignoreCase = true) ||
             groupId.equals("grp_itr", ignoreCase = true)
         ) {
@@ -1019,7 +1037,7 @@ data class TaskDocument(
     }
 
     /**
-     * Проверка, относится ли задача к сфере ответственности ИТР (подразделение, участок, исполнитель или создатель).
+     * Проверка, относится ли задача к сфере ответственности ИТР (личные задачи ИТР + все задачи рабочих его участка).
      */
     fun isRelevantToItr(
         itr: CorporateEmployee,
@@ -1029,21 +1047,15 @@ data class TaskDocument(
         if (isAssignedToEmployee(itr) || creatorId == itr.id) {
             return true
         }
-        if (belongsToSubdivision(itr.groupName, itr.groupId)) {
+        val assigneeRole = resolveAssigneeRole(allEmployees, itr)
+        val sameSite = belongsToSite(itr.siteName, itr.siteId, allEmployees)
+        // Во вкладке «Рабочие» ИТР видит все задачи рабочих со своего участка (в любых подразделениях участка)
+        if (assigneeRole == CorporateRole.WORKER && sameSite) {
             return true
         }
-        if (belongsToSite(itr.siteName, itr.siteId)) {
+        // Задачи своего подразделения на своём участке
+        if (belongsToSubdivision(itr.groupName, itr.groupId) && (sameSite || itr.siteName.isBlank())) {
             return true
-        }
-        if (allEmployees.isNotEmpty()) {
-            val relatedEmps = allEmployees.filter {
-                (it.groupId.isNotBlank() && it.groupId == itr.groupId) ||
-                    (it.groupName.isNotBlank() && it.groupName.equals(itr.groupName, ignoreCase = true)) ||
-                    (it.siteId.isNotBlank() && it.siteId == itr.siteId)
-            }
-            if (relatedEmps.any { isAssignedToEmployee(it) }) {
-                return true
-            }
         }
         return false
     }
@@ -1249,7 +1261,7 @@ data class SiteMemberDocument(
         explicitPersonnelNumber: String? = null,
         explicitSiteName: String? = null,
         explicitPhone: String? = null,
-        isAdminRole: Boolean = (role == CorporateRole.ADMIN.code || extractMetaValue("adm") == "1")
+        isAdminRole: Boolean = role.equals(CorporateRole.ADMIN.code, ignoreCase = true)
     ): String {
         val base = approverName.substringBefore("||").replace("|", "/").trim().take(24)
         val tabPart = (explicitPersonnelNumber ?: effectivePersonnelNumber).replace("|", "/").trim().take(14)

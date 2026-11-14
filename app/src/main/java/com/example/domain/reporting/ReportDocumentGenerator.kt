@@ -106,7 +106,73 @@ data class GeneratedDocumentResult(
     val downloadedToPath: String = ""
 )
 
+data class AspectFitRect(
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float
+)
+
 object ReportDocumentGenerator {
+
+    fun formatOrgHeader(
+        organizationName: String,
+        subdivisionName: String = "",
+        siteName: String = ""
+    ): String {
+        val parts = mutableListOf<String>()
+        listOf(organizationName, subdivisionName, siteName).forEach { raw ->
+            val clean = raw.trim()
+            if (clean.isNotBlank() && parts.none { it.equals(clean, ignoreCase = true) }) {
+                parts.add(clean)
+            }
+        }
+        return parts.joinToString(", ")
+    }
+
+    fun formatPreparedBySignature(
+        actor: CorporateEmployee,
+        defaultSiteName: String = ""
+    ): String {
+        val positionText = actor.position.trim().ifBlank { actor.role.titleRu }
+        val siteText = actor.siteName.trim().ifBlank { defaultSiteName.trim() }
+        val sitePart = if (siteText.isNotBlank()) ", Участок: $siteText" else ""
+        return "____________________ (подпись), ${actor.fullName}, $positionText$sitePart"
+    }
+
+    fun computeAspectFitBounds(
+        srcWidth: Int,
+        srcHeight: Int,
+        frameLeft: Float,
+        frameTop: Float,
+        frameRight: Float,
+        frameBottom: Float
+    ): AspectFitRect {
+        val frameW = (frameRight - frameLeft).coerceAtLeast(1f)
+        val frameH = (frameBottom - frameTop).coerceAtLeast(1f)
+        if (srcWidth <= 0 || srcHeight <= 0) {
+            return AspectFitRect(frameLeft, frameTop, frameRight, frameBottom)
+        }
+        val srcRatio = srcWidth.toFloat() / srcHeight.toFloat()
+        val frameRatio = frameW / frameH
+        val drawnW: Float
+        val drawnH: Float
+        if (srcRatio > frameRatio) {
+            drawnW = frameW
+            drawnH = (frameW / srcRatio).coerceAtLeast(1f)
+        } else {
+            drawnH = frameH
+            drawnW = (frameH * srcRatio).coerceAtLeast(1f)
+        }
+        val left = frameLeft + (frameW - drawnW) / 2f
+        val top = frameTop + (frameH - drawnH) / 2f
+        return AspectFitRect(
+            left = left,
+            top = top,
+            right = left + drawnW,
+            bottom = top + drawnH
+        )
+    }
 
     fun formatEpochDay(epochDay: Long): String {
         val date = LocalDate.ofEpochDay(epochDay)
@@ -356,9 +422,16 @@ object ReportDocumentGenerator {
         val periodLabel = "Отчёт за $todayStr / План на $tomorrowStr"
 
         val signatures = listOf(
-            "Подготовил документ: ____________________ / ${actor.fullName} (${actor.role.titleRu}) /",
-            "Проверил / Принял:   ____________________ / Подпись руководителя /"
+            "Подготовил документ: ${formatPreparedBySignature(actor)}",
+            "Проверил / Принял: ____________________ (подпись), ФИО, должность"
         )
+        val actorPositionText = actor.position.trim().ifBlank { actor.role.titleRu }
+        val actorSiteText = actor.siteName.trim()
+        val preparedByLabel = listOfNotNull(
+            actor.fullName.takeIf { it.isNotBlank() },
+            actorPositionText.takeIf { it.isNotBlank() },
+            actorSiteText.takeIf { it.isNotBlank() }?.let { "Участок: $it" }
+        ).joinToString(", ")
 
         val photoModeLabel = if (includePhotos) "С фотоотчётом (${attachedPhotos.size} фото)" else "Без фотографий (только таблица)"
         val layoutModeLabel = if (layout == SheetLayout.SPLIT_SHEETS) {
@@ -406,7 +479,7 @@ object ReportDocumentGenerator {
             reportTitle = resolvedReportTitle,
             periodLabel = periodLabel,
             generatedAtLabel = nowLabel,
-            preparedByLabel = "${actor.fullName} (${actor.position})",
+            preparedByLabel = preparedByLabel,
             roleScopeLabel = roleScopeLabel,
             sheetLayout = layout,
             exportFormat = format,
@@ -1040,64 +1113,107 @@ object ReportDocumentGenerator {
                 y += 16f
             }
 
-            // Нижний колонтитул с подписями
-            var sigY = (pageHeight - 36f).coerceAtLeast(y + 10f)
-            if (sigY <= pageHeight - 14f) {
-                doc.signatureBlock.forEach { sig ->
-                    if (sigY <= pageHeight - 10f) {
-                        canvas.drawText(sig, 28f, sigY, metaPaint)
-                        sigY += 12f
-                    }
+            // Нижний колонтитул с подписями (с переносом на новую страницу, если таблица дошла до самого низа)
+            val neededSigHeight = (doc.signatureBlock.size * 13f) + 12f
+            if (y + neededSigHeight > pageHeight - 14f) {
+                pdf.finishPage(page)
+                pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber++).create()
+                page = pdf.startPage(pageInfo)
+                canvas = page.canvas
+                y = drawTopDocumentHeader(canvas, sheet.sheetTitle, isContinuation = true)
+            }
+            var sigY = (pageHeight - 36f).coerceAtLeast(y + 10f).coerceAtMost(pageHeight - neededSigHeight)
+            doc.signatureBlock.forEach { sig ->
+                if (sigY <= pageHeight - 8f) {
+                    canvas.drawText(sig, 28f, sigY, metaPaint)
+                    sigY += 13f
                 }
             }
 
             pdf.finishPage(page)
         }
 
-        // Приложение с фотоотчётами (на отдельном листе после таблиц)
+        // Приложение с фотоотчётами (все фото с сохранением точных пропорций, пагинация по 6 карточек на лист)
         if (doc.includePhotos && doc.attachedPhotos.isNotEmpty()) {
-            val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
-            val page = pdf.startPage(pageInfo)
-            val canvas = page.canvas
-
-            var y = 36f
-            canvas.drawText("${doc.reportTitle} — Приложение: Фотоотчёты (${doc.attachedPhotos.size} шт.)", 28f, y, orgTitlePaint)
-            y += 20f
-
-            var col = 0
-            val cardW = 245f
-            val cardH = 190f
-            doc.attachedPhotos.take(6).forEachIndexed { idx, item ->
-                val x = 28f + col * (cardW + 18f)
-                val boxRect = RectF(x, y, x + cardW, y + cardH)
-                canvas.drawRoundRect(boxRect, 8f, 8f, linePaint)
-
-                val bmp = PhotoCaptureUtils.loadBitmapFromUriOrPath(
-                    uriOrPath = item.photo.uriString,
-                    fallbackComment = item.photo.comment,
-                    fallbackAuthor = item.photo.authorName.ifBlank { item.assigneeFio },
-                    fallbackTime = item.photo.capturedAtText,
-                    fallbackGps = item.photo.gpsCoords,
-                    fallbackTaskTitle = item.taskTitle,
-                    context = context,
-                    photoId = item.photo.id
-                )
-                if (bmp != null) {
-                    val dstRect = RectF(x + 6f, y + 6f, x + cardW - 6f, y + 125f)
-                    canvas.drawBitmap(bmp, null, dstRect, null)
-                }
-                canvas.drawText("${idx + 1}. ${item.taskTitle.take(28)}", x + 8f, y + 142f, cellPaint)
-                canvas.drawText("${item.assigneeFio.take(22)} • ${item.photo.capturedAtText}", x + 8f, y + 156f, metaPaint)
-                canvas.drawText(item.photo.comment.take(32), x + 8f, y + 170f, metaPaint)
-
-                col++
-                if (col >= 3) {
-                    col = 0
-                    y += cardH + 16f
-                }
+            val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            val photoFrameBgPaint = Paint().apply {
+                color = Color.rgb(241, 245, 249)
+                style = Paint.Style.FILL
             }
+            val photoChunks = doc.attachedPhotos.chunked(6)
+            val totalPages = photoChunks.size
 
-            pdf.finishPage(page)
+            photoChunks.forEachIndexed { chunkIdx, chunk ->
+                val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber++).create()
+                val page = pdf.startPage(pageInfo)
+                val canvas = page.canvas
+
+                var y = 32f
+                val pageSuffix = if (totalPages > 1) " (стр. ${chunkIdx + 1} из $totalPages)" else ""
+                canvas.drawText(
+                    "${doc.reportTitle} — Приложение: Фотоотчёты (${doc.attachedPhotos.size} шт.)$pageSuffix",
+                    28f,
+                    y,
+                    orgTitlePaint
+                )
+                y += 18f
+
+                var col = 0
+                val cardW = 246f
+                val cardH = 232f
+                val colGap = 18f
+                val rowGap = 14f
+                val frameInset = 6f
+                val frameHeight = 166f
+
+                chunk.forEachIndexed { localIdx, item ->
+                    val globalIdx = chunkIdx * 6 + localIdx
+                    val x = 28f + col * (cardW + colGap)
+                    val boxRect = RectF(x, y, x + cardW, y + cardH)
+                    canvas.drawRoundRect(boxRect, 8f, 8f, linePaint)
+
+                    val frameLeft = x + frameInset
+                    val frameTop = y + frameInset
+                    val frameRight = x + cardW - frameInset
+                    val frameBottom = y + frameInset + frameHeight
+                    val frameRect = RectF(frameLeft, frameTop, frameRight, frameBottom)
+                    canvas.drawRoundRect(frameRect, 4f, 4f, photoFrameBgPaint)
+
+                    val bmp = PhotoCaptureUtils.loadBitmapFromUriOrPath(
+                        uriOrPath = item.photo.uriString,
+                        fallbackComment = item.photo.comment,
+                        fallbackAuthor = item.photo.authorName.ifBlank { item.assigneeFio },
+                        fallbackTime = item.photo.capturedAtText,
+                        fallbackGps = item.photo.gpsCoords,
+                        fallbackTaskTitle = item.taskTitle,
+                        context = context,
+                        photoId = item.photo.id
+                    )
+                    if (bmp != null && bmp.width > 0 && bmp.height > 0) {
+                        val fitted = computeAspectFitBounds(
+                            srcWidth = bmp.width,
+                            srcHeight = bmp.height,
+                            frameLeft = frameLeft,
+                            frameTop = frameTop,
+                            frameRight = frameRight,
+                            frameBottom = frameBottom
+                        )
+                        val dstRect = RectF(fitted.left, fitted.top, fitted.right, fitted.bottom)
+                        canvas.drawBitmap(bmp, null, dstRect, bitmapPaint)
+                    }
+                    canvas.drawText("${globalIdx + 1}. ${item.taskTitle.take(30)}", x + 8f, y + 188f, cellBoldPaint)
+                    canvas.drawText("${item.assigneeFio.take(24)} • ${item.photo.capturedAtText}", x + 8f, y + 203f, metaPaint)
+                    canvas.drawText(item.photo.comment.take(36), x + 8f, y + 217f, metaPaint)
+
+                    col++
+                    if (col >= 3) {
+                        col = 0
+                        y += cardH + rowGap
+                    }
+                }
+
+                pdf.finishPage(page)
+            }
         }
 
         FileOutputStream(outFile).use { fos ->

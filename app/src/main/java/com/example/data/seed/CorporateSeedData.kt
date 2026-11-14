@@ -101,7 +101,7 @@ object CorporateSeedData {
             id = "emp_itr_1",
             fullName = "Соколов Андрей Викторович",
             shortName = "Соколов А.В.",
-            position = "Производитель работ (Прораб СМР)",
+            position = "Производитель работ (Инженер СМР)",
             role = CorporateRole.ITR,
             groupId = "grp_monolith",
             groupName = "Бригада №1 • Монолит и ЖБК",

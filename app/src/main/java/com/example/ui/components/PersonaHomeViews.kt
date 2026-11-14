@@ -81,8 +81,8 @@ import java.util.Locale
 
 /**
  * 3 ролевых интерфейса (Persona-based UI) главного экрана в стиле Linear / Notion / Apple:
- * 1. WORKER — Интерфейс РАБОЧЕГО (Монтажник): фокус «Что мне сделать сегодня?».
- * 2. ITR — Интерфейс ИТР (Прораб, Мастер): контроль, горизонтальный скролл дат, пилюли-фильтры.
+ * 1. WORKER — Интерфейс РАБОЧЕГО / вкладка «Рабочие» для ИТР и Руководителя.
+ * 2. ITR — Интерфейс ИТР (Инженер, Мастер): личные задачи ИТР, контроль, горизонтальный скролл дат.
  * 3. DIRECTOR — Интерфейс РУКОВОДИТЕЛЯ (Директор): Executive Dashboard, Donut-график, KPI, риски, лента событий.
  */
 enum class PersonaUiMode(
@@ -90,7 +90,7 @@ enum class PersonaUiMode(
     val subtitleRu: String
 ) {
     WORKER("Рабочий", "Сменное задание на сегодня"),
-    ITR("ИТР (Прораб)", "Контроль, распределение, приёмка"),
+    ITR("ИТР", "Мои задачи, контроль и приёмка"),
     DIRECTOR("Руководитель", "Аналитика, KPI и риски объекта");
 
     companion object {
@@ -112,17 +112,17 @@ enum class PersonaUiMode(
  * Определение области видимости задач для ИТР:
  * - SUBDIVISION: Задачи тематического подразделения (профильная бригада / служба ИТР)
  * - SITE: Задачи строительного участка (все подразделения на объекте)
- * - PERSONAL: Задачи, назначенные лично ИТР
+ * - PERSONAL: Личные задачи, назначенные ИТР
  */
 enum class ItrScopeFilter(val titleRu: String, val chipLabel: String) {
     SUBDIVISION("Моё подразделение", "Бригада"),
     SITE("Весь участок", "Участок"),
-    PERSONAL("Мои наряды", "Личные")
+    PERSONAL("Мои задачи", "Мои задачи")
 }
 
 /**
- * Фильтры-пилюли для интерфейса ИТР (Прораб, Мастер):
- * В работе | На проверке | Проблемы | Все
+ * Фильтры-пилюли для интерфейса ИТР (Инженер, Мастер):
+ * В работе | На проверке | Проблемы | Выполненные | Все
  */
 enum class ItrQuickFilter(val titleRu: String) {
     IN_WORK("В работе"),
@@ -135,15 +135,16 @@ enum class ItrQuickFilter(val titleRu: String) {
 /**
  * Сегментированный переключатель ролевых интерфейсов, отображающий только режимы,
  * доступные уровню прав текущего пользователя:
- * - Рабочий видит только «Рабочий»
- * - ИТР видит «Рабочий» и «ИТР (Прораб)»
- * - Руководитель / Администратор видит «Рабочий», «ИТР (Прораб)» и «Руководитель»
+ * - Рабочий видит только свой список задач
+ * - ИТР видит «Рабочие» и «ИТР»
+ * - Руководитель / Администратор видит «Рабочие», «ИТР» и «Руководитель»
  */
 @Composable
 fun PersonaModeSwitcherBar(
     selectedMode: PersonaUiMode,
     onSelectMode: (PersonaUiMode) -> Unit,
     allowedModes: List<PersonaUiMode> = PersonaUiMode.entries,
+    labelTransform: (PersonaUiMode) -> String = { it.titleRu },
     modifier: Modifier = Modifier
 ) {
     val tokens = LocalAppThemeTokens.current
@@ -162,6 +163,7 @@ fun PersonaModeSwitcherBar(
         ) {
             allowedModes.forEach { mode ->
                 val isSelected = selectedMode == mode || allowedModes.size == 1
+                val displayLabel = labelTransform(mode)
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
@@ -177,9 +179,9 @@ fun PersonaModeSwitcherBar(
                     ) {
                         Text(
                             text = if (allowedModes.size == 1) {
-                                "${mode.titleRu} • ${mode.subtitleRu}"
+                                "$displayLabel • ${mode.subtitleRu}"
                             } else {
-                                mode.titleRu
+                                displayLabel
                             },
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
@@ -210,6 +212,10 @@ fun WorkerTodayHeaderCard(
     selectedEpochDay: Long = currentEpochDay,
     totalTasksToday: Int,
     completedTasksToday: Int,
+    headerTitle: String = "Мои задачи",
+    headerSubtitle: String? = null,
+    isAllDatesSelected: Boolean = false,
+    onSelectAllDates: (() -> Unit)? = null,
     onCreateTaskClick: () -> Unit = {},
     onSelectDate: (Long) -> Unit = {},
     isCalendarExpanded: Boolean = false,
@@ -219,11 +225,15 @@ fun WorkerTodayHeaderCard(
     val dateText = remember(selectedEpochDay) {
         ReportDocumentGenerator.formatEpochDay(selectedEpochDay)
     }
-    val dayRelationText = when (selectedEpochDay) {
-        currentEpochDay -> "Сегодня • $dateText"
-        currentEpochDay + 1L -> "Завтра • $dateText"
-        currentEpochDay - 1L -> "Вчера • $dateText"
-        else -> dateText
+    val dayRelationText = if (isAllDatesSelected) {
+        "Все даты"
+    } else {
+        when (selectedEpochDay) {
+            currentEpochDay -> "Сегодня • $dateText"
+            currentEpochDay + 1L -> "Завтра • $dateText"
+            currentEpochDay - 1L -> "Вчера • $dateText"
+            else -> dateText
+        }
     }
     val russianLocale = remember { Locale.forLanguageTag("ru-RU") }
     val dayStripOffsets = remember { (-1..4).toList() }
@@ -245,7 +255,7 @@ fun WorkerTodayHeaderCard(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Верхняя строка: минималистичный заголовок «Мои задачи» и компактный выпадающий селектор даты
+            // Верхняя строка: заголовок и кнопка «+ Задача» + компактный селектор даты
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -253,59 +263,86 @@ fun WorkerTodayHeaderCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Мои задачи",
-                        style = MaterialTheme.typography.headlineSmall,
+                        text = headerTitle,
+                        style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (totalTasksToday > 0) {
+                        text = headerSubtitle ?: if (totalTasksToday > 0) {
                             "Выполнено на смену: $completedTasksToday из $totalTasksToday"
                         } else {
                             "Сменное задание и контроль объёмов"
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                // Компактный выпадающий селектор даты (разворачивает/сворачивает календарь)
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(onClick = onToggleExpandCalendar)
-                        .testTag("worker_expand_calendar_button")
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Button(
+                        onClick = onCreateTaskClick,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .height(34.dp)
+                            .testTag("worker_header_add_task_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.CalendarMonth,
+                            imageVector = Icons.Default.Add,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(15.dp)
                         )
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = dayRelationText,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
+                            text = "Задача",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
                         )
-                        Icon(
-                            imageVector = if (isCalendarExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = if (isCalendarExpanded) "Свернуть календарь" else "Выбрать дату в календаре",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                        modifier = Modifier
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onToggleExpandCalendar)
+                            .testTag("worker_expand_calendar_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = dayRelationText,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1
+                            )
+                        }
                     }
                 }
             }
 
-            // Горизонтальный компактный скролл дат (быстрое переключение дня без раскрытия огромного календаря)
+            // Горизонтальный компактный скролл дат (с быстрой пилюлей «Все даты»)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -313,10 +350,36 @@ fun WorkerTodayHeaderCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (onSelectAllDates != null) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isAllDatesSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onSelectAllDates)
+                            .testTag("worker_date_pill_all")
+                    ) {
+                        Text(
+                            text = "Все даты",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (isAllDatesSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isAllDatesSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
+                }
                 dayStripOffsets.forEach { offset ->
                     val dayEpoch = currentEpochDay + offset
                     val localDate = remember(dayEpoch) { LocalDate.ofEpochDay(dayEpoch) }
-                    val isSelected = dayEpoch == selectedEpochDay
+                    val isSelected = !isAllDatesSelected && dayEpoch == selectedEpochDay
                     val isToday = dayEpoch == currentEpochDay
                     val shortDow = remember(localDate) {
                         localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, russianLocale)
@@ -365,6 +428,7 @@ fun WorkerPersonaTaskCard(
     onQuickComplete: () -> Unit = {},
     onToggleSubtask: (String) -> Unit = {},
     canApprove: Boolean = false,
+    showAssigneeName: Boolean = false,
     onApproveTask: (() -> Unit)? = null,
     onRejectTask: (() -> Unit)? = null
 ) {
@@ -426,6 +490,28 @@ fun WorkerPersonaTaskCard(
                         fontWeight = FontWeight.SemiBold,
                         color = statusColor(task.taskStatus),
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            if (showAssigneeName && task.assigneeName.isNotBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = "Исполнитель: ${task.assigneeName}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -517,6 +603,41 @@ fun WorkerPersonaTaskCard(
                 }
             }
 
+            if (canApprove &&
+                (task.taskStatus == TaskStatus.ON_REVIEW ||
+                    (task.taskStatus == TaskStatus.IN_PROGRESS && pct >= 100 && currentPhotos > 0)) &&
+                onApproveTask != null &&
+                onRejectTask != null
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onApproveTask,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF10B981),
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                    ) {
+                        Text("Принять", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = onRejectTask,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                    ) {
+                        Text("Отклонить", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+
             if (!task.rejectionReason.isNullOrBlank() && task.taskStatus == TaskStatus.REJECTED) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -539,7 +660,7 @@ fun WorkerPersonaTaskCard(
 }
 
 // ============================================================================
-// 2. ИНТЕРФЕЙС ИТР (Прораб, Мастер)
+// 2. ИНТЕРФЕЙС ИТР (Инженер, Мастер)
 // Фокус: Контроль, распределение, проверка.
 // Сверху компактный горизонтальный скролл дат (полоска дней недели),
 // под ним — горизонтальные пилюли-фильтры: В работе | На проверке | Проблемы | Все.
@@ -625,7 +746,7 @@ fun ItrHorizontalDateStrip(
                             val scopeLabel = when (selectedScope) {
                                 ItrScopeFilter.SUBDIVISION -> "Моя бригада ($subdivisionCount)"
                                 ItrScopeFilter.SITE -> "Весь участок ($siteCount)"
-                                ItrScopeFilter.PERSONAL -> "Личные ($personalCount)"
+                                ItrScopeFilter.PERSONAL -> "Мои задачи ($personalCount)"
                             }
                             Text(
                                 text = scopeLabel,
@@ -663,7 +784,7 @@ fun ItrHorizontalDateStrip(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Личные задачи ($personalCount)") },
+                            text = { Text("Мои задачи ($personalCount)") },
                             leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                             onClick = {
                                 onSelectScope(ItrScopeFilter.PERSONAL)

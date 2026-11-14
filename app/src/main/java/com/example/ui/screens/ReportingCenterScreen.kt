@@ -310,8 +310,21 @@ fun ReportingCenterScreen(
 
     val isAdminOrHead = activeEmployee.role.isAdminOrHead
 
-    val allReportCatalog = remember(templates, todayFormatted, organizationName, siteName, selectedReportEpochDay, isAdminOrHead) {
-        val headerText = "$organizationName • $siteName"
+    val allReportCatalog = remember(
+        templates,
+        todayFormatted,
+        organizationName,
+        siteName,
+        activeEmployee.groupName,
+        activeEmployee.siteName,
+        selectedReportEpochDay,
+        isAdminOrHead
+    ) {
+        val headerText = ReportDocumentGenerator.formatOrgHeader(
+            organizationName = organizationName,
+            subdivisionName = activeEmployee.groupName,
+            siteName = activeEmployee.siteName.ifBlank { siteName }
+        )
         val normalizedTemplates = templates.map { tpl ->
             tpl.copy(
                 name = ReportDocumentGenerator.resolveTemplateDisplayName(tpl, selectedReportEpochDay),
@@ -1084,7 +1097,11 @@ fun ReportingCenterScreen(
 
     if (showCustomTemplateDialog) {
         CustomTemplateConstructorDialog(
-            defaultOrgHeader = "$organizationName • $siteName",
+            defaultOrgHeader = ReportDocumentGenerator.formatOrgHeader(
+                organizationName = organizationName,
+                subdivisionName = activeEmployee.groupName,
+                siteName = activeEmployee.siteName.ifBlank { siteName }
+            ),
             onDismiss = { showCustomTemplateDialog = false },
             onSave = { newTpl ->
                 onSaveCustomTemplate(newTpl)
@@ -1467,7 +1484,7 @@ private fun ReportActionBottomSheetContent(
                         )
                     }
                     Text(
-                        text = "Сводная аналитика по подразделению, контроль SLA и рейтинг бригад доступны для ролей ИТР (Прораб / Мастер), Руководитель участка и Администратор.",
+                        text = "Сводная аналитика по подразделению, контроль SLA и рейтинг бригад доступны для ролей ИТР (Инженер / Мастер), Руководитель участка и Администратор.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

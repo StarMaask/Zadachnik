@@ -2201,9 +2201,18 @@ fun AdminAndAuditScreen(
                                             selected = isRoleSelected,
                                             onClick = {
                                                 if (!isRoleSelected) {
-                                                    val grp = CorporateSeedData.workGroups.firstOrNull {
+                                                    val grp = (CorporateSeedData.workGroups.firstOrNull {
                                                         it.id == member.groupId
-                                                    } ?: CorporateSeedData.workGroups.first()
+                                                    } ?: CorporateSeedData.workGroups.first()).let { baseGrp ->
+                                                        if (member.groupName.isNotBlank()) {
+                                                            baseGrp.copy(
+                                                                id = member.groupId.ifBlank { baseGrp.id },
+                                                                name = member.groupName
+                                                            )
+                                                        } else {
+                                                            baseGrp
+                                                        }
+                                                    }
                                                     onAssignRoleToMember(member, roleOption, grp, member.position)
                                                 }
                                             },

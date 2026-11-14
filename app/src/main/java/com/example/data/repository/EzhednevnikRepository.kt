@@ -1272,21 +1272,75 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         encodedTags: List<String>? = null
     ): Result<Unit> = runCatching {
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
+        val boundedSubtasks = encodedSubtasks.take(25).map { it.take(480) }
+        val boundedTags = encodedTags?.take(10)?.map { it.take(480) }
         val docRef = db.collection("tasks").document(task.id)
         val payload = mutableMapOf<String, Any>(
-            "subtaskItems" to encodedSubtasks.take(25),
+            "subtaskItems" to boundedSubtasks,
+            "targetVolume" to task.targetVolume,
+            "completedVolume" to task.completedVolume,
+            "volumeUnit" to task.volumeUnit.take(32),
+            "status" to task.status,
+            "historyItems" to task.historyItems.takeLast(50).map { it.take(480) },
             "updatedAt" to FieldValue.serverTimestamp()
         )
-        if (encodedTags != null) {
-            payload["tags"] = encodedTags.take(10)
+        if (boundedTags != null) {
+            payload["tags"] = boundedTags
         }
         try {
             docRef.update(payload).await()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+            val uid = auth.currentUser?.uid
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (uid != null && isNotFound) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            task.copy(
+                                subtaskItems = boundedSubtasks,
+                                tags = boundedTags ?: task.tags
+                            )
+                        )
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
+        }
+    }
+
+    suspend fun upsertTaskInFirestore(task: TaskDocument): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(task.id.isNotBlank()) { "Task ID must not be blank" }
+        val docRef = db.collection("tasks").document(task.id)
+        try {
+            docRef.update(taskToUpdatePayload(task)).await()
+        } catch (e: CancellationException) {
             throw e
+        } catch (e: Exception) {
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (isNotFound) {
+                try {
+                    docRef.set(taskToCreatePayload(uid, task)).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
     }
 
@@ -1328,6 +1382,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         historyItems: List<String>
     ): Result<Unit> = runCatching {
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
+        val boundedTags = tags.take(10).map { it.take(480) }
+        val boundedHistory = historyItems.takeLast(50).map { it.take(480) }
         val docRef = db.collection("tasks").document(task.id)
         try {
             docRef.update(
@@ -1336,16 +1392,41 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     "assigneeName" to assigneeName.take(120),
                     "groupId" to groupId.take(64),
                     "groupName" to groupName.take(120),
-                    "tags" to tags.take(10),
-                    "historyItems" to historyItems.takeLast(50),
+                    "tags" to boundedTags,
+                    "historyItems" to boundedHistory,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            val uid = auth.currentUser?.uid
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (uid != null && isNotFound) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            task.copy(
+                                assigneeId = assigneeId.take(64),
+                                assigneeName = assigneeName.take(120),
+                                groupId = groupId.take(64),
+                                groupName = groupName.take(120),
+                                tags = boundedTags,
+                                historyItems = boundedHistory
+                            )
+                        )
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
     }
 
@@ -1592,7 +1673,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         }
         val updatedSubtasks = task.decodedSubtasks().map { item ->
             if (item.id == subtaskId) item.copy(isDone = !item.isDone) else item
-        }.map { it.encode() }
+        }.map { it.encode().take(480) }.take(25)
 
         val docRef = db.collection("tasks").document(task.id)
         try {
@@ -1605,8 +1686,21 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            val uid = auth.currentUser?.uid
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (uid != null && isNotFound) {
+                try {
+                    docRef.set(taskToCreatePayload(uid, task.copy(subtaskItems = updatedSubtasks))).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
     }
 
@@ -1628,7 +1722,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             createdAtText = nowTimeText(),
             isRead = false
         )
-        val updatedComments = (task.commentItems + newComment.encode()).takeLast(50)
+        val updatedComments = (task.commentItems + newComment.encode()).takeLast(50).map { it.take(480) }
         val docRef = db.collection("tasks").document(task.id)
         try {
             docRef.update(
@@ -1640,8 +1734,21 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            val uid = auth.currentUser?.uid
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (uid != null && isNotFound) {
+                try {
+                    docRef.set(taskToCreatePayload(uid, task.copy(commentItems = updatedComments))).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
     }
 
@@ -1812,6 +1919,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             stampedTask.commentItems.takeLast(50).map { it.take(480) }
         }
 
+        val boundedTags = stampedTask.tags.take(10).map { it.take(480) }
         val docRef = db.collection("tasks").document(stampedTask.id)
         try {
             docRef.update(
@@ -1819,7 +1927,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                     "status" to TaskStatus.APPROVED.code,
                     "approvedByName" to supervisor.fullName.take(120),
                     "rejectionReason" to null,
-                    "tags" to stampedTask.tags.take(10),
+                    "tags" to boundedTags,
                     "historyItems" to updatedHistory,
                     "commentItems" to updatedComments,
                     "updatedAt" to FieldValue.serverTimestamp()
@@ -1828,8 +1936,32 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (isNotFound) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            stampedTask.copy(
+                                status = TaskStatus.APPROVED.code,
+                                approvedByName = supervisor.fullName.take(120),
+                                rejectionReason = null,
+                                tags = boundedTags,
+                                historyItems = updatedHistory,
+                                commentItems = updatedComments
+                            )
+                        )
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
 
         appendAuditLog(
@@ -1880,13 +2012,14 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             isRead = false
         ).encode()).takeLast(50).map { it.take(480) }.distinct()
 
+        val boundedTags = stampedTask.tags.take(10).map { it.take(480) }
         val docRef = db.collection("tasks").document(stampedTask.id)
         try {
             docRef.update(
                 mapOf(
                     "status" to TaskStatus.REJECTED.code,
                     "rejectionReason" to cleanReason.take(500),
-                    "tags" to stampedTask.tags.take(10),
+                    "tags" to boundedTags,
                     "historyItems" to updatedHistory,
                     "commentItems" to updatedComments,
                     "updatedAt" to FieldValue.serverTimestamp()
@@ -1895,8 +2028,31 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (isNotFound) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            stampedTask.copy(
+                                status = TaskStatus.REJECTED.code,
+                                rejectionReason = cleanReason.take(500),
+                                tags = boundedTags,
+                                historyItems = updatedHistory,
+                                commentItems = updatedComments
+                            )
+                        )
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
 
         appendAuditLog(
@@ -1920,7 +2076,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             actorName = actor.shortName,
             statusCode = TaskStatus.ARCHIVED.code,
             note = "Задача перенесена в архив"
-        ).encode()).takeLast(50)
+        ).encode()).takeLast(50).map { it.take(480) }
 
         val docRef = db.collection("tasks").document(task.id)
         try {
@@ -1934,8 +2090,28 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, docRef.path)
-            throw e
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (isNotFound) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            task.copy(
+                                status = TaskStatus.ARCHIVED.code,
+                                historyItems = updatedHistory
+                            )
+                        )
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
+            }
         }
 
         appendAuditLog(
@@ -2092,123 +2268,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         actor: CorporateEmployee,
         allTasks: List<TaskDocument>,
         customEmployees: List<CorporateEmployee>? = null
-    ): StatisticsSummary {
-        // Access control rules:
-        // - HEAD: all tasks across the site
-        // - ITR: tasks of subordinate brigade & self
-        // - WORKER: personal tasks + aggregated brigade stats
-        val scopedTasks = when (actor.role) {
-            CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
-            CorporateRole.ITR -> allTasks.filter {
-                it.belongsToSubdivision(actor.groupName, actor.groupId) ||
-                    it.belongsToSite(actor.siteName, actor.siteId) ||
-                    it.isAssignedToEmployee(actor) ||
-                    it.creatorId == actor.id
-            }
-            CorporateRole.WORKER -> allTasks.filter { it.isAssignedToEmployee(actor) }
-        }
-
-        val scopeLabel = when (actor.role) {
-            CorporateRole.ADMIN -> "Полный доступ администратора (${actor.shortName})"
-            CorporateRole.HEAD -> "Весь участок (${actor.shortName})"
-            CorporateRole.ITR -> "Подчинённые и ${actor.groupName}"
-            CorporateRole.WORKER -> "Личная статистика (${actor.shortName})"
-        }
-
-        val total = scopedTasks.size
-        val inProgress = scopedTasks.count {
-            it.taskStatus == TaskStatus.NEW || it.taskStatus == TaskStatus.IN_PROGRESS
-        }
-        val onReview = scopedTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
-        val approved = scopedTasks.count { it.taskStatus == TaskStatus.APPROVED }
-        val rejected = scopedTasks.count { it.taskStatus == TaskStatus.REJECTED }
-        val overdue = scopedTasks.count { it.taskStatus == TaskStatus.OVERDUE }
-        val carryovers = scopedTasks.sumOf { it.carryoverCount.toInt() }
-        val withPhotos = scopedTasks.count { it.photoItems.isNotEmpty() }
-        val photoCompliance = if (total > 0) ((withPhotos * 100.0) / total).toInt() else 100
-
-        val basePool = if (!customEmployees.isNullOrEmpty()) {
-            when (actor.role) {
-                CorporateRole.ADMIN, CorporateRole.HEAD -> customEmployees
-                CorporateRole.ITR -> customEmployees.filter {
-                    (it.role == CorporateRole.WORKER || it.role == CorporateRole.ITR) &&
-                        (it.groupId == actor.groupId || it.groupName.equals(actor.groupName, ignoreCase = true) || it.id == actor.id || it.role == CorporateRole.WORKER)
-                }
-                CorporateRole.WORKER -> customEmployees.filter { it.id == actor.id }
-            }.ifEmpty { listOf(actor) }
-        } else {
-            CorporateSeedData.getVisibleEmployeesForStats(actor)
-        }
-
-        val visibleEmployees = basePool
-        val employeeStats = visibleEmployees.map { emp ->
-            val empTasks = allTasks.filter { it.isAssignedToEmployee(emp) }
-            val empTotal = empTasks.size
-            val empApproved = empTasks.count { it.taskStatus == TaskStatus.APPROVED }
-            val empOnReview = empTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
-            val empRejected = empTasks.count { it.taskStatus == TaskStatus.REJECTED }
-            val empOverdue = empTasks.count { it.taskStatus == TaskStatus.OVERDUE }
-            val empCarryovers = empTasks.sumOf { it.carryoverCount.toInt() }
-            val empPhotoPct = if (empTotal > 0) {
-                (empTasks.count { it.photoItems.isNotEmpty() } * 100) / empTotal
-            } else 100
-            val rawScore = if (empTotal > 0) {
-                (((empApproved + empOnReview) * 100) / empTotal) - (empOverdue * 15) - (empRejected * 10)
-            } else 95
-            EmployeeDisciplineStat(
-                employee = emp,
-                assigned = empTotal,
-                approved = empApproved,
-                onReview = empOnReview,
-                rejected = empRejected,
-                overdue = empOverdue,
-                carryovers = empCarryovers,
-                photoCompliancePercent = empPhotoPct,
-                disciplineScore = rawScore.coerceIn(20, 100)
-            )
-        }.sortedByDescending { it.disciplineScore }
-
-        // Group breakdown: Workers see their own group aggregate; ITR sees their group; Admin/Head sees all groups
-        val visibleGroups = when (actor.role) {
-            CorporateRole.ADMIN, CorporateRole.HEAD -> CorporateSeedData.workGroups
-            CorporateRole.ITR, CorporateRole.WORKER -> CorporateSeedData.workGroups.filter {
-                it.id == actor.groupId
-            }
-        }
-        val groupStats = visibleGroups.map { grp ->
-            val grpTasks = allTasks.filter { it.groupId == grp.id }
-            val gTotal = grpTasks.size
-            val gApproved = grpTasks.count { it.taskStatus == TaskStatus.APPROVED }
-            val gReview = grpTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
-            val gOverdue = grpTasks.count { it.taskStatus == TaskStatus.OVERDUE }
-            val pct = if (gTotal > 0) ((gApproved + gReview) * 100) / gTotal else 0
-            GroupStatBreakdown(
-                groupId = grp.id,
-                groupName = grp.name,
-                totalTasks = gTotal,
-                approvedTasks = gApproved,
-                onReviewTasks = gReview,
-                overdueTasks = gOverdue,
-                completionPercent = pct
-            )
-        }
-
-        return StatisticsSummary(
-            roleScopeLabel = scopeLabel,
-            totalAssigned = total,
-            inProgressCount = inProgress,
-            onReviewCount = onReview,
-            approvedCount = approved,
-            rejectedCount = rejected,
-            overdueCount = overdue,
-            totalCarryovers = carryovers,
-            tasksWithPhotosCount = withPhotos,
-            photoCompliancePercent = photoCompliance,
-            avgCompletionHours = 4.2,
-            employeeStats = employeeStats,
-            groupStats = groupStats
-        )
-    }
+    ): StatisticsSummary = computeRoleScopedStatistics(actor, allTasks, customEmployees)
 
     // --- INTERNAL PAYLOAD HELPERS ---
 
@@ -2242,10 +2302,45 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         }
     }
 
+    private fun taskToUpdatePayload(task: TaskDocument): Map<String, Any> {
+        val map = mutableMapOf<String, Any?>(
+            "title" to task.title.ifBlank { "Задача" }.take(200),
+            "description" to task.description.take(2000),
+            "assigneeId" to task.assigneeId.take(64),
+            "assigneeName" to task.assigneeName.take(120),
+            "groupId" to task.groupId.take(64),
+            "groupName" to task.groupName.take(120),
+            "siteId" to task.siteId.take(64),
+            "priority" to task.priority,
+            "status" to task.status,
+            "dueDateEpochDay" to task.dueDateEpochDay,
+            "deadlineTime" to task.deadlineTime.take(16),
+            "carryoverCount" to task.carryoverCount.coerceAtLeast(0L),
+            "requiresPhotoReport" to task.requiresPhotoReport,
+            "minPhotoCount" to task.minPhotoCount.coerceAtLeast(0L),
+            "requiresApproval" to task.requiresApproval,
+            "recurrenceRule" to task.recurrenceRule,
+            "targetVolume" to task.targetVolume,
+            "completedVolume" to task.completedVolume,
+            "volumeUnit" to task.volumeUnit.take(32),
+            "tags" to task.tags.take(10).map { it.take(480) },
+            "subtaskItems" to task.subtaskItems.take(25).map { it.take(480) },
+            "photoItems" to sanitizePhotoItemsForTaskDoc(task.photoItems),
+            "commentItems" to task.commentItems.takeLast(50).map { it.take(480) },
+            "historyItems" to task.historyItems.takeLast(50).map { it.take(480) },
+            "rejectionReason" to task.rejectionReason?.take(500),
+            "approvedByName" to task.approvedByName?.take(120),
+            "geoLocation" to task.geoLocation?.take(120),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        @Suppress("UNCHECKED_CAST")
+        return map.filterValues { it != null } as Map<String, Any>
+    }
+
     private fun taskToCreatePayload(uid: String, task: TaskDocument): Map<String, Any> {
         val map = mutableMapOf<String, Any?>(
             "userId" to uid,
-            "title" to task.title.take(200),
+            "title" to task.title.ifBlank { "Задача" }.take(200),
             "description" to task.description.take(2000),
             "creatorId" to task.creatorId.take(64),
             "creatorName" to task.creatorName.take(120),
@@ -2259,16 +2354,19 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             "dueDateEpochDay" to task.dueDateEpochDay,
             "originalDueDateEpochDay" to task.originalDueDateEpochDay,
             "deadlineTime" to task.deadlineTime.take(16),
-            "carryoverCount" to task.carryoverCount,
+            "carryoverCount" to task.carryoverCount.coerceAtLeast(0L),
             "requiresPhotoReport" to task.requiresPhotoReport,
-            "minPhotoCount" to task.minPhotoCount,
+            "minPhotoCount" to task.minPhotoCount.coerceAtLeast(0L),
             "requiresApproval" to task.requiresApproval,
             "recurrenceRule" to task.recurrenceRule,
-            "tags" to task.tags.take(10),
-            "subtaskItems" to task.subtaskItems.take(25),
-            "photoItems" to task.photoItems.take(30),
-            "commentItems" to task.commentItems.take(50),
-            "historyItems" to task.historyItems.take(50),
+            "targetVolume" to task.targetVolume,
+            "completedVolume" to task.completedVolume,
+            "volumeUnit" to task.volumeUnit.take(32),
+            "tags" to task.tags.take(10).map { it.take(480) },
+            "subtaskItems" to task.subtaskItems.take(25).map { it.take(480) },
+            "photoItems" to sanitizePhotoItemsForTaskDoc(task.photoItems),
+            "commentItems" to task.commentItems.takeLast(50).map { it.take(480) },
+            "historyItems" to task.historyItems.takeLast(50).map { it.take(480) },
             "rejectionReason" to task.rejectionReason?.take(500),
             "approvedByName" to task.approvedByName?.take(120),
             "geoLocation" to task.geoLocation?.take(120),
@@ -2296,5 +2394,152 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         )
         @Suppress("UNCHECKED_CAST")
         return map.filterValues { it != null } as Map<String, Any>
+    }
+
+    companion object {
+        fun computeRoleScopedStatistics(
+            actor: CorporateEmployee,
+            allTasks: List<TaskDocument>,
+            customEmployees: List<CorporateEmployee>? = null
+        ): StatisticsSummary {
+            val employeesForScoping = customEmployees.orEmpty()
+            // Access control rules:
+            // - ADMIN, HEAD: all tasks across the organization and all sites
+            // - ITR: tasks relevant to ITR (personal, created, same subdivision, or workers on same site)
+            // - WORKER: personal tasks
+            val scopedTasks = when (actor.role) {
+                CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
+                CorporateRole.ITR -> allTasks.filter {
+                    it.isRelevantToItr(actor, employeesForScoping)
+                }
+                CorporateRole.WORKER -> allTasks.filter { it.isAssignedToEmployee(actor) }
+            }
+
+            val scopeLabel = when (actor.role) {
+                CorporateRole.ADMIN -> "Полный доступ администратора (${actor.shortName})"
+                CorporateRole.HEAD -> "Весь участок (${actor.shortName})"
+                CorporateRole.ITR -> "Подчинённые и ${actor.groupName}"
+                CorporateRole.WORKER -> "Личная статистика (${actor.shortName})"
+            }
+
+            val total = scopedTasks.size
+            val inProgress = scopedTasks.count {
+                it.taskStatus == TaskStatus.NEW || it.taskStatus == TaskStatus.IN_PROGRESS
+            }
+            val onReview = scopedTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
+            val approved = scopedTasks.count { it.taskStatus == TaskStatus.APPROVED }
+            val rejected = scopedTasks.count { it.taskStatus == TaskStatus.REJECTED }
+            val overdue = scopedTasks.count { it.taskStatus == TaskStatus.OVERDUE }
+            val carryovers = scopedTasks.sumOf { it.carryoverCount.toInt() }
+            val withPhotos = scopedTasks.count { it.photoItems.isNotEmpty() }
+            val photoCompliance = if (total > 0) ((withPhotos * 100.0) / total).toInt() else 100
+
+            val basePool = if (!customEmployees.isNullOrEmpty()) {
+                when (actor.role) {
+                    CorporateRole.ADMIN, CorporateRole.HEAD -> customEmployees
+                    CorporateRole.ITR -> customEmployees.filter { emp ->
+                        emp.id == actor.id ||
+                            ((emp.role == CorporateRole.WORKER || emp.role == CorporateRole.ITR) &&
+                                (actor.siteName.isBlank() ||
+                                    emp.siteName.isBlank() ||
+                                    emp.siteName.equals(actor.siteName, ignoreCase = true) ||
+                                    emp.groupId == actor.groupId ||
+                                    emp.groupName.equals(actor.groupName, ignoreCase = true)))
+                    }
+                    CorporateRole.WORKER -> customEmployees.filter { it.id == actor.id }
+                }.ifEmpty { listOf(actor) }
+            } else {
+                CorporateSeedData.getVisibleEmployeesForStats(actor)
+            }
+
+            val visibleEmployees = basePool
+            val employeeStats = visibleEmployees.map { emp ->
+                val empTasks = scopedTasks.filter { it.isAssignedToEmployee(emp) }
+                val empTotal = empTasks.size
+                val empApproved = empTasks.count { it.taskStatus == TaskStatus.APPROVED }
+                val empOnReview = empTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
+                val empRejected = empTasks.count { it.taskStatus == TaskStatus.REJECTED }
+                val empOverdue = empTasks.count { it.taskStatus == TaskStatus.OVERDUE }
+                val empCarryovers = empTasks.sumOf { it.carryoverCount.toInt() }
+                val empPhotoPct = if (empTotal > 0) {
+                    (empTasks.count { it.photoItems.isNotEmpty() } * 100) / empTotal
+                } else 100
+                val rawScore = if (empTotal > 0) {
+                    (((empApproved + empOnReview) * 100) / empTotal) - (empOverdue * 15) - (empRejected * 10)
+                } else 95
+                EmployeeDisciplineStat(
+                    employee = emp,
+                    assigned = empTotal,
+                    approved = empApproved,
+                    onReview = empOnReview,
+                    rejected = empRejected,
+                    overdue = empOverdue,
+                    carryovers = empCarryovers,
+                    photoCompliancePercent = empPhotoPct,
+                    disciplineScore = rawScore.coerceIn(20, 100)
+                )
+            }.sortedByDescending { it.disciplineScore }
+
+            // Dynamic subdivision breakdown built from actual scoped tasks and staff (with seed fallback only if empty)
+            val groupNamesMap = LinkedHashMap<String, String>() // normalized name -> display name
+            scopedTasks.forEach { t ->
+                val name = t.groupName.trim().ifBlank { "Основное подразделение" }
+                groupNamesMap.putIfAbsent(name.lowercase(), name)
+            }
+            visibleEmployees.forEach { emp ->
+                val name = emp.groupName.trim()
+                if (name.isNotBlank()) {
+                    groupNamesMap.putIfAbsent(name.lowercase(), name)
+                }
+            }
+            if (groupNamesMap.isEmpty() && customEmployees.isNullOrEmpty()) {
+                val fallbackGroups = when (actor.role) {
+                    CorporateRole.ADMIN, CorporateRole.HEAD -> CorporateSeedData.workGroups
+                    CorporateRole.ITR, CorporateRole.WORKER -> CorporateSeedData.workGroups.filter { it.id == actor.groupId }
+                }
+                fallbackGroups.forEach { grp ->
+                    groupNamesMap.putIfAbsent(grp.name.lowercase(), grp.name)
+                }
+            }
+            val groupStats = groupNamesMap.entries.map { (normName, displayName) ->
+                val grpTasks = scopedTasks.filter {
+                    val tName = it.groupName.trim().ifBlank { "Основное подразделение" }
+                    tName.equals(normName, ignoreCase = true)
+                }
+                val grpId = grpTasks.firstOrNull { it.groupId.isNotBlank() }?.groupId
+                    ?: visibleEmployees.firstOrNull { it.groupName.trim().equals(normName, ignoreCase = true) }?.groupId
+                    ?: "grp_${normName.hashCode().toUInt()}"
+                val gTotal = grpTasks.size
+                val gApproved = grpTasks.count { it.taskStatus == TaskStatus.APPROVED }
+                val gReview = grpTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
+                val gOverdue = grpTasks.count { it.taskStatus == TaskStatus.OVERDUE }
+                val pct = if (gTotal > 0) ((gApproved + gReview) * 100) / gTotal else 0
+                GroupStatBreakdown(
+                    groupId = grpId,
+                    groupName = displayName,
+                    totalTasks = gTotal,
+                    approvedTasks = gApproved,
+                    onReviewTasks = gReview,
+                    overdueTasks = gOverdue,
+                    completionPercent = pct
+                )
+            }
+
+            return StatisticsSummary(
+                roleScopeLabel = scopeLabel,
+                totalAssigned = total,
+                inProgressCount = inProgress,
+                onReviewCount = onReview,
+                approvedCount = approved,
+                rejectedCount = rejected,
+                overdueCount = overdue,
+                totalCarryovers = carryovers,
+                tasksWithPhotosCount = withPhotos,
+                photoCompliancePercent = photoCompliance,
+                avgCompletionHours = 4.2,
+                employeeStats = employeeStats,
+                groupStats = groupStats
+            )
+        }
     }
 }

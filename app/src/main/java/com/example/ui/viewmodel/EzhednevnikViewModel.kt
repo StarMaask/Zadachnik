@@ -114,6 +114,24 @@ class EzhednevnikViewModel(
     private val _failedPhotoSyncTaskIds = MutableStateFlow<Set<String>>(emptySet())
     val failedPhotoSyncTaskIds: StateFlow<Set<String>> = _failedPhotoSyncTaskIds.asStateFlow()
 
+    private val _pendingCloudTaskSyncIds = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadPendingSyncTaskIds(it) } ?: emptySet()
+    )
+
+    private fun markTaskPendingCloudSync(taskId: String) {
+        if (taskId.isBlank()) return
+        val updated = _pendingCloudTaskSyncIds.value + taskId
+        _pendingCloudTaskSyncIds.value = updated
+        appContext?.let { LocalWorkspaceStore.savePendingSyncTaskIds(it, updated) }
+    }
+
+    private fun clearTaskPendingCloudSync(taskId: String) {
+        if (taskId.isBlank() || taskId !in _pendingCloudTaskSyncIds.value) return
+        val updated = _pendingCloudTaskSyncIds.value - taskId
+        _pendingCloudTaskSyncIds.value = updated
+        appContext?.let { LocalWorkspaceStore.savePendingSyncTaskIds(it, updated) }
+    }
+
     private val uploadedCloudPhotoDocIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val optimisticMemberWrites = java.util.concurrent.ConcurrentHashMap<String, Pair<SiteMemberDocument, Long>>()
 
@@ -333,7 +351,9 @@ class EzhednevnikViewModel(
                     existingRemote.isPendingRole && !existingRemote.isRejected -> {
                         // В облаке висит активная заявка PENDING: оставляем её видимой для администратора,
                         // заменяя только если администратор уже утвердил её локально
-                        val isAdminActor = initialHeadActivated || SiteMemberDocument.isRootAdminEmail(currentUserEmail)
+                        val isAdminActor = (_currentMemberRecord.value?.parsedRoleOrNull?.isAdminOrHead == true) ||
+                            initialHeadActivated ||
+                            SiteMemberDocument.isRootAdminEmail(currentUserEmail)
                         if (isAdminActor && !m.isPendingRole && !m.isRejected && m.cleanApprovedByName.isNotBlank() && m.cleanApprovedByName != "Заявка") {
                             mergedMap[canonicalKey] = m.copy(id = canonicalKey, memberId = canonicalKey)
                         } else {
@@ -948,6 +968,25 @@ class EzhednevnikViewModel(
         val deletedIds = _deletedTaskIds.value
         val currentLocalMap = _localTasks.value.associateBy { it.id }.toMutableMap()
         var localChanged = false
+
+        // Повторная отправка в Firestore всех задач, ожидающих облачной синхронизации (включая задачи без фото)
+        val pendingSyncSnapshot = _pendingCloudTaskSyncIds.value.toList()
+        pendingSyncSnapshot.forEach { pendingId ->
+            if (pendingId in deletedIds) {
+                clearTaskPendingCloudSync(pendingId)
+                return@forEach
+            }
+            val localVer = currentLocalMap[pendingId]
+            if (localVer != null) {
+                val remoteVer = remoteTasks.firstOrNull { it.id == pendingId }
+                val taskToPush = if (remoteVer != null) mergeTaskRevisions(remoteVer, localVer) else localVer
+                if (repository.upsertTaskInFirestore(taskToPush).isSuccess) {
+                    clearTaskPendingCloudSync(pendingId)
+                }
+            } else {
+                clearTaskPendingCloudSync(pendingId)
+            }
+        }
 
         remoteTasks.forEach { remote ->
             if (remote.id.isNotBlank() &&
@@ -2301,6 +2340,7 @@ class EzhednevnikViewModel(
 
         // Мгновенно сохраняем задачу локально и помечаем как собственную, чтобы не пришло само-уведомление
         markTaskEventKeysSeen(listOf(taskEventKeyNew(baseTask.id)))
+        markTaskPendingCloudSync(taskId)
         upsertLocalTask(baseTask)
         _searchQuery.value = ""
         _selectedCalendarEpochDay.value = draft.dueDateEpochDay
@@ -2335,7 +2375,7 @@ class EzhednevnikViewModel(
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.createTask(
+                val createRes = repository.createTask(
                     actor = actor,
                     draft = draft.copy(
                         title = cleanTitle,
@@ -2350,6 +2390,12 @@ class EzhednevnikViewModel(
                     customTaskId = taskId,
                     resolvedAssignees = resolvedAssignees
                 )
+                if (createRes.isSuccess) {
+                    clearTaskPendingCloudSync(taskId)
+                } else {
+                    val err = createRes.exceptionOrNull()?.localizedMessage ?: "проверьте соединение"
+                    _bannerMessage.value = "Задача сохранена на устройстве; повтор отправки в облако... ($err)"
+                }
             }
         }
     }
@@ -2387,12 +2433,13 @@ class EzhednevnikViewModel(
             )
             .withUpdatedAssignees(allIds, allFullNames)
 
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Исполнители задачи: $displayNames"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateTaskAssigneesInFirestore(
+                val res = repository.updateTaskAssigneesInFirestore(
                     task = updatedTask,
                     assigneeId = updatedTask.assigneeId,
                     assigneeName = updatedTask.assigneeName,
@@ -2401,6 +2448,9 @@ class EzhednevnikViewModel(
                     tags = updatedTask.tags,
                     historyItems = updatedTask.historyItems
                 )
+                if (res.isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -2416,6 +2466,7 @@ class EzhednevnikViewModel(
     fun deleteTask(task: TaskDocument) {
         val taskId = task.id
         if (taskId.isBlank()) return
+        clearTaskPendingCloudSync(taskId)
         _deletedTaskIds.value = _deletedTaskIds.value + taskId
         appContext?.let { LocalWorkspaceStore.addDeletedTaskId(it, taskId) }
         val remaining = _localTasks.value.filterNot { it.id == taskId }
@@ -2603,11 +2654,14 @@ class EzhednevnikViewModel(
             .copy(subtaskItems = updatedEncoded, status = nextStatus)
             .withUpdatedVolume(newTarget, newCompleted, newUnit)
 
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+                if (repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags).isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -2660,12 +2714,15 @@ class EzhednevnikViewModel(
             )
             .withUpdatedVolume(newTarget, newCompleted, newUnit)
 
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = itemLog
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+                if (repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags).isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -2724,12 +2781,15 @@ class EzhednevnikViewModel(
             )
             .withUpdatedVolume(taskTarget, taskCompleted, taskUnit)
 
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = itemLog
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+                if (repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags).isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -2782,12 +2842,15 @@ class EzhednevnikViewModel(
             )
             .withUpdatedVolume(tVol, clamped, unit)
 
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Выполнено: ${SubtaskItem.formatVolumeNumber(clamped)} из ${SubtaskItem.formatVolumeNumber(tVol)} $unit ($pct%)"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+                if (repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags).isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -2819,12 +2882,15 @@ class EzhednevnikViewModel(
             .copy(subtaskItems = updatedEncoded)
             .withUpdatedVolume(taskTarget, taskCompleted, taskUnit)
 
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Добавлен пункт чек-листа «$clean» (план: ${SubtaskItem.formatVolumeNumber(resolvedTarget)} $resolvedUnit)"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+                if (repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags).isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -2843,12 +2909,15 @@ class EzhednevnikViewModel(
             .copy(subtaskItems = updatedEncoded)
             .withUpdatedVolume(taskTarget, taskCompleted, taskUnit)
 
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Пункт чек-листа удалён"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags)
+                if (repository.updateSubtasksList(updatedTask, updatedEncoded, updatedTask.tags).isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -2870,11 +2939,14 @@ class EzhednevnikViewModel(
         val updatedTask = currentTask.copy(
             commentItems = currentTask.commentItems + newComment
         )
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.addComment(actor, currentTask, text, mentionedUser)
+                if (repository.addComment(actor, currentTask, text, mentionedUser).isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -3060,13 +3132,17 @@ class EzhednevnikViewModel(
                 taskEventKeyApproved(updatedTask)
             )
         )
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Задача «${currentTask.title}» отмечена выполненной (${nextStatus.titleRu})"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
                 repository.updateSubtasksList(updatedTask, updatedTask.subtaskItems, updatedTask.tags)
-                repository.submitTaskCompletion(actor, updatedTask, logText)
+                val res = repository.submitTaskCompletion(actor, updatedTask, logText)
+                if (res.isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -3108,12 +3184,16 @@ class EzhednevnikViewModel(
             ).encode()
         ).withUpdatedRevision()
         markTaskEventKeysSeen(listOf(taskEventKeyApproved(updatedTask)))
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Выполнение задачи подтверждено и перенесено в выполненные задачи"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.approveTaskReport(supervisor, updatedTask, cleanComment, assigneeRole)
+                val res = repository.approveTaskReport(supervisor, updatedTask, cleanComment, assigneeRole)
+                if (res.isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -3154,12 +3234,16 @@ class EzhednevnikViewModel(
             ).encode()
         ).withUpdatedRevision()
         markTaskEventKeysSeen(listOf(taskEventKeyRejected(updatedTask)))
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Задание отклонено и возвращено исполнителю в работу: $cleanReason"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.rejectTaskReport(supervisor, updatedTask, cleanReason, assigneeRole)
+                val res = repository.rejectTaskReport(supervisor, updatedTask, cleanReason, assigneeRole)
+                if (res.isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -3168,12 +3252,16 @@ class EzhednevnikViewModel(
         val currentTask = findTaskById(task.id) ?: task
         val actor = activeEmployee.value
         val updatedTask = currentTask.copy(status = TaskStatus.ARCHIVED.code)
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Задача перемещена в архив"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.archiveTask(actor, currentTask)
+                val res = repository.archiveTask(actor, currentTask)
+                if (res.isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -3262,7 +3350,8 @@ class EzhednevnikViewModel(
                         overrideLayout = sheetLayout,
                         overrideFormat = exportFormat,
                         includePhotos = includePhotos,
-                        saveToDownloads = saveToHistory
+                        saveToDownloads = saveToHistory,
+                        allEmployees = availableEmployees.value
                     )
                 }
             }

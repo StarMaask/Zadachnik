@@ -1,5 +1,6 @@
 package com.example
 
+import com.example.data.model.CorporateEmployee
 import com.example.data.model.CorporateRole
 import com.example.data.model.ExportFormat
 import com.example.data.model.ReportTemplateDocument
@@ -7,6 +8,8 @@ import com.example.data.model.SheetLayout
 import com.example.data.model.SiteMemberDocument
 import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
+import com.example.data.model.TaskStatus
+import com.example.data.repository.EzhednevnikRepository
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
 import org.junit.Assert.assertEquals
@@ -829,5 +832,187 @@ class ExampleUnitTest {
         )
         assertTrue(taskWorkerSameSite.isRelevantToItr(itrActor, allEmps))
         assertFalse(taskWorkerOtherSite.isRelevantToItr(itrActor, allEmps))
+    }
+
+    @Test
+    fun `admin sees all cross-subdivision tasks while site matching and mixed ITR-Worker tasks behave accurately`() {
+        val today = CorporateSeedData.BASE_EPOCH_DAY
+        val admin = CorporateEmployee(
+            id = "emp_admin_1",
+            fullName = "Старшинов Максим Юрьевич",
+            shortName = "Старшинов М.Ю.",
+            position = "Начальник",
+            role = CorporateRole.ADMIN,
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = null,
+            phone = "",
+            email = "admin@company.ru"
+        )
+        val itr = CorporateEmployee(
+            id = "emp_itr_bykovo",
+            fullName = "Плиткин Д.А.",
+            shortName = "Плиткин Д.А.",
+            position = "Инженер по КИПиА",
+            role = CorporateRole.ITR,
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = admin.id,
+            phone = "",
+            email = "plitkin@company.ru"
+        )
+        val otherItr = CorporateEmployee(
+            id = "emp_itr_other_sub",
+            fullName = "Соколов В.П.",
+            shortName = "Соколов В.П.",
+            position = "Инженер-энергетик",
+            role = CorporateRole.ITR,
+            groupId = "grp_energo",
+            groupName = "Энергослужба",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = admin.id,
+            phone = "",
+            email = "sokolov@company.ru"
+        )
+        val workerBykovo = CorporateEmployee(
+            id = "emp_worker_bykovo",
+            fullName = "СМЮ",
+            shortName = "СМЮ",
+            position = "Электромеханик",
+            role = CorporateRole.WORKER,
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = itr.id,
+            phone = "",
+            email = "smyu@company.ru"
+        )
+        val workerEnergo = workerBykovo.copy(
+            id = "emp_worker_energo",
+            fullName = "Волков А.С.",
+            shortName = "Волков А.С.",
+            groupId = "grp_energo",
+            groupName = "Энергослужба",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = otherItr.id,
+            email = "volkov@company.ru"
+        )
+        val workerNps2 = workerBykovo.copy(
+            id = "emp_worker_nps2",
+            fullName = "Петров К.Н.",
+            shortName = "Петров К.Н.",
+            groupId = "grp_remote",
+            groupName = "Линейный участок",
+            siteId = "site_nps2",
+            siteName = "НПС-2",
+            supervisorId = null,
+            email = "petrov@company.ru"
+        )
+        val allEmployees = listOf(admin, itr, otherItr, workerBykovo, workerEnergo, workerNps2)
+
+        // 1. Task has custom zone geoLocation="УЭСАиТМ" while assignee belongs to site "ЛПДС \"Быково\""
+        val taskWithZoneGeo = TaskDocument(
+            id = "t_zone_geo",
+            title = "Проверка датчиков давления",
+            creatorId = itr.id,
+            creatorName = itr.shortName,
+            assigneeId = workerBykovo.id,
+            assigneeName = workerBykovo.shortName,
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ",
+            siteId = "site_bykovo",
+            geoLocation = "УЭСАиТМ",
+            status = TaskStatus.IN_PROGRESS.code,
+            dueDateEpochDay = today
+        )
+        val taskOtherSite = TaskDocument(
+            id = "t_nps2",
+            title = "Ревизия задвижки на НПС-2",
+            creatorId = admin.id,
+            creatorName = admin.shortName,
+            assigneeId = workerNps2.id,
+            assigneeName = workerNps2.shortName,
+            groupId = "grp_remote",
+            groupName = "Линейный участок",
+            siteId = "site_nps2",
+            geoLocation = "НПС-2",
+            status = TaskStatus.NEW.code,
+            dueDateEpochDay = today
+        )
+        assertTrue(taskWithZoneGeo.belongsToSite("ЛПДС \"Быково\"", "site_bykovo", allEmployees))
+        assertFalse(taskOtherSite.belongsToSite("ЛПДС \"Быково\"", "site_bykovo", allEmployees))
+
+        // 2. Mixed multi-assignee (ITR + WORKER) created by another engineer in Энергослужба
+        val taskMixedAssignees = TaskDocument(
+            id = "t_mixed",
+            title = "Совместная наладка щита",
+            creatorId = otherItr.id,
+            creatorName = otherItr.shortName,
+            groupId = "grp_energo",
+            groupName = "Энергослужба",
+            siteId = "site_bykovo",
+            geoLocation = "Щитовая №2",
+            status = TaskStatus.ON_REVIEW.code,
+            dueDateEpochDay = today
+        ).withUpdatedAssignees(
+            ids = listOf(otherItr.id, workerEnergo.id),
+            names = listOf(otherItr.shortName, workerEnergo.shortName)
+        )
+        assertTrue(taskMixedAssignees.hasWorkerAssignee(allEmployees, itr))
+        assertFalse(taskMixedAssignees.canBeApprovedBy(itr, allEmployees))
+        assertTrue(taskMixedAssignees.canBeApprovedBy(admin, allEmployees))
+        assertTrue(taskMixedAssignees.isRelevantToItr(itr, allEmployees))
+
+        val allTasks = listOf(taskWithZoneGeo, taskMixedAssignees, taskOtherSite)
+
+        // 3. Statistics for ADMIN include all 3 tasks and both custom subdivisions
+        val adminStats = EzhednevnikRepository.computeRoleScopedStatistics(
+            actor = admin,
+            allTasks = allTasks,
+            customEmployees = allEmployees
+        )
+        assertEquals(3, adminStats.totalAssigned)
+        assertTrue(adminStats.groupStats.any { it.groupName == "УЭСАиТМ" && it.totalTasks == 1 })
+        assertTrue(adminStats.groupStats.any { it.groupName == "Энергослужба" && it.totalTasks == 1 })
+        assertTrue(adminStats.groupStats.any { it.groupName == "Линейный участок" && it.totalTasks == 1 })
+
+        // WORKER sees only their own assigned tasks
+        val workerStats = EzhednevnikRepository.computeRoleScopedStatistics(
+            actor = workerBykovo,
+            allTasks = allTasks,
+            customEmployees = allEmployees
+        )
+        assertEquals(1, workerStats.totalAssigned)
+
+        // ITR sees tasks on their site (taskWithZoneGeo + taskMixedAssignees), excluding НПС-2
+        val itrStats = EzhednevnikRepository.computeRoleScopedStatistics(
+            actor = itr,
+            allTasks = allTasks,
+            customEmployees = allEmployees
+        )
+        assertEquals(2, itrStats.totalAssigned)
+
+        // 4. Consolidated report preview for ADMIN includes all 3 cross-subdivision tasks
+        val template = CorporateSeedData.buildInitialReportTemplates(userId = admin.id).first()
+        val adminPreview = ReportDocumentGenerator.buildPreview(
+            actor = admin,
+            template = template,
+            allTasks = allTasks,
+            currentEpochDay = today,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            overrideFormat = ExportFormat.PDF,
+            allEmployees = allEmployees
+        )
+        val allPreviewRows = adminPreview.sheets.flatMap { it.sections }.flatMap { it.rows }
+        assertTrue(allPreviewRows.any { it.taskTitle.contains("Проверка датчиков") })
+        assertTrue(allPreviewRows.any { it.taskTitle.contains("Совместная наладка щита") })
+        assertTrue(allPreviewRows.any { it.taskTitle.contains("Ревизия задвижки на НПС-2") })
     }
 }

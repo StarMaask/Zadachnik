@@ -1155,10 +1155,9 @@ private fun TodayTasksContent(
     var selectedItrFilter by remember { mutableStateOf(ItrQuickFilter.ALL) }
     var selectedItrScope by remember(activeEmployee.role) {
         mutableStateOf(
-            if (activeEmployee.role == CorporateRole.ITR) {
-                ItrScopeFilter.PERSONAL
-            } else {
-                ItrScopeFilter.SUBDIVISION
+            when (activeEmployee.role) {
+                CorporateRole.ADMIN, CorporateRole.HEAD -> ItrScopeFilter.ALL
+                CorporateRole.ITR, CorporateRole.WORKER -> ItrScopeFilter.PERSONAL
             }
         )
     }
@@ -1189,8 +1188,10 @@ private fun TodayTasksContent(
             activeHomeTasks
         } else {
             activeHomeTasks.filter { task ->
-                task.resolveAssigneeRole(availableEmployees, activeEmployee) == CorporateRole.WORKER &&
-                    (activeEmployee.siteName.isBlank() || task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees))
+                task.hasWorkerAssignee(availableEmployees, activeEmployee) &&
+                    (activeEmployee.role == CorporateRole.ADMIN ||
+                        activeEmployee.siteName.isBlank() ||
+                        task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees))
             }
         }
     }
@@ -1200,8 +1201,10 @@ private fun TodayTasksContent(
             completedHomeTasks
         } else {
             completedHomeTasks.filter { task ->
-                task.resolveAssigneeRole(availableEmployees, activeEmployee) == CorporateRole.WORKER &&
-                    (activeEmployee.siteName.isBlank() || task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees))
+                task.hasWorkerAssignee(availableEmployees, activeEmployee) &&
+                    (activeEmployee.role == CorporateRole.ADMIN ||
+                        activeEmployee.siteName.isBlank() ||
+                        task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees))
             }
         }
     }
@@ -1210,6 +1213,7 @@ private fun TodayTasksContent(
     val itrScopeTasks = remember(activeHomeTasks, selectedItrScope, activeEmployee, availableEmployees) {
         activeHomeTasks.filter { task ->
             when (selectedItrScope) {
+                ItrScopeFilter.ALL -> true
                 ItrScopeFilter.SUBDIVISION -> {
                     task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
                         task.creatorId == activeEmployee.id ||
@@ -1231,6 +1235,7 @@ private fun TodayTasksContent(
     val itrCompletedScopeTasks = remember(completedHomeTasks, selectedItrScope, activeEmployee, availableEmployees) {
         completedHomeTasks.filter { task ->
             when (selectedItrScope) {
+                ItrScopeFilter.ALL -> true
                 ItrScopeFilter.SUBDIVISION -> {
                     task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
                         task.creatorId == activeEmployee.id ||
@@ -1249,6 +1254,7 @@ private fun TodayTasksContent(
         }
     }
 
+    val itrAllCount = remember(activeHomeTasks) { activeHomeTasks.size }
     val itrSubdivisionCount = remember(activeHomeTasks, activeEmployee) {
         activeHomeTasks.count {
             it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
@@ -1493,7 +1499,12 @@ private fun TodayTasksContent(
                         completedTasksToday = doneCount,
                         headerTitle = if (isWorkerTabForSupervisor) "Задачи рабочих" else "Мои задачи",
                         headerSubtitle = if (isWorkerTabForSupervisor) {
-                            "Участок: ${activeEmployee.siteName.ifBlank { "Все" }} • В работе: ${workerTabActiveTasks.size}"
+                            val siteText = if (activeEmployee.role == CorporateRole.ADMIN) {
+                                "Все участки"
+                            } else {
+                                "Участок: ${activeEmployee.siteName.ifBlank { "Все" }}"
+                            }
+                            "$siteText • В работе: ${workerTabActiveTasks.size}"
                         } else {
                             null
                         },
@@ -1651,6 +1662,7 @@ private fun TodayTasksContent(
                         onCreateTaskForDate = onOpenCreateDialogForDate,
                         activeEmployee = activeEmployee,
                         selectedScope = selectedItrScope,
+                        allCount = itrAllCount,
                         subdivisionCount = itrSubdivisionCount,
                         siteCount = itrSiteCount,
                         personalCount = itrPersonalCount,

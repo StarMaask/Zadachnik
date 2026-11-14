@@ -24,6 +24,7 @@ object LocalWorkspaceStore {
     private const val KEY_SITES = "admin_sites_v2_json"
     private const val KEY_NOTIFIED_TASK_EVENTS = "notified_task_events_v1"
     private const val KEY_TASK_NOTIF_BASELINE_READY = "task_notif_baseline_ready_v1"
+    private const val KEY_PENDING_SYNC_TASK_IDS = "pending_cloud_sync_task_ids_v1"
 
     val DEFAULT_SUBDIVISIONS: List<String> = emptyList()
 
@@ -210,6 +211,20 @@ object LocalWorkspaceStore {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putStringSet(KEY_DELETED_TASK_IDS, current)
+            .apply()
+    }
+
+    fun loadPendingSyncTaskIds(context: Context): Set<String> {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getStringSet(KEY_PENDING_SYNC_TASK_IDS, emptySet())
+            ?.toSet()
+            ?: emptySet()
+    }
+
+    fun savePendingSyncTaskIds(context: Context, taskIds: Set<String>) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet(KEY_PENDING_SYNC_TASK_IDS, taskIds.toSet())
             .apply()
     }
 

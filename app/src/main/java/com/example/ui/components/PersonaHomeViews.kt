@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
@@ -63,6 +64,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -109,12 +111,14 @@ enum class PersonaUiMode(
 }
 
 /**
- * Определение области видимости задач для ИТР:
+ * Определение области видимости задач для ИТР и Руководителя:
+ * - ALL: Все задачи организации/объекта (полный доступ Администратора / Руководителя)
  * - SUBDIVISION: Задачи тематического подразделения (профильная бригада / служба ИТР)
  * - SITE: Задачи строительного участка (все подразделения на объекте)
- * - PERSONAL: Личные задачи, назначенные ИТР
+ * - PERSONAL: Личные задачи, назначенные сотруднику
  */
 enum class ItrScopeFilter(val titleRu: String, val chipLabel: String) {
+    ALL("Все задачи", "Все"),
     SUBDIVISION("Моё подразделение", "Бригада"),
     SITE("Весь участок", "Участок"),
     PERSONAL("Мои задачи", "Мои задачи")
@@ -678,6 +682,7 @@ fun ItrHorizontalDateStrip(
     isFullCalendarExpanded: Boolean = false,
     activeEmployee: CorporateEmployee? = null,
     selectedScope: ItrScopeFilter = ItrScopeFilter.SUBDIVISION,
+    allCount: Int = 0,
     subdivisionCount: Int = 0,
     siteCount: Int = 0,
     personalCount: Int = 0,
@@ -712,7 +717,7 @@ fun ItrHorizontalDateStrip(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Верхняя строка: компактный селектор области видимости (Бригада / Участок / Личные) + кнопка «+ Задача»
+            // Верхняя строка: компактный селектор области видимости (Все / Бригада / Участок / Личные) + кнопка «+ Задача»
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -735,6 +740,7 @@ fun ItrHorizontalDateStrip(
                         ) {
                             Icon(
                                 imageVector = when (selectedScope) {
+                                    ItrScopeFilter.ALL -> Icons.Default.Dashboard
                                     ItrScopeFilter.SUBDIVISION -> Icons.Default.Groups
                                     ItrScopeFilter.SITE -> Icons.Default.Apartment
                                     ItrScopeFilter.PERSONAL -> Icons.Default.Person
@@ -744,6 +750,7 @@ fun ItrHorizontalDateStrip(
                                 modifier = Modifier.size(15.dp)
                             )
                             val scopeLabel = when (selectedScope) {
+                                ItrScopeFilter.ALL -> "Все задачи ($allCount)"
                                 ItrScopeFilter.SUBDIVISION -> "Моя бригада ($subdivisionCount)"
                                 ItrScopeFilter.SITE -> "Весь участок ($siteCount)"
                                 ItrScopeFilter.PERSONAL -> "Мои задачи ($personalCount)"
@@ -767,6 +774,16 @@ fun ItrHorizontalDateStrip(
                         expanded = scopeMenuExpanded,
                         onDismissRequest = { scopeMenuExpanded = false }
                     ) {
+                        if (activeEmployee?.role?.isAdminOrHead == true) {
+                            DropdownMenuItem(
+                                text = { Text("Все задачи ($allCount)") },
+                                leadingIcon = { Icon(Icons.Default.Dashboard, contentDescription = null) },
+                                onClick = {
+                                    onSelectScope(ItrScopeFilter.ALL)
+                                    scopeMenuExpanded = false
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Моя бригада ($subdivisionCount)") },
                             leadingIcon = { Icon(Icons.Default.Groups, contentDescription = null) },
@@ -905,7 +922,8 @@ fun ItrSubdivisionScopeBar(
     siteCount: Int,
     personalCount: Int,
     onSelectScope: (ItrScopeFilter) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    allCount: Int = 0
 ) {
     val tokens = LocalAppThemeTokens.current
     Surface(
@@ -974,15 +992,21 @@ fun ItrSubdivisionScopeBar(
             }
 
             // Селектор области видимости задач ИТР
+            val availableScopes = if (activeEmployee.role.isAdminOrHead) {
+                ItrScopeFilter.entries
+            } else {
+                ItrScopeFilter.entries.filter { it != ItrScopeFilter.ALL }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                ItrScopeFilter.entries.forEach { scope ->
+                availableScopes.forEach { scope ->
                     val isSelected = selectedScope == scope
                     val count = when (scope) {
+                        ItrScopeFilter.ALL -> allCount
                         ItrScopeFilter.SUBDIVISION -> subdivisionCount
                         ItrScopeFilter.SITE -> siteCount
                         ItrScopeFilter.PERSONAL -> personalCount
@@ -1391,7 +1415,7 @@ fun DirectorExecutiveDashboard(
     val totalPlannedVolume = remember(activeTasks) { activeTasks.sumOf { it.effectiveTargetVolume } }
     val totalCompletedVolume = remember(activeTasks) { activeTasks.sumOf { it.effectiveCompletedVolume } }
 
-    // В панели «Требуют внимания» отображаются только задачи, ожидающие решения руководителя (На проверке / Просрочено без возврата).
+    // В панели «Требуют внимания» отображаются все задачи, ожидающие решения руководителя (На проверке / Просрочено без возврата).
     // После принятия задача уходит в «Выполненные (Архив)», а после отклонения — возвращается в работу исполнителю.
     val attentionTasks = remember(activeTasks) {
         activeTasks.filter { task ->
@@ -1402,9 +1426,14 @@ fun DirectorExecutiveDashboard(
                 (task.taskStatus == TaskStatus.ON_REVIEW ||
                     task.taskStatus == TaskStatus.OVERDUE ||
                     (task.taskStatus == TaskStatus.IN_PROGRESS && task.completionPercent() >= 100 && task.photoItems.isNotEmpty()))
-        }.take(8)
+        }
     }
-    var directorSectionTab by remember { mutableStateOf(0) } // 0 = Требуют внимания, 1 = Выполненные задачи (Архив)
+    val allActiveTasks = remember(activeTasks) {
+        activeTasks.filter {
+            it.taskStatus != TaskStatus.APPROVED && it.taskStatus != TaskStatus.ARCHIVED
+        }
+    }
+    var directorSectionTab by remember { mutableStateOf(0) } // 0 = На приёмке, 1 = Все в работе, 2 = Выполненные (Архив)
 
     // Живая лента событий из истории задач и журнала аудита
     val recentEvents = remember(activeTasks, auditLogs) {
@@ -1552,7 +1581,7 @@ fun DirectorExecutiveDashboard(
                     .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Переключатель вкладок: Требуют внимания | Выполненные задачи
+                // Переключатель вкладок: На приёмке | Все в работе | Выполненные
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
@@ -1562,7 +1591,7 @@ fun DirectorExecutiveDashboard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         val isAttentionTab = directorSectionTab == 0
                         Surface(
@@ -1575,30 +1604,58 @@ fun DirectorExecutiveDashboard(
                                 .testTag("director_tab_attention")
                         ) {
                             Text(
-                                text = "Требуют внимания (${attentionTasks.size})",
+                                text = "Внимание (${attentionTasks.size})",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = if (isAttentionTab) FontWeight.Bold else FontWeight.Medium,
                                 color = if (isAttentionTab) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 8.dp)
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp)
                             )
                         }
 
-                        val isCompletedTab = directorSectionTab == 1
+                        val isAllActiveTab = directorSectionTab == 1
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isAllActiveTab) MaterialTheme.colorScheme.surface else Color.Transparent,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { directorSectionTab = 1 }
+                                .testTag("director_tab_all_active")
+                        ) {
+                            Text(
+                                text = "В работе (${allActiveTasks.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isAllActiveTab) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isAllActiveTab) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp)
+                            )
+                        }
+
+                        val isCompletedTab = directorSectionTab == 2
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = if (isCompletedTab) MaterialTheme.colorScheme.surface else Color.Transparent,
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable { directorSectionTab = 1 }
+                                .clickable { directorSectionTab = 2 }
                                 .testTag("director_tab_completed")
                         ) {
                             Text(
-                                text = "Выполненные (${completedArchiveTasks.size})",
+                                text = "Готово (${completedArchiveTasks.size})",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = if (isCompletedTab) FontWeight.Bold else FontWeight.Medium,
                                 color = if (isCompletedTab) doneColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 8.dp)
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp)
                             )
                         }
                     }
@@ -1712,6 +1769,131 @@ fun DirectorExecutiveDashboard(
                                             Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Text("Отклонить", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (directorSectionTab == 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Все активные задачи",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Все задачи объекта и подразделений, находящиеся в работе",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = "${allActiveTasks.size}",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    if (allActiveTasks.isEmpty()) {
+                        Text(
+                            text = "Активных задач в работе сейчас нет.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        allActiveTasks.forEach { task ->
+                            val tVol = task.effectiveTargetVolume
+                            val cVol = task.effectiveCompletedVolume
+                            val uLbl = task.effectiveVolumeUnit.ifBlank { "шт" }
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onOpenTaskDetail(task) }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = task.title,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                        ) {
+                                            Text(
+                                                text = task.taskStatus.titleRu,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    val volSuffix = if (tVol > 0.0) {
+                                        " • ${SubtaskItem.formatVolumeNumber(cVol)} / ${SubtaskItem.formatVolumeNumber(tVol)} $uLbl"
+                                    } else {
+                                        ""
+                                    }
+                                    Text(
+                                        text = "${task.assigneeName} • ${task.groupName.ifBlank { task.geoLocation.orEmpty() }} • ${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)}$volSuffix • 📷 ${task.photoItems.size}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (task.taskStatus == TaskStatus.ON_REVIEW) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Button(
+                                                onClick = { onApproveTask(task) },
+                                                shape = RoundedCornerShape(10.dp),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = doneColor,
+                                                    contentColor = if (tokens.isHighContrastField) Color(0xFF111312) else Color.White
+                                                ),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Принять", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                            }
+                                            OutlinedButton(
+                                                onClick = { onRejectTask(task) },
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Отклонить", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                            }
                                         }
                                     }
                                 }

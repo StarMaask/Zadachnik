@@ -969,9 +969,12 @@ data class TaskDocument(
             emptyList()
         }
         if (cleanTargetName.isNotBlank()) {
-            if (loc.isNotBlank()) {
-                return loc.contains(cleanTargetName, ignoreCase = true) ||
+            val locMatches = loc.isNotBlank() && (
+                loc.contains(cleanTargetName, ignoreCase = true) ||
                     cleanTargetName.contains(loc, ignoreCase = true)
+                )
+            if (locMatches) {
+                return true
             }
             val assigneeSites = matchedAssignees.map { it.siteName.trim() }.filter { it.isNotBlank() }
             if (assigneeSites.isNotEmpty()) {
@@ -981,11 +984,28 @@ data class TaskDocument(
                         cleanTargetName.contains(it, ignoreCase = true)
                 }
             }
+            if (loc.isNotBlank()) {
+                return false
+            }
         }
         if (targetSiteId.isNotBlank() && siteId.isNotBlank() && siteId.equals(targetSiteId, ignoreCase = true)) {
             return true
         }
         return false
+    }
+
+    /**
+     * Проверяет, есть ли среди исполнителей задачи хотя бы один рабочий (включая смешанные назначения ИТР + Рабочий).
+     */
+    fun hasWorkerAssignee(
+        allEmployees: List<CorporateEmployee> = emptyList(),
+        fallbackActor: CorporateEmployee? = null
+    ): Boolean {
+        val matchedAssignees = allEmployees.filter { isAssignedToEmployee(it) }
+        if (matchedAssignees.isNotEmpty()) {
+            return matchedAssignees.any { it.role == CorporateRole.WORKER }
+        }
+        return resolveAssigneeRole(allEmployees, fallbackActor) == CorporateRole.WORKER
     }
 
     /**
@@ -1047,10 +1067,9 @@ data class TaskDocument(
         if (isAssignedToEmployee(itr) || creatorId == itr.id) {
             return true
         }
-        val assigneeRole = resolveAssigneeRole(allEmployees, itr)
         val sameSite = belongsToSite(itr.siteName, itr.siteId, allEmployees)
-        // Во вкладке «Рабочие» ИТР видит все задачи рабочих со своего участка (в любых подразделениях участка)
-        if (assigneeRole == CorporateRole.WORKER && sameSite) {
+        // Во вкладке «Рабочие» ИТР видит все задачи рабочих со своего участка (в т.ч. совместные ИТР + Рабочий)
+        if (hasWorkerAssignee(allEmployees, itr) && (sameSite || itr.siteName.isBlank())) {
             return true
         }
         // Задачи своего подразделения на своём участке

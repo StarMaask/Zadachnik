@@ -208,7 +208,8 @@ object ReportDocumentGenerator {
         currentEpochDay: Long,
         overrideLayout: SheetLayout? = null,
         overrideFormat: ExportFormat? = null,
-        includePhotos: Boolean = true
+        includePhotos: Boolean = true,
+        allEmployees: List<CorporateEmployee> = emptyList()
     ): GeneratedDocumentResult {
         val reportType = template.parsedReportType
         val layout = overrideLayout ?: template.parsedSheetLayout
@@ -228,10 +229,7 @@ object ReportDocumentGenerator {
         val roleScopedTasks = when (actor.role) {
             CorporateRole.ADMIN, CorporateRole.HEAD -> allTasks
             CorporateRole.ITR -> allTasks.filter {
-                it.belongsToSubdivision(actor.groupName, actor.groupId) ||
-                    it.belongsToSite(actor.siteName, actor.siteId) ||
-                    it.isAssignedToEmployee(actor) ||
-                    it.creatorId == actor.id
+                it.isRelevantToItr(actor, allEmployees)
             }
             CorporateRole.WORKER -> allTasks.filter { it.isAssignedToEmployee(actor) }
         }
@@ -500,7 +498,8 @@ object ReportDocumentGenerator {
         overrideLayout: SheetLayout? = null,
         overrideFormat: ExportFormat? = null,
         includePhotos: Boolean = true,
-        saveToDownloads: Boolean = false
+        saveToDownloads: Boolean = false,
+        allEmployees: List<CorporateEmployee> = emptyList()
     ): GeneratedDocumentResult {
         val preview = buildPreview(
             actor = actor,
@@ -509,7 +508,8 @@ object ReportDocumentGenerator {
             currentEpochDay = currentEpochDay,
             overrideLayout = overrideLayout,
             overrideFormat = overrideFormat,
-            includePhotos = includePhotos
+            includePhotos = includePhotos,
+            allEmployees = allEmployees
         )
         val reportsDir = File(context.filesDir, "reports").apply { mkdirs() }
         val safeName = template.parsedReportType.code.lowercase(Locale.US)

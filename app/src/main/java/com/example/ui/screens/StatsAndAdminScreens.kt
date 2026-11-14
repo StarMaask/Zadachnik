@@ -119,8 +119,12 @@ fun ApprovalsQueueScreen(
     val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
     val onReviewTasks = remember(allTasks) {
         allTasks.filter {
-            it.taskStatus == TaskStatus.ON_REVIEW ||
-                (it.taskStatus == TaskStatus.IN_PROGRESS && (it.completionPercent() >= 100 || it.photoItems.isNotEmpty()))
+            it.taskStatus != TaskStatus.APPROVED &&
+                it.taskStatus != TaskStatus.ARCHIVED &&
+                it.taskStatus != TaskStatus.REJECTED &&
+                it.rejectionReason.isNullOrBlank() &&
+                (it.taskStatus == TaskStatus.ON_REVIEW ||
+                    (it.taskStatus == TaskStatus.IN_PROGRESS && (it.completionPercent() >= 100 || it.photoItems.isNotEmpty())))
         }
     }
     val rejectedTasks = remember(allTasks) {
@@ -234,7 +238,7 @@ fun ApprovalsQueueScreen(
                                     .testTag("approvals_tab_archive")
                             ) {
                                 Text(
-                                    text = "Принятые / Архив (${approvedAndArchivedTasks.size})",
+                                    text = "Выполненные задачи (${approvedAndArchivedTasks.size})",
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = if (tab1Selected) FontWeight.Bold else FontWeight.Medium,
                                     color = if (tab1Selected) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -566,6 +570,7 @@ fun StatisticsDashboardScreen(
     val isItrRole = activeEmployee.role == CorporateRole.ITR
     var selectedPeriod by remember { mutableStateOf(StatsPeriodFilter.MONTH) }
     var itrPersonalOnlyScope by remember { mutableStateOf(false) }
+    var selectedStatsViewTab by remember { mutableStateOf(0) } // 0 = Показатели сводки, 1 = Выполненные задачи
     val showOnlyPersonalStats = isWorkerRole || (isItrRole && itrPersonalOnlyScope)
 
     val currentLocalDate = remember(currentEpochDay) { LocalDate.ofEpochDay(currentEpochDay) }
@@ -874,18 +879,109 @@ fun StatisticsDashboardScreen(
                             }
                         }
                     }
+
+                    // Наглядный переключатель вкладок внутри Сводки: Показатели сводки | Выполненные задачи
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val isMetricsTab = selectedStatsViewTab == 0
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isMetricsTab) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { selectedStatsViewTab = 0 }
+                                    .testTag("stats_tab_metrics")
+                            ) {
+                                Text(
+                                    text = "Показатели сводки",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (isMetricsTab) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isMetricsTab) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                                )
+                            }
+
+                            val isCompletedTab = selectedStatsViewTab == 1
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isCompletedTab) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { selectedStatsViewTab = 1 }
+                                    .testTag("stats_tab_completed")
+                            ) {
+                                Text(
+                                    text = "Выполненные задачи ($approvedCount)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (isCompletedTab) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isCompletedTab) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // 3. Персональный индекс эффективности и 4 ключевые KPI-карточки за период
-        item {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
+        val acceptedArchiveTasks = periodTasks.filter {
+            it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED
+        }
+
+        if (selectedStatsViewTab == 1) {
+            item {
+                Text(
+                    text = "Выполненные и принятые задачи за период ($periodDateRangeLabel): ${acceptedArchiveTasks.size}",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            if (acceptedArchiveTasks.isEmpty()) {
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Выполненных и подтверждённых задач за выбранный период пока нет. После подтверждения задачи переносятся в этот раздел.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(14.dp)
+                        )
+                    }
+                }
+            } else {
+                items(acceptedArchiveTasks, key = { "stats_completed_top_${it.id}" }) { task ->
+                    TaskItemCard(
+                        task = task,
+                        onClick = { onTaskClick(task) }
+                    )
+                }
+            }
+        } else {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                 Column(
                     modifier = Modifier.padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -960,7 +1056,7 @@ fun StatisticsDashboardScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         PersonalKpiTile(
-                            title = "Фотофиксация СМР",
+                            title = "Фотофиксация",
                             mainValue = "$totalPhotosCount фото",
                             subValue = "Задач с фото: $tasksWithPhotosCount ($photoCompliancePercent%)",
                             accentColor = Color(0xFF2563EB),
@@ -1193,13 +1289,10 @@ fun StatisticsDashboardScreen(
             }
         }
 
-        // 7. Архив принятых и подтверждённых заданий за период (перемещённых с главной страницы)
-        val acceptedArchiveTasks = periodTasks.filter {
-            it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED
-        }
+        // 7. Архив выполненных и подтверждённых заданий за период
         item {
             Text(
-                text = "Принятые отчёты / Архив заданий (${acceptedArchiveTasks.size})",
+                text = "Выполненные задачи / Архив (${acceptedArchiveTasks.size})",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -1214,7 +1307,7 @@ fun StatisticsDashboardScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Принятых отчётов за выбранный период пока нет. После подтверждения задания переносятся с главной страницы в этот раздел.",
+                        text = "Выполненных задач за выбранный период пока нет. После подтверждения задания переносятся с главной страницы в этот раздел.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(14.dp)
@@ -1228,6 +1321,7 @@ fun StatisticsDashboardScreen(
                     onClick = { onTaskClick(task) }
                 )
             }
+        }
         }
     }
 }

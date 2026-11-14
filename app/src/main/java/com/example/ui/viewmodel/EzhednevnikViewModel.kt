@@ -679,6 +679,14 @@ class EzhednevnikViewModel(
         localTask: TaskDocument
     ): TaskDocument {
         val mergedPhotos = mergePhotoListsPreservingBase64(remoteTask.photoItems, localTask.photoItems)
+        val remoteRev = remoteTask.revisionTimestamp
+        val localRev = localTask.revisionTimestamp
+        if (localRev > remoteRev) {
+            return localTask.copy(photoItems = mergedPhotos)
+        }
+        if (remoteRev > localRev) {
+            return remoteTask.copy(photoItems = mergedPhotos)
+        }
         val remoteHasB64 = remoteTask.photoItems.any { it.contains("#b64=") }
         val localHasB64 = localTask.photoItems.any { it.contains("#b64=") }
         val remoteWeight = remoteTask.historyItems.size * 10 +
@@ -689,7 +697,14 @@ class EzhednevnikViewModel(
             localTask.photoItems.size * 5 +
             localTask.commentItems.size * 2 +
             (if (localHasB64) 4 else 0)
-        val winner = if (remoteWeight >= localWeight) remoteTask else localTask
+        val winner = when {
+            localWeight > remoteWeight -> localTask
+            remoteWeight > localWeight -> remoteTask
+            localTask.taskStatus == TaskStatus.APPROVED ||
+                localTask.taskStatus == TaskStatus.REJECTED ||
+                localTask.taskStatus == TaskStatus.ARCHIVED -> localTask
+            else -> remoteTask
+        }
         return winner.copy(photoItems = mergedPhotos)
     }
 
@@ -1139,7 +1154,8 @@ class EzhednevnikViewModel(
     }
 
     private fun upsertLocalTask(task: TaskDocument) {
-        val updated = listOf(task) + _localTasks.value.filterNot { it.id == task.id }
+        val stampedTask = task.withUpdatedRevision()
+        val updated = listOf(stampedTask) + _localTasks.value.filterNot { it.id == stampedTask.id }
         persistTasksLocally(updated)
     }
 
@@ -2578,13 +2594,13 @@ class EzhednevnikViewModel(
                 TaskStatus.APPROVED.code,
                 cleanComment.ifBlank { "Отчёт подтверждён (${supervisor.role.titleRu})" }
             ).encode()
-        )
+        ).withUpdatedRevision()
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Выполнение задачи подтверждено и перенесено в архив принятых отчётов"
+        _bannerMessage.value = "Выполнение задачи подтверждено и перенесено в выполненные задачи"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.approveTaskReport(supervisor, currentTask, cleanComment, assigneeRole)
+                repository.approveTaskReport(supervisor, updatedTask, cleanComment, assigneeRole)
             }
         }
     }
@@ -2623,13 +2639,13 @@ class EzhednevnikViewModel(
                 TaskStatus.REJECTED.code,
                 "Отклонено: $cleanReason"
             ).encode()
-        )
+        ).withUpdatedRevision()
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Задание отклонено: $cleanReason"
+        _bannerMessage.value = "Задание отклонено и возвращено исполнителю в работу: $cleanReason"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.rejectTaskReport(supervisor, currentTask, cleanReason, assigneeRole)
+                repository.rejectTaskReport(supervisor, updatedTask, cleanReason, assigneeRole)
             }
         }
     }

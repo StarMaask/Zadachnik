@@ -1646,34 +1646,37 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             )
         }
 
-        val updatedHistory = (task.historyItems + StatusHistoryEntry(
+        val stampedTask = if (task.revisionTimestamp > 0L) task else task.withUpdatedRevision()
+        val updatedHistory = (stampedTask.historyItems + StatusHistoryEntry(
             timestampText = nowTimeText(),
             actorName = supervisor.shortName,
             statusCode = TaskStatus.APPROVED.code,
-            note = "Отчёт подтверждён (${supervisor.role.titleRu})${if (comment.isNotBlank()) ": $comment" else ""}"
-        ).encode()).takeLast(50)
+            note = "Отчёт подтверждён (${supervisor.role.titleRu})${if (comment.isNotBlank()) ": ${comment.take(200)}" else ""}"
+        ).encode()).takeLast(50).map { it.take(480) }.distinct()
 
         val updatedComments = if (comment.isNotBlank()) {
-            (task.commentItems + TaskCommentItem(
+            (stampedTask.commentItems + TaskCommentItem(
                 id = "cmt_${System.currentTimeMillis()}",
                 authorId = supervisor.id,
                 authorName = supervisor.shortName,
                 authorRole = supervisor.role.code,
                 text = "Подтверждено: ${comment.trim().take(240)}",
-                mentionedUser = task.assigneeName,
+                mentionedUser = stampedTask.assigneeName,
                 createdAtText = nowTimeText(),
                 isRead = false
-            ).encode()).takeLast(50)
+            ).encode()).takeLast(50).map { it.take(480) }.distinct()
         } else {
-            task.commentItems
+            stampedTask.commentItems.takeLast(50).map { it.take(480) }
         }
 
-        val docRef = db.collection("tasks").document(task.id)
+        val docRef = db.collection("tasks").document(stampedTask.id)
         try {
             docRef.update(
                 mapOf(
                     "status" to TaskStatus.APPROVED.code,
-                    "approvedByName" to supervisor.fullName,
+                    "approvedByName" to supervisor.fullName.take(120),
+                    "rejectionReason" to null,
+                    "tags" to stampedTask.tags.take(10),
                     "historyItems" to updatedHistory,
                     "commentItems" to updatedComments,
                     "updatedAt" to FieldValue.serverTimestamp()
@@ -1691,8 +1694,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             actor = supervisor,
             actionType = "APPROVE_REPORT",
             targetType = "TASK",
-            targetId = task.id,
-            details = "Подтверждён отчёт по задаче «${task.title}» (исполнитель: ${task.assigneeName})"
+            targetId = stampedTask.id,
+            details = "Подтверждён отчёт по задаче «${stampedTask.title}» (исполнитель: ${stampedTask.assigneeName})"
         )
     }
 
@@ -1715,30 +1718,32 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             )
         }
 
-        val updatedHistory = (task.historyItems + StatusHistoryEntry(
+        val stampedTask = if (task.revisionTimestamp > 0L) task else task.withUpdatedRevision()
+        val updatedHistory = (stampedTask.historyItems + StatusHistoryEntry(
             timestampText = nowTimeText(),
             actorName = supervisor.shortName,
             statusCode = TaskStatus.REJECTED.code,
-            note = "Отчёт отклонён, возвращено в доработку. Причина: $cleanReason"
-        ).encode()).takeLast(50)
+            note = "Отчёт отклонён, возвращено в доработку. Причина: ${cleanReason.take(200)}"
+        ).encode()).takeLast(50).map { it.take(480) }.distinct()
 
-        val updatedComments = (task.commentItems + TaskCommentItem(
+        val updatedComments = (stampedTask.commentItems + TaskCommentItem(
             id = "cmt_${System.currentTimeMillis()}",
             authorId = supervisor.id,
             authorName = supervisor.shortName,
             authorRole = supervisor.role.code,
-            text = "@${task.assigneeName} Возврат на доработку: ${cleanReason.take(220)}",
-            mentionedUser = task.assigneeName,
+            text = "@${stampedTask.assigneeName} Возврат на доработку: ${cleanReason.take(220)}",
+            mentionedUser = stampedTask.assigneeName,
             createdAtText = nowTimeText(),
             isRead = false
-        ).encode()).takeLast(50)
+        ).encode()).takeLast(50).map { it.take(480) }.distinct()
 
-        val docRef = db.collection("tasks").document(task.id)
+        val docRef = db.collection("tasks").document(stampedTask.id)
         try {
             docRef.update(
                 mapOf(
                     "status" to TaskStatus.REJECTED.code,
                     "rejectionReason" to cleanReason.take(500),
+                    "tags" to stampedTask.tags.take(10),
                     "historyItems" to updatedHistory,
                     "commentItems" to updatedComments,
                     "updatedAt" to FieldValue.serverTimestamp()
@@ -1756,8 +1761,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             actor = supervisor,
             actionType = "REJECT_REPORT",
             targetType = "TASK",
-            targetId = task.id,
-            details = "Отклонён отчёт «${task.title}» (причина: ${cleanReason.take(150)})"
+            targetId = stampedTask.id,
+            details = "Отклонён отчёт «${stampedTask.title}» (причина: ${cleanReason.take(150)})"
         )
     }
 

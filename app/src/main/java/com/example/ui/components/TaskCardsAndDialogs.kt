@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -524,7 +525,7 @@ fun TaskDetailDialog(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            val effectiveComment = photoComment.ifBlank { "Фотофиксация СМР #${task.photoItems.size + 1}" }
+            val effectiveComment = photoComment.ifBlank { "Фотофиксация #${task.photoItems.size + 1}" }
             val savedPath = PhotoCaptureUtils.savePickedUriWithStamp(
                 context = context,
                 contentUri = uri,
@@ -569,21 +570,22 @@ fun TaskDetailDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
+            decorFitsSystemWindows = true
         )
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .systemBarsPadding()
+                .navigationBarsPadding()
                 .imePadding()
-                .padding(horizontal = 14.dp, vertical = 18.dp),
+                .padding(start = 14.dp, end = 14.dp, top = 16.dp, bottom = 34.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.90f),
+                    .fillMaxHeight(0.86f),
                 shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface,
                 shadowElevation = if (tokens.isDark) 12.dp else 10.dp,
@@ -1591,7 +1593,7 @@ fun TaskDetailDialog(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Нажмите для съёмки с камеры или прикрепите фотоштамп СМР",
+                                            text = "Нажмите для съёмки с камеры или прикрепите фотофиксацию",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             textAlign = TextAlign.Center
@@ -1634,7 +1636,7 @@ fun TaskDetailDialog(
                                                     onAddPhoto(
                                                         savedStampPath,
                                                         photoGps,
-                                                        photoComment.ifBlank { "Фотоштамп СМР #${task.photoItems.size + 1}" }
+                                                        photoComment.ifBlank { "Фотофиксация #${task.photoItems.size + 1}" }
                                                     )
                                                     photoComment = ""
                                                 },
@@ -1648,7 +1650,7 @@ fun TaskDetailDialog(
                                                 )
                                                 Spacer(modifier = Modifier.width(5.dp))
                                                 Text(
-                                                    text = "+ Быстрый фотоштамп СМР",
+                                                    text = "+ Быстрая фотофиксация",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
@@ -1811,7 +1813,8 @@ fun TaskDetailDialog(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                                .navigationBarsPadding()
+                                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 20.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             if (canApproveThisTask && task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
@@ -2380,7 +2383,7 @@ fun ModernPhotoCaptureDialog(
 
     val takeInstantShot: () -> Unit = {
         val shotNum = existingPhotoCount + capturedSessionItems.size + 1
-        val effectiveCaption = captionInput.trim().ifBlank { "Фотофиксация СМР #$shotNum" }
+        val effectiveCaption = captionInput.trim().ifBlank { "Фотофиксация #$shotNum" }
         val liveBitmap = runCatching { liveTextureView?.bitmap }.getOrNull()
         val savedPath = if (liveBitmap != null && liveBitmap.width > 32 && liveBitmap.height > 32) {
             PhotoCaptureUtils.saveCameraBitmapWithStamp(
@@ -3113,21 +3116,22 @@ fun CreateTaskDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
+            decorFitsSystemWindows = true
         )
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .systemBarsPadding()
+                .navigationBarsPadding()
                 .imePadding()
-                .padding(horizontal = 12.dp, vertical = 16.dp),
+                .padding(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 36.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.92f),
+                    .fillMaxHeight(0.86f),
                 shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 4.dp,
@@ -4705,7 +4709,8 @@ fun CreateTaskDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                                .navigationBarsPadding()
+                                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 22.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {

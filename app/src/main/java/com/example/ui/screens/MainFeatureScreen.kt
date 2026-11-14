@@ -1124,16 +1124,19 @@ private fun TodayTasksContent(
     var selectedItrFilter by remember { mutableStateOf(ItrQuickFilter.ALL) }
     var selectedItrScope by remember { mutableStateOf(ItrScopeFilter.SUBDIVISION) }
     var showFullMonthCalendar by remember { mutableStateOf(false) }
+    var workerShowCompletedTab by remember { mutableStateOf(false) }
 
     var homeTaskPendingReject by remember { mutableStateOf<TaskDocument?>(null) }
     var homeRejectCommentInput by remember { mutableStateOf("") }
     var homeRejectedOutcomeInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
     var homeApprovedOutcomeTask by remember { mutableStateOf<TaskDocument?>(null) }
 
-    // Принятые/подтверждённые отчёты скрыты с главной страницы и перемещены на отдельную вкладку (Приёмка / Архив)
-    val acceptedAndArchivedCount = remember(visibleTasks) {
-        visibleTasks.count { it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED }
+    val completedHomeTasks = remember(visibleTasks) {
+        visibleTasks.filter {
+            it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED
+        }.sortedByDescending { it.dueDateEpochDay }
     }
+    val acceptedAndArchivedCount = completedHomeTasks.size
 
     val activeHomeTasks = remember(visibleTasks) {
         visibleTasks.filter {
@@ -1143,6 +1146,27 @@ private fun TodayTasksContent(
 
     val itrScopeTasks = remember(activeHomeTasks, selectedItrScope, activeEmployee) {
         activeHomeTasks.filter { task ->
+            when (selectedItrScope) {
+                ItrScopeFilter.SUBDIVISION -> {
+                    task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                        task.creatorId == activeEmployee.id ||
+                        task.isAssignedToEmployee(activeEmployee)
+                }
+                ItrScopeFilter.SITE -> {
+                    task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId) ||
+                        task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                        task.creatorId == activeEmployee.id ||
+                        task.isAssignedToEmployee(activeEmployee)
+                }
+                ItrScopeFilter.PERSONAL -> {
+                    task.isAssignedToEmployee(activeEmployee)
+                }
+            }
+        }
+    }
+
+    val itrCompletedScopeTasks = remember(completedHomeTasks, selectedItrScope, activeEmployee) {
+        completedHomeTasks.filter { task ->
             when (selectedItrScope) {
                 ItrScopeFilter.SUBDIVISION -> {
                     task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
@@ -1185,16 +1209,27 @@ private fun TodayTasksContent(
 
     val filteredTasks = remember(
         activeHomeTasks,
+        completedHomeTasks,
         itrScopeTasks,
+        itrCompletedScopeTasks,
         effectivePersonaMode,
         selectedItrFilter,
         selectedItrScope,
+        workerShowCompletedTab,
         selectedFilter,
         searchQuery,
         currentEpochDay,
         selectedCalendarEpochDay
     ) {
-        val baseList = if (effectivePersonaMode == PersonaUiMode.ITR) itrScopeTasks else activeHomeTasks
+        val baseList = when (effectivePersonaMode) {
+            PersonaUiMode.ITR -> {
+                if (selectedItrFilter == ItrQuickFilter.COMPLETED) itrCompletedScopeTasks else itrScopeTasks
+            }
+            PersonaUiMode.WORKER -> {
+                if (workerShowCompletedTab) completedHomeTasks else activeHomeTasks
+            }
+            PersonaUiMode.DIRECTOR -> activeHomeTasks
+        }
         baseList.filter { task ->
             val matchesQuery = searchQuery.isBlank() ||
                 task.title.contains(searchQuery, ignoreCase = true) ||
@@ -1203,22 +1238,27 @@ private fun TodayTasksContent(
 
             val matchesModeAndFilter = when (effectivePersonaMode) {
                 PersonaUiMode.WORKER -> {
-                    val matchesDate = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                    if (workerShowCompletedTab) {
+                        true
+                    } else if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
                         task.dueDateEpochDay == selectedCalendarEpochDay
                     } else {
                         true
                     }
-                    matchesDate
                 }
                 PersonaUiMode.ITR -> {
-                    val matchesDateOrAll = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                    val matchesDateOrAll = if (selectedItrFilter == ItrQuickFilter.COMPLETED) {
+                        true
+                    } else if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
                         task.dueDateEpochDay == selectedCalendarEpochDay
                     } else {
                         true
                     }
                     val matchesItrPill = when (selectedItrFilter) {
                         ItrQuickFilter.IN_WORK -> {
-                            task.taskStatus == TaskStatus.NEW || task.taskStatus == TaskStatus.IN_PROGRESS
+                            task.taskStatus == TaskStatus.NEW ||
+                                task.taskStatus == TaskStatus.IN_PROGRESS ||
+                                task.taskStatus == TaskStatus.REJECTED
                         }
                         ItrQuickFilter.ON_REVIEW -> {
                             task.taskStatus == TaskStatus.ON_REVIEW
@@ -1227,6 +1267,9 @@ private fun TodayTasksContent(
                             task.taskStatus == TaskStatus.OVERDUE ||
                                 task.taskStatus == TaskStatus.REJECTED ||
                                 task.carryoverCount > 0L
+                        }
+                        ItrQuickFilter.COMPLETED -> {
+                            task.taskStatus == TaskStatus.APPROVED || task.taskStatus == TaskStatus.ARCHIVED
                         }
                         ItrQuickFilter.ALL -> true
                     }
@@ -1239,7 +1282,11 @@ private fun TodayTasksContent(
     }
 
     val itrInWorkCount = remember(itrScopeTasks) {
-        itrScopeTasks.count { it.taskStatus == TaskStatus.NEW || it.taskStatus == TaskStatus.IN_PROGRESS }
+        itrScopeTasks.count {
+            it.taskStatus == TaskStatus.NEW ||
+                it.taskStatus == TaskStatus.IN_PROGRESS ||
+                it.taskStatus == TaskStatus.REJECTED
+        }
     }
     val itrOnReviewCount = remember(itrScopeTasks) {
         itrScopeTasks.count { it.taskStatus == TaskStatus.ON_REVIEW }
@@ -1250,6 +1297,9 @@ private fun TodayTasksContent(
                 it.taskStatus == TaskStatus.REJECTED ||
                 it.carryoverCount > 0L
         }
+    }
+    val itrCompletedCount = remember(itrCompletedScopeTasks) {
+        itrCompletedScopeTasks.size
     }
     val itrAllActiveCount = remember(itrScopeTasks) {
         itrScopeTasks.size
@@ -1359,20 +1409,73 @@ private fun TodayTasksContent(
                 } else {
                     currentEpochDay
                 }
-                val doneCount = filteredTasks.count {
-                    it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ON_REVIEW
+                val doneCount = completedHomeTasks.size + activeHomeTasks.count {
+                    it.taskStatus == TaskStatus.ON_REVIEW
                 }
                 item {
                     WorkerTodayHeaderCard(
                         currentEpochDay = currentEpochDay,
                         selectedEpochDay = activeWorkerDate,
-                        totalTasksToday = filteredTasks.size,
+                        totalTasksToday = activeHomeTasks.size + completedHomeTasks.size,
                         completedTasksToday = doneCount,
                         onCreateTaskClick = { onOpenCreateDialogForDate(activeWorkerDate) },
                         onSelectDate = { chosenDay ->
                             onSelectCalendarDate(chosenDay)
                         }
                     )
+                }
+
+                // Наглядный переключатель для Рабочего: В работе | Выполненные задачи
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(9.dp),
+                                color = if (!workerShowCompletedTab) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .clickable { workerShowCompletedTab = false }
+                                    .testTag("worker_tab_active")
+                            ) {
+                                Text(
+                                    text = "В работе (${activeHomeTasks.size})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (!workerShowCompletedTab) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (!workerShowCompletedTab) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(9.dp),
+                                color = if (workerShowCompletedTab) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .clickable { workerShowCompletedTab = true }
+                                    .testTag("worker_tab_completed")
+                            ) {
+                                Text(
+                                    text = "Выполненные (${completedHomeTasks.size})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (workerShowCompletedTab) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (workerShowCompletedTab) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                                )
+                            }
+                        }
+                    }
                 }
 
                 if (filteredTasks.isEmpty()) {
@@ -1401,7 +1504,7 @@ private fun TodayTasksContent(
                         )
                     }
                 }
-                if (acceptedAndArchivedCount > 0) {
+                if (acceptedAndArchivedCount > 0 && !workerShowCompletedTab) {
                     item {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -1409,7 +1512,7 @@ private fun TodayTasksContent(
                             border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onOpenAcceptedArchive() }
+                                .clickable { workerShowCompletedTab = true }
                                 .testTag("open_accepted_archive_banner")
                         ) {
                             Row(
@@ -1429,7 +1532,7 @@ private fun TodayTasksContent(
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Text(
-                                        text = "Принятые и подтверждённые отчёты ($acceptedAndArchivedCount) — в архиве",
+                                        text = "Выполненные задачи ($acceptedAndArchivedCount) — показать список",
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Color(0xFF059669)
@@ -1479,6 +1582,7 @@ private fun TodayTasksContent(
                         inWorkCount = itrInWorkCount,
                         onReviewCount = itrOnReviewCount,
                         problemsCount = itrProblemsCount,
+                        completedCount = itrCompletedCount,
                         allCount = itrAllActiveCount,
                         onSelectFilter = { pill -> selectedItrFilter = pill }
                     )
@@ -1545,7 +1649,7 @@ private fun TodayTasksContent(
                                 )
                             }
                         }
-                        if (acceptedAndArchivedCount > 0) {
+                        if (itrCompletedCount > 0 && selectedItrFilter != ItrQuickFilter.COMPLETED) {
                             item {
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
@@ -1553,7 +1657,7 @@ private fun TodayTasksContent(
                                     border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable { onOpenAcceptedArchive() }
+                                        .clickable { selectedItrFilter = ItrQuickFilter.COMPLETED }
                                         .testTag("open_accepted_archive_banner")
                                 ) {
                                     Row(
@@ -1573,7 +1677,7 @@ private fun TodayTasksContent(
                                                 modifier = Modifier.size(18.dp)
                                             )
                                             Text(
-                                                text = "Принятые отчёты ($acceptedAndArchivedCount) — во вкладке Приёмка / Архив",
+                                                text = "Выполненные задачи ($itrCompletedCount) — показать выполненные",
                                                 style = MaterialTheme.typography.labelMedium,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = Color(0xFF059669)

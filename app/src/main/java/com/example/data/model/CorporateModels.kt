@@ -469,7 +469,7 @@ data class PhotoReportItem(
                     authorName = parts[3],
                     capturedAtText = parts[4],
                     gpsCoords = parts[5],
-                    comment = parts[6]
+                    comment = parts[6].replace("Фотофиксация СМР", "Фотофиксация", ignoreCase = true)
                 )
             } else {
                 PhotoReportItem(
@@ -479,7 +479,7 @@ data class PhotoReportItem(
                     authorName = "Сотрудник",
                     capturedAtText = "Сегодня",
                     gpsCoords = "Участок №1",
-                    comment = raw
+                    comment = raw.replace("Фотофиксация СМР", "Фотофиксация", ignoreCase = true)
                 )
             }
         }
@@ -686,7 +686,22 @@ data class TaskDocument(
 
     @get:com.google.firebase.firestore.Exclude
     val visibleTags: List<String>
-        get() = tags.filterNot { it.startsWith("__vol__|") || it.startsWith("__asgn__|") }
+        get() = tags.filterNot {
+            it.startsWith("__vol__|") || it.startsWith("__asgn__|") || it.startsWith("__rev__|")
+        }
+
+    @get:com.google.firebase.firestore.Exclude
+    val revisionTimestamp: Long
+        get() {
+            val raw = tags.firstOrNull { it.startsWith("__rev__|") } ?: return (updatedAt?.toDate()?.time ?: 0L)
+            return raw.substringAfter("__rev__|", "").toLongOrNull() ?: (updatedAt?.toDate()?.time ?: 0L)
+        }
+
+    fun withUpdatedRevision(timestampMs: Long = System.currentTimeMillis()): TaskDocument {
+        val otherTags = tags.filterNot { it.startsWith("__rev__|") }
+        val updatedTags = (listOf("__rev__|$timestampMs") + otherTags).take(10)
+        return copy(tags = updatedTags)
+    }
 
     private fun parsedAssigneesTag(): Pair<List<String>, List<String>>? {
         val raw = tags.firstOrNull { it.startsWith("__asgn__|") } ?: return null

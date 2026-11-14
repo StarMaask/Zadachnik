@@ -475,7 +475,12 @@ class ExampleUnitTest {
         assertTrue(decoded.uriString.contains("#b64="))
         assertEquals(sampleB64, decoded.uriString.substringAfter("#b64="))
         assertEquals("Плиткин Д.", decoded.authorName)
-        assertEquals("Фотофиксация СМР #1", decoded.comment)
+        assertEquals("Фотофиксация #1", decoded.comment)
+
+        val baseTask = com.example.data.model.TaskDocument(id = "t_rev_1", title = "Проверка ревизии")
+        val revTask = baseTask.withUpdatedRevision(1700000000123L)
+        assertEquals(1700000000123L, revTask.revisionTimestamp)
+        assertTrue(revTask.visibleTags.none { it.startsWith("__rev__|") })
     }
 
     @Test

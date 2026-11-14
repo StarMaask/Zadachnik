@@ -266,7 +266,7 @@ object PhotoCaptureUtils {
             textSize = 22f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        canvas.drawText("ФОТОФИКСАЦИЯ СМР #$photoIndex", 98f, 104f, titlePaint)
+        canvas.drawText("ФОТОФИКСАЦИЯ #$photoIndex", 98f, 104f, titlePaint)
 
         val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.WHITE
@@ -449,7 +449,7 @@ object PhotoCaptureUtils {
                 taskTitle = fallbackTaskTitle.ifBlank { fallbackComment.ifBlank { "Фотоотчёт по заданию" } },
                 authorName = fallbackAuthor.ifBlank { "Исполнитель СМР" },
                 gpsCoords = fallbackGps.ifBlank { "Строительный участок" },
-                comment = fallbackComment.ifBlank { "Фотофиксация СМР #$inferredIndex" },
+                comment = fallbackComment.ifBlank { "Фотофиксация #$inferredIndex" },
                 stampTimeText = fallbackTime.ifBlank { nowStampText() },
                 photoIndex = inferredIndex
             )

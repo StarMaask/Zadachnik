@@ -31,16 +31,90 @@ import java.util.Locale
 object PhotoCaptureUtils {
 
     private const val B64_DELIMITER = "#b64="
-    private const val MAX_CLOUD_IMAGE_DIMENSION = 720
+    private const val PDOC_DELIMITER = "#pdoc="
+    private const val MAX_INLINE_IMAGE_DIMENSION = 480
+    private const val MAX_INLINE_JPEG_BYTES = 28_000
+    private const val MAX_CLOUD_IMAGE_DIMENSION = 1080
+    private const val MAX_CLOUD_JPEG_BYTES = 200_000
     private const val MAX_LOCAL_IMAGE_DIMENSION = 1080
-    private const val MAX_CLOUD_JPEG_BYTES = 45_000
 
-    private val bitmapCache = object : LruCache<String, Bitmap>(24) {}
+    private val bitmapCache = object : LruCache<String, Bitmap>(32) {}
 
     private fun photosDir(context: Context): File {
         val dir = File(context.filesDir, "task_photos")
         if (!dir.exists()) dir.mkdirs()
         return dir
+    }
+
+    private fun cloudCacheFile(context: Context, photoId: String): File {
+        val safeId = photoId.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(120)
+            .ifBlank { "unknown" }
+        return File(photosDir(context), "cloud_$safeId.jpg")
+    }
+
+    fun hasCachedCloudPhoto(context: Context?, photoId: String): Boolean {
+        if (context == null || photoId.isBlank()) return false
+        val f = cloudCacheFile(context, photoId)
+        return f.exists() && f.length() > 0L
+    }
+
+    fun extractLocalPath(uriOrPath: String): String {
+        if (uriOrPath.isBlank()) return ""
+        val b64Idx = uriOrPath.indexOf(B64_DELIMITER)
+        val pdocIdx = uriOrPath.indexOf(PDOC_DELIMITER)
+        val cutIdx = listOf(b64Idx, pdocIdx).filter { it >= 0 }.minOrNull() ?: uriOrPath.length
+        return uriOrPath.substring(0, cutIdx).removePrefix("file://").trim()
+    }
+
+    fun extractCloudPhotoDocId(uriOrPath: String): String? {
+        val idx = uriOrPath.indexOf(PDOC_DELIMITER)
+        if (idx < 0) return null
+        val after = uriOrPath.substring(idx + PDOC_DELIMITER.length)
+        val endIdx = after.indexOf('#').let { if (it >= 0) it else after.length }
+        return after.substring(0, endIdx).trim().takeIf { it.isNotBlank() }
+    }
+
+    fun extractBase64Payload(uriOrPath: String): String {
+        val raw = when {
+            uriOrPath.contains(B64_DELIMITER) -> uriOrPath.substringAfter(B64_DELIMITER, "")
+            uriOrPath.startsWith("data:image") && uriOrPath.contains("base64,") ->
+                uriOrPath.substringAfter("base64,", "")
+            else -> ""
+        }
+        if (raw.isBlank()) return ""
+        val beforeNextFrag = raw.substringBefore(PDOC_DELIMITER).substringBefore('#')
+        return beforeNextFrag.replace("\\s+".toRegex(), "").trim()
+    }
+
+    fun hasInlineBase64(uriOrPath: String): Boolean = extractBase64Payload(uriOrPath).isNotBlank()
+
+    fun hasCloudReference(uriOrPath: String): Boolean =
+        hasInlineBase64(uriOrPath) || extractCloudPhotoDocId(uriOrPath) != null
+
+    fun buildCombinedUri(
+        localPath: String,
+        photoDocId: String? = null,
+        inlineBase64: String? = null
+    ): String {
+        val sb = StringBuilder(localPath.trim())
+        val cleanDocId = photoDocId?.trim()?.takeIf { it.isNotBlank() }
+        if (cleanDocId != null) {
+            sb.append(PDOC_DELIMITER).append(cleanDocId)
+        }
+        val cleanB64 = inlineBase64?.replace("\\s+".toRegex(), "")?.trim()?.takeIf { it.isNotBlank() }
+        if (cleanB64 != null) {
+            sb.append(B64_DELIMITER).append(cleanB64)
+        }
+        return sb.toString()
+    }
+
+    fun attachCloudDocId(uriOrPath: String, photoDocId: String): String {
+        if (photoDocId.isBlank() || uriOrPath.startsWith("stamp://")) return uriOrPath
+        val existingDocId = extractCloudPhotoDocId(uriOrPath)
+        if (existingDocId == photoDocId) return uriOrPath
+        val localPart = extractLocalPath(uriOrPath)
+        val b64Part = extractBase64Payload(uriOrPath)
+        return buildCombinedUri(localPart, photoDocId, b64Part)
     }
 
     fun createTempCameraCaptureFile(context: Context): File {
@@ -56,59 +130,174 @@ object PhotoCaptureUtils {
     fun nowStampText(): String =
         SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.forLanguageTag("ru")).format(Date())
 
-    /**
-     * Сжимает Bitmap в компактный JPEG и кодирует в строку Base64 (без переносов строк и символов '|'),
-     * чтобы реальный снимок гарантированно передавался через Cloud Firestore на телефоны проверяющих.
-     */
-    fun encodeBitmapToCloudBase64(source: Bitmap): String {
-        return runCatching {
+    private fun compressBitmapUnderLimit(
+        source: Bitmap,
+        startMaxDimension: Int,
+        minDimension: Int,
+        maxBytes: Int,
+        startQuality: Int,
+        minQuality: Int
+    ): Triple<ByteArray, Int, Int> {
+        var currentMaxDim = startMaxDimension
+        var lastBytes = ByteArray(0)
+        var lastW = source.width.coerceAtLeast(1)
+        var lastH = source.height.coerceAtLeast(1)
+
+        while (true) {
             val srcW = source.width.coerceAtLeast(1)
             val srcH = source.height.coerceAtLeast(1)
             val maxSide = maxOf(srcW, srcH)
-            val scale = if (maxSide > MAX_CLOUD_IMAGE_DIMENSION) {
-                MAX_CLOUD_IMAGE_DIMENSION.toFloat() / maxSide.toFloat()
+            val scale = if (maxSide > currentMaxDim) {
+                currentMaxDim.toFloat() / maxSide.toFloat()
             } else {
                 1f
             }
-            val targetW = (srcW * scale).toInt().coerceAtLeast(240)
-            val targetH = (srcH * scale).toInt().coerceAtLeast(180)
+            val targetW = (srcW * scale).toInt().coerceAtLeast(minDimension.coerceAtMost(srcW))
+            val targetH = (srcH * scale).toInt().coerceAtLeast(minDimension.coerceAtMost(srcH))
             val scaled = if (targetW != srcW || targetH != srcH) {
                 Bitmap.createScaledBitmap(source, targetW, targetH, true)
             } else {
                 source
             }
+            lastW = scaled.width
+            lastH = scaled.height
 
             val baos = ByteArrayOutputStream()
-            var quality = 74
+            var quality = startQuality
             scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
-            while (baos.size() > MAX_CLOUD_JPEG_BYTES && quality > 38) {
+            while (baos.size() > maxBytes && quality > minQuality) {
                 baos.reset()
-                quality -= 8
+                quality = (quality - 8).coerceAtLeast(minQuality)
                 scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
             }
-            Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+            lastBytes = baos.toByteArray()
+            if (lastBytes.size <= maxBytes || currentMaxDim <= minDimension) {
+                return Triple(lastBytes, lastW, lastH)
+            }
+            currentMaxDim = (currentMaxDim * 0.75f).toInt().coerceAtLeast(minDimension)
+        }
+    }
+
+    /**
+     * Сжимает Bitmap в компактный JPEG (<= 28 КБ / <= 38 КБ Base64) для мгновенной
+     * встроенной передачи миниатюры через Firestore без риска обрезки или переполнения документа задачи.
+     */
+    fun encodeBitmapToCloudBase64(source: Bitmap): String {
+        return runCatching {
+            val (bytes, _, _) = compressBitmapUnderLimit(
+                source = source,
+                startMaxDimension = MAX_INLINE_IMAGE_DIMENSION,
+                minDimension = 160,
+                maxBytes = MAX_INLINE_JPEG_BYTES,
+                startQuality = 72,
+                minQuality = 40
+            )
+            if (bytes.isEmpty()) "" else Base64.encodeToString(bytes, Base64.NO_WRAP)
         }.getOrDefault("")
     }
 
     /**
-     * Если uriString содержит только локальный путь к файлу (без #b64=), а сам файл существует на этом телефоне,
-     * дописывает сжатый Base64-слепок для автоматической облачной синхронизации со всеми устройствами.
+     * Сжимает Bitmap в высоком разрешении (до 1080px, <= 200 КБ JPEG) для отдельной облачной
+     * коллекции task_photos/{photoId}, чтобы руководитель видел чёткие фотоотчёты любого количества фото.
      */
-    fun ensureCloudSyncedUriString(uriOrPath: String): String {
-        if (uriOrPath.isBlank() || uriOrPath.contains(B64_DELIMITER) || uriOrPath.startsWith("data:image")) {
-            return uriOrPath
-        }
-        val cleanPath = uriOrPath.removePrefix("file://").trim()
+    fun encodeBitmapToFullCloudBase64(source: Bitmap): Triple<String, Int, Int> {
+        return runCatching {
+            val (bytes, w, h) = compressBitmapUnderLimit(
+                source = source,
+                startMaxDimension = MAX_CLOUD_IMAGE_DIMENSION,
+                minDimension = 320,
+                maxBytes = MAX_CLOUD_JPEG_BYTES,
+                startQuality = 82,
+                minQuality = 46
+            )
+            val b64 = if (bytes.isEmpty()) "" else Base64.encodeToString(bytes, Base64.NO_WRAP)
+            Triple(b64, w, h)
+        }.getOrDefault(Triple("", source.width, source.height))
+    }
+
+    /**
+     * Если uriString содержит только локальный путь к файлу (без #b64=), а сам файл существует на этом телефоне,
+     * дописывает сжатый Base64-слепок (и #pdoc=) для автоматической облачной синхронизации со всеми устройствами.
+     */
+    fun ensureCloudSyncedUriString(uriOrPath: String, photoId: String = ""): String {
+        if (uriOrPath.isBlank()) return uriOrPath
+        val cleanPath = extractLocalPath(uriOrPath)
         if (cleanPath.startsWith("stamp://")) return uriOrPath
+        val existingDocId = extractCloudPhotoDocId(uriOrPath) ?: photoId.takeIf { it.isNotBlank() }
+        val existingB64 = extractBase64Payload(uriOrPath)
+        if (existingB64.isNotBlank() && existingB64.length <= 180_000) {
+            return if (existingDocId != null && extractCloudPhotoDocId(uriOrPath) == null) {
+                attachCloudDocId(uriOrPath, existingDocId)
+            } else {
+                uriOrPath
+            }
+        }
         val file = File(cleanPath)
-        if (!file.exists()) return uriOrPath
-        val bmp = decodeFileSafely(file, MAX_CLOUD_IMAGE_DIMENSION) ?: return uriOrPath
+        if (!file.exists()) {
+            return if (existingDocId != null && existingB64.isBlank()) {
+                buildCombinedUri(cleanPath, existingDocId, null)
+            } else {
+                uriOrPath
+            }
+        }
+        val bmp = decodeFileSafely(file, MAX_INLINE_IMAGE_DIMENSION) ?: return uriOrPath
         val b64 = encodeBitmapToCloudBase64(bmp)
         return if (b64.isNotBlank()) {
-            "${file.absolutePath}$B64_DELIMITER$b64"
+            buildCombinedUri(file.absolutePath, existingDocId, b64)
         } else {
             uriOrPath
         }
+    }
+
+    /**
+     * Подготавливает полноразмерный JPEG Base64 (до 1080px) для загрузки в коллекцию task_photos/{photoId}.
+     */
+    fun prepareFullCloudPayload(
+        context: Context?,
+        uriOrPath: String,
+        photoId: String = ""
+    ): Triple<String, Int, Int>? {
+        val localPath = extractLocalPath(uriOrPath)
+        if (localPath.startsWith("stamp://")) return null
+        val file = localPath.takeIf { it.isNotBlank() }?.let { File(it) }
+        val highResBmp = when {
+            file != null && file.exists() -> decodeFileSafely(file, MAX_CLOUD_IMAGE_DIMENSION)
+            context != null && photoId.isNotBlank() && hasCachedCloudPhoto(context, photoId) ->
+                decodeFileSafely(cloudCacheFile(context, photoId), MAX_CLOUD_IMAGE_DIMENSION)
+            else -> null
+        }
+        if (highResBmp != null) {
+            val encoded = encodeBitmapToFullCloudBase64(highResBmp)
+            if (encoded.first.isNotBlank()) return encoded
+        }
+        val inlineB64 = extractBase64Payload(uriOrPath)
+        if (inlineB64.isNotBlank()) {
+            val decoded = runCatching {
+                val bytes = Base64.decode(inlineB64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.getOrNull()
+            if (decoded != null) {
+                return Triple(inlineB64, decoded.width, decoded.height)
+            }
+        }
+        return null
+    }
+
+    fun saveCloudPhotoBytesToLocalCache(
+        context: Context,
+        photoId: String,
+        imageBase64: String
+    ): Bitmap? {
+        if (photoId.isBlank() || imageBase64.isBlank()) return null
+        return runCatching {
+            val cleanB64 = imageBase64.replace("\\s+".toRegex(), "").trim()
+            val bytes = Base64.decode(cleanB64, Base64.DEFAULT)
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+            val outFile = cloudCacheFile(context, photoId)
+            FileOutputStream(outFile).use { it.write(bytes) }
+            bitmapCache.put("cloud_$photoId", bmp)
+            bmp
+        }.getOrNull()
     }
 
     private fun computeSampleSize(width: Int, height: Int, maxDim: Int): Int {
@@ -318,9 +507,9 @@ object PhotoCaptureUtils {
         FileOutputStream(file).use { out ->
             outBitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)
         }
-        val b64 = encodeBitmapToCloudBase64(outBitmap)
-        val combinedUri = if (b64.isNotBlank()) {
-            "${file.absolutePath}$B64_DELIMITER$b64"
+        val inlineB64 = encodeBitmapToCloudBase64(outBitmap)
+        val combinedUri = if (inlineB64.isNotBlank()) {
+            buildCombinedUri(file.absolutePath, photoDocId = null, inlineBase64 = inlineB64)
         } else {
             file.absolutePath
         }
@@ -476,9 +665,10 @@ object PhotoCaptureUtils {
 
     /**
      * Загружает Bitmap из:
-     * 1) локального файла на устройстве (если снимок сделан/выбран на этом телефоне);
-     * 2) встроенного в uriString блока Base64 (#b64=... или data:image/...;base64,...), переданного через Cloud Firestore с другого телефона;
-     * 3) для явно виртуальных старых штампов (stamp://) генерирует карточку; для реальных фото без файла/Base64 возвращает null.
+     * 1) локального облачного кэша task_photos (cloud_<photoId>.jpg) в высоком разрешении;
+     * 2) локального оригинального файла на устройстве автора снимка;
+     * 3) встроенного в uriString блока Base64 (#b64=... или data:image/...;base64,...), переданного через Firestore;
+     * 4) только для явно виртуальных legacy-записей (stamp://) генерирует карточку; иначе возвращает null.
      */
     fun loadBitmapFromUriOrPath(
         uriOrPath: String,
@@ -486,24 +676,40 @@ object PhotoCaptureUtils {
         fallbackAuthor: String = "",
         fallbackTime: String = "",
         fallbackGps: String = "",
-        fallbackTaskTitle: String = ""
+        fallbackTaskTitle: String = "",
+        context: Context? = null,
+        photoId: String = ""
     ): Bitmap? {
         if (uriOrPath.isBlank() && fallbackComment.isBlank()) return null
+
+        val effectiveDocId = photoId.ifBlank { extractCloudPhotoDocId(uriOrPath).orEmpty() }
+
+        // 1. Полноразмерный кэш облачной коллекции task_photos
+        if (effectiveDocId.isNotBlank()) {
+            bitmapCache.get("cloud_$effectiveDocId")?.let { cached ->
+                if (!cached.isRecycled) return cached
+            }
+            if (context != null) {
+                val cachedFile = cloudCacheFile(context, effectiveDocId)
+                if (cachedFile.exists() && cachedFile.length() > 0L) {
+                    val decodedCloud = decodeFileSafely(cachedFile, MAX_CLOUD_IMAGE_DIMENSION)
+                    if (decodedCloud != null) {
+                        bitmapCache.put("cloud_$effectiveDocId", decodedCloud)
+                        return decodedCloud
+                    }
+                }
+            }
+        }
 
         val key = cacheKeyFor(uriOrPath, fallbackComment, fallbackAuthor, fallbackTime)
         bitmapCache.get(key)?.let { cached ->
             if (!cached.isRecycled) return cached
         }
 
-        val localPart = uriOrPath.substringBefore(B64_DELIMITER).removePrefix("file://").trim()
-        val b64Part = when {
-            uriOrPath.contains(B64_DELIMITER) -> uriOrPath.substringAfter(B64_DELIMITER, "").trim()
-            uriOrPath.startsWith("data:image") && uriOrPath.contains("base64,") ->
-                uriOrPath.substringAfter("base64,", "").trim()
-            else -> ""
-        }
+        val localPart = extractLocalPath(uriOrPath)
+        val b64Part = extractBase64Payload(uriOrPath)
 
-        // 1. Попытка чтения локального файла (на устройстве автора снимка)
+        // 2. Попытка чтения локального файла (на устройстве автора снимка)
         if (localPart.isNotBlank() && !localPart.startsWith("stamp://") && !localPart.startsWith("data:")) {
             val file = File(localPart)
             if (file.exists()) {
@@ -515,7 +721,7 @@ object PhotoCaptureUtils {
             }
         }
 
-        // 2. Декодирование встроенного сжатого JPEG из Base64 (на телефоне руководителя / ИТР / другого участника)
+        // 3. Декодирование встроенного сжатого JPEG из Base64 (мгновенно доступно на любом телефоне)
         if (b64Part.isNotBlank()) {
             val decodedB64 = runCatching {
                 val bytes = Base64.decode(b64Part, Base64.DEFAULT)
@@ -527,7 +733,7 @@ object PhotoCaptureUtils {
             }
         }
 
-        // 3. Явный fallback только для legacy stamp://
+        // 4. Явный fallback только для legacy stamp://
         if (localPart.startsWith("stamp://")) {
             val inferredIndex = Regex("""#(\d+)""").find(fallbackComment)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 1
             val generated = createStampBitmap(
@@ -545,12 +751,21 @@ object PhotoCaptureUtils {
         return null
     }
 
-    fun deletePhotoFileIfLocal(uriOrPath: String) {
-        val cleanPath = uriOrPath.substringBefore(B64_DELIMITER).removePrefix("file://").trim()
-        if (cleanPath.isBlank()) return
-        val file = File(cleanPath)
-        if (file.exists() && file.absolutePath.contains("task_photos")) {
-            runCatching { file.delete() }
+    fun deletePhotoFileIfLocal(uriOrPath: String, context: Context? = null, photoId: String = "") {
+        val cleanPath = extractLocalPath(uriOrPath)
+        if (cleanPath.isNotBlank()) {
+            val file = File(cleanPath)
+            if (file.exists() && file.absolutePath.contains("task_photos")) {
+                runCatching { file.delete() }
+            }
+        }
+        val docId = photoId.ifBlank { extractCloudPhotoDocId(uriOrPath).orEmpty() }
+        if (context != null && docId.isNotBlank()) {
+            val cached = cloudCacheFile(context, docId)
+            if (cached.exists()) {
+                runCatching { cached.delete() }
+            }
+            bitmapCache.remove("cloud_$docId")
         }
     }
 }

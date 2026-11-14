@@ -524,6 +524,68 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "TaskPhotoDocument": {
+      "title": "TaskPhotoDocument",
+      "description": "High-resolution task report photo stored separately from TaskDocument to avoid the 1 MiB document size limit.",
+      "type": "object",
+      "properties": {
+        "photoId": {
+          "type": "string",
+          "description": "Photo identifier matching PhotoReportItem.id."
+        },
+        "taskId": {
+          "type": "string",
+          "description": "Parent TaskDocument ID."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the uploader."
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Short name of the photo author."
+        },
+        "imageBase64": {
+          "type": "string",
+          "description": "JPEG image payload encoded in Base64."
+        },
+        "mimeType": {
+          "type": "string",
+          "enum": ["image/jpeg", "image/png"],
+          "description": "MIME type of the encoded image."
+        },
+        "width": {
+          "type": "integer",
+          "description": "Image width in pixels."
+        },
+        "height": {
+          "type": "integer",
+          "description": "Image height in pixels."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": [
+        "photoId",
+        "taskId",
+        "userId",
+        "authorName",
+        "imageBase64",
+        "mimeType",
+        "width",
+        "height",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -538,6 +600,12 @@
         "$ref": "#/entities/TaskDocument"
       },
       "description": "Root collection of corporate tasks isolated per authenticated user workspace."
+    },
+    "/task_photos/{photoId}": {
+      "schema": {
+        "$ref": "#/entities/TaskPhotoDocument"
+      },
+      "description": "Dedicated cloud storage collection for task report JPEG photos so multiple photos never overflow TaskDocument."
     },
     "/report_templates/{templateId}": {
       "schema": {

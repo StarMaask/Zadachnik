@@ -2,7 +2,9 @@ package com.example.ui.components
 
 import android.Manifest
 import android.content.pm.PackageManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,6 +53,8 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Event
@@ -60,6 +64,7 @@ import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.ThumbDown
@@ -71,6 +76,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -92,11 +98,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -423,9 +431,19 @@ fun TaskDetailDialog(
     onApproveReport: (comment: String) -> Unit,
     onRejectReport: (reason: String) -> Unit,
     onArchiveTask: () -> Unit,
-    onDeleteTask: () -> Unit = {}
+    onDeleteTask: () -> Unit = {},
+    cloudPhotoCacheVersion: Int = 0,
+    isUploadingPhotosToCloud: Boolean = false,
+    isHydratingCloudPhotos: Boolean = false,
+    hasCloudPhotoSyncError: Boolean = false,
+    onRetryCloudSync: () -> Unit = {},
+    onRequestCloudPhotosHydration: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    LaunchedEffect(task.id, task.photoItems.size) {
+        onRequestCloudPhotosHydration()
+    }
     var photoComment by remember { mutableStateOf("") }
     val photoGps = remember(task.geoLocation) { task.geoLocation ?: "Участок №1" }
     val canReassignTask = activeEmployee.role.canAssignToOtherEmployees()
@@ -497,6 +515,7 @@ fun TaskDetailDialog(
     // Реальная фотосъёмка (через FileProvider + системная камера) и выбор реальных фото из галереи
     var continuousShootingMode by remember { mutableStateOf(false) }
     var burstShotCount by remember { mutableIntStateOf(0) }
+    var isProcessingPhoto by remember { mutableStateOf(false) }
     var photoStatusError by remember { mutableStateOf<String?>(null) }
     var pendingCameraFilePath by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedPhotoForPreview by remember { mutableStateOf<PhotoReportItem?>(null) }
@@ -507,18 +526,27 @@ fun TaskDetailDialog(
     ) { bitmap ->
         if (bitmap != null) {
             val commentStr = photoComment.trim().ifBlank { "Фотофиксация #${task.photoItems.size + 1}" }
-            val savedPath = PhotoCaptureUtils.saveCameraBitmapWithStamp(
-                context = context,
-                sourceBitmap = bitmap,
-                taskTitle = task.title,
-                authorName = activeEmployee.shortName,
-                gpsCoords = photoGps,
-                comment = commentStr
-            )
-            photoStatusError = null
-            onAddPhoto(savedPath, photoGps, commentStr)
-            photoComment = ""
-            burstShotCount++
+            coroutineScope.launch {
+                isProcessingPhoto = true
+                try {
+                    val savedPath = withContext(Dispatchers.IO) {
+                        PhotoCaptureUtils.saveCameraBitmapWithStamp(
+                            context = context,
+                            sourceBitmap = bitmap,
+                            taskTitle = task.title,
+                            authorName = activeEmployee.shortName,
+                            gpsCoords = photoGps,
+                            comment = commentStr
+                        )
+                    }
+                    photoStatusError = null
+                    onAddPhoto(savedPath, photoGps, commentStr)
+                    photoComment = ""
+                    burstShotCount++
+                } finally {
+                    isProcessingPhoto = false
+                }
+            }
         } else {
             val msg = "Снимок с камеры не получен"
             photoStatusError = msg
@@ -534,26 +562,35 @@ fun TaskDetailDialog(
         if (success && file != null && file.exists() && file.length() > 0L) {
             val nextIdx = task.photoItems.size + 1
             val effectiveComment = photoComment.trim().ifBlank { "Фотофиксация #$nextIdx" }
-            val savedPath = PhotoCaptureUtils.saveCameraFileWithStamp(
-                context = context,
-                capturedFile = file,
-                taskTitle = task.title,
-                authorName = activeEmployee.shortName,
-                gpsCoords = photoGps,
-                comment = effectiveComment
-            )
-            if (savedPath != null) {
-                photoStatusError = null
-                onAddPhoto(savedPath, photoGps, effectiveComment)
-                photoComment = ""
-                burstShotCount++
-                if (continuousShootingMode) {
-                    launchNextBurstShot?.invoke()
+            coroutineScope.launch {
+                isProcessingPhoto = true
+                val savedPath = try {
+                    withContext(Dispatchers.IO) {
+                        PhotoCaptureUtils.saveCameraFileWithStamp(
+                            context = context,
+                            capturedFile = file,
+                            taskTitle = task.title,
+                            authorName = activeEmployee.shortName,
+                            gpsCoords = photoGps,
+                            comment = effectiveComment
+                        )
+                    }
+                } finally {
+                    isProcessingPhoto = false
                 }
-            } else {
-                val msg = "Не удалось обработать снимок с камеры"
-                photoStatusError = msg
-                onPhotoCaptureError(msg)
+                if (savedPath != null) {
+                    photoStatusError = null
+                    onAddPhoto(savedPath, photoGps, effectiveComment)
+                    photoComment = ""
+                    burstShotCount++
+                    if (continuousShootingMode) {
+                        launchNextBurstShot?.invoke()
+                    }
+                } else {
+                    val msg = "Не удалось обработать снимок с камеры"
+                    photoStatusError = msg
+                    onPhotoCaptureError(msg)
+                }
             }
         } else {
             file?.let { runCatching { it.delete() } }
@@ -587,40 +624,50 @@ fun TaskDetailDialog(
             photoStatusError = null
             val baseIndex = task.photoItems.size + 1
             val customBaseComment = photoComment.trim()
-            val savedBatch = mutableListOf<Pair<String, String>>()
-            var failedCount = 0
-            uris.forEachIndexed { idx, uri ->
-                val itemComment = if (customBaseComment.isNotBlank()) {
-                    if (uris.size > 1) "$customBaseComment (${idx + 1})" else customBaseComment
-                } else {
-                    "Фотофиксация #${baseIndex + idx}"
+            coroutineScope.launch {
+                isProcessingPhoto = true
+                val (savedBatch, failedCount) = try {
+                    withContext(Dispatchers.IO) {
+                        val batch = mutableListOf<Pair<String, String>>()
+                        var failed = 0
+                        uris.forEachIndexed { idx, uri ->
+                            val itemComment = if (customBaseComment.isNotBlank()) {
+                                if (uris.size > 1) "$customBaseComment (${idx + 1})" else customBaseComment
+                            } else {
+                                "Фотофиксация #${baseIndex + idx}"
+                            }
+                            val savedPath = PhotoCaptureUtils.savePickedUriWithStamp(
+                                context = context,
+                                contentUri = uri,
+                                taskTitle = task.title,
+                                authorName = activeEmployee.shortName,
+                                gpsCoords = photoGps,
+                                comment = itemComment
+                            )
+                            if (savedPath != null) {
+                                batch.add(savedPath to itemComment)
+                            } else {
+                                failed++
+                            }
+                        }
+                        batch to failed
+                    }
+                } finally {
+                    isProcessingPhoto = false
                 }
-                val savedPath = PhotoCaptureUtils.savePickedUriWithStamp(
-                    context = context,
-                    contentUri = uri,
-                    taskTitle = task.title,
-                    authorName = activeEmployee.shortName,
-                    gpsCoords = photoGps,
-                    comment = itemComment
-                )
-                if (savedPath != null) {
-                    savedBatch.add(savedPath to itemComment)
-                } else {
-                    failedCount++
+                if (savedBatch.isNotEmpty()) {
+                    onAddPhotosBatch(savedBatch, photoGps)
+                    photoComment = ""
                 }
-            }
-            if (savedBatch.isNotEmpty()) {
-                onAddPhotosBatch(savedBatch, photoGps)
-                photoComment = ""
-            }
-            if (failedCount > 0) {
-                val msg = if (savedBatch.isEmpty()) {
-                    "Не удалось загрузить выбранное фото"
-                } else {
-                    "Загружено ${savedBatch.size} фото, не удалось прочитать: $failedCount"
+                if (failedCount > 0) {
+                    val msg = if (savedBatch.isEmpty()) {
+                        "Не удалось загрузить выбранное фото"
+                    } else {
+                        "Загружено ${savedBatch.size} фото, не удалось прочитать: $failedCount"
+                    }
+                    photoStatusError = msg
+                    onPhotoCaptureError(msg)
                 }
-                photoStatusError = msg
-                onPhotoCaptureError(msg)
             }
         }
     }
@@ -1502,12 +1549,147 @@ fun TaskDetailDialog(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = "Фотоотчёт",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Фотоотчёт",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    val allSynced = photos.isNotEmpty() && photos.all {
+                                        PhotoCaptureUtils.hasCloudReference(it.uriString) ||
+                                            PhotoCaptureUtils.hasCachedCloudPhoto(context, it.id)
+                                    }
+                                    when {
+                                        isProcessingPhoto || isUploadingPhotosToCloud -> {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                                shape = RoundedCornerShape(50)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                ) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(11.dp),
+                                                        strokeWidth = 1.8.dp
+                                                    )
+                                                    Text(
+                                                        text = "Отправка в облако...",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        isHydratingCloudPhotos -> {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                                shape = RoundedCornerShape(50)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                ) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(11.dp),
+                                                        strokeWidth = 1.8.dp
+                                                    )
+                                                    Text(
+                                                        text = "Загрузка из облака...",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        hasCloudPhotoSyncError -> {
+                                            Surface(
+                                                color = crimsonSecondary.copy(alpha = 0.14f),
+                                                shape = RoundedCornerShape(50),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(50))
+                                                    .clickable(onClick = onRetryCloudSync)
+                                                    .testTag("retry_photo_cloud_sync_chip")
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Refresh,
+                                                        contentDescription = "Повторить отправку",
+                                                        tint = crimsonSecondary,
+                                                        modifier = Modifier.size(12.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Ошибка облака • Повторить",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = crimsonSecondary
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        allSynced -> {
+                                            Surface(
+                                                color = emeraldPrimary.copy(alpha = 0.12f),
+                                                shape = RoundedCornerShape(50)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CloudDone,
+                                                        contentDescription = null,
+                                                        tint = emeraldPrimary,
+                                                        modifier = Modifier.size(12.dp)
+                                                    )
+                                                    Text(
+                                                        text = "В облаке",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = emeraldPrimary
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        photos.isNotEmpty() -> {
+                                            Surface(
+                                                color = mutedAmber.copy(alpha = 0.14f),
+                                                shape = RoundedCornerShape(50),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(50))
+                                                    .clickable(onClick = onRetryCloudSync)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CloudOff,
+                                                        contentDescription = "Загрузить из облака",
+                                                        tint = mutedAmber,
+                                                        modifier = Modifier.size(12.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Обновить",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = mutedAmber
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 Text(
                                     text = "${photos.size} / $minReqPhotos фото",
                                     style = MaterialTheme.typography.labelSmall,
@@ -1516,18 +1698,31 @@ fun TaskDetailDialog(
                                 )
                             }
 
+                            if (isProcessingPhoto) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+
                             // Список уже прикреплённых фотографий (без жёстких рамок)
                             if (photos.isNotEmpty()) {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     photos.forEachIndexed { idx, ph ->
-                                        val bitmap = remember(ph.uriString, ph.comment, ph.capturedAtText, task.title) {
+                                        val bitmap = remember(
+                                            ph.id,
+                                            ph.uriString,
+                                            ph.comment,
+                                            ph.capturedAtText,
+                                            task.title,
+                                            cloudPhotoCacheVersion
+                                        ) {
                                             PhotoCaptureUtils.loadBitmapFromUriOrPath(
                                                 uriOrPath = ph.uriString,
                                                 fallbackComment = ph.comment,
                                                 fallbackAuthor = ph.authorName,
                                                 fallbackTime = ph.capturedAtText,
                                                 fallbackGps = ph.gpsCoords,
-                                                fallbackTaskTitle = task.title
+                                                fallbackTaskTitle = task.title,
+                                                context = context,
+                                                photoId = ph.id
                                             )
                                         }
                                         Surface(
@@ -1556,6 +1751,13 @@ fun TaskDetailDialog(
                                                             contentScale = ContentScale.Crop,
                                                             modifier = Modifier.fillMaxSize()
                                                         )
+                                                    } else if (isHydratingCloudPhotos) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            CircularProgressIndicator(
+                                                                modifier = Modifier.size(20.dp),
+                                                                strokeWidth = 2.dp
+                                                            )
+                                                        }
                                                     } else {
                                                         Box(contentAlignment = Alignment.Center) {
                                                             Icon(
@@ -2056,7 +2258,12 @@ fun TaskDetailDialog(
             onDelete = {
                 onDeletePhoto(photoItem.id)
                 selectedPhotoForPreview = null
-            }
+            },
+            cloudPhotoCacheVersion = cloudPhotoCacheVersion,
+            isHydratingCloudPhotos = isHydratingCloudPhotos,
+            isUploadingPhotosToCloud = isUploadingPhotosToCloud,
+            hasCloudPhotoSyncError = hasCloudPhotoSyncError,
+            onRetryCloudSync = onRetryCloudSync
         )
     }
 
@@ -2265,16 +2472,31 @@ fun FullScreenPhotoDialog(
     taskTitle: String = "",
     canDelete: Boolean,
     onDismiss: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    cloudPhotoCacheVersion: Int = 0,
+    isHydratingCloudPhotos: Boolean = false,
+    isUploadingPhotosToCloud: Boolean = false,
+    hasCloudPhotoSyncError: Boolean = false,
+    onRetryCloudSync: () -> Unit = {}
 ) {
-    val bitmap = remember(photo.uriString, photo.comment, photo.capturedAtText, taskTitle) {
+    val context = LocalContext.current
+    val bitmap = remember(
+        photo.id,
+        photo.uriString,
+        photo.comment,
+        photo.capturedAtText,
+        taskTitle,
+        cloudPhotoCacheVersion
+    ) {
         PhotoCaptureUtils.loadBitmapFromUriOrPath(
             uriOrPath = photo.uriString,
             fallbackComment = photo.comment,
             fallbackAuthor = photo.authorName,
             fallbackTime = photo.capturedAtText,
             fallbackGps = photo.gpsCoords,
-            fallbackTaskTitle = taskTitle
+            fallbackTaskTitle = taskTitle,
+            context = context,
+            photoId = photo.id
         )
     }
 
@@ -2363,21 +2585,68 @@ fun FullScreenPhotoDialog(
                         } else {
                             Box(
                                 contentAlignment = Alignment.Center,
-                                modifier = Modifier.padding(24.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp)
                             ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        imageVector = Icons.Default.PhotoCamera,
-                                        contentDescription = null,
-                                        tint = Color(0xFF60A5FA),
-                                        modifier = Modifier.size(44.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = photo.comment,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = Color.White
-                                    )
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (isHydratingCloudPhotos || isUploadingPhotosToCloud) {
+                                        CircularProgressIndicator(
+                                            color = Color(0xFF60A5FA),
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                        Text(
+                                            text = if (isUploadingPhotosToCloud) {
+                                                "Отправка фото в облако..."
+                                            } else {
+                                                "Загрузка фото из облака..."
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = Color.White,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.PhotoCamera,
+                                            contentDescription = null,
+                                            tint = Color(0xFF60A5FA),
+                                            modifier = Modifier.size(44.dp)
+                                        )
+                                        Text(
+                                            text = photo.comment,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.SemiBold,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Text(
+                                            text = if (hasCloudPhotoSyncError) {
+                                                "Ошибка синхронизации с облаком. Нажмите ниже для повтора."
+                                            } else {
+                                                "Фото ещё не загружено в облако с устройства автора или требуется повторная загрузка."
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFF94A3B8),
+                                            textAlign = TextAlign.Center
+                                        )
+                                        OutlinedButton(
+                                            onClick = onRetryCloudSync,
+                                            border = BorderStroke(1.dp, Color(0xFF60A5FA)),
+                                            modifier = Modifier.testTag("fullscreen_retry_photo_sync_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Refresh,
+                                                contentDescription = null,
+                                                tint = Color(0xFF60A5FA),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Загрузить из облака", color = Color(0xFF60A5FA))
+                                        }
+                                    }
                                 }
                             }
                         }

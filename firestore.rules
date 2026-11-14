@@ -314,5 +314,48 @@ service cloud.firestore {
 
       allow delete: if isSignedIn() && isValidId(memberId);
     }
+
+    // 7. TaskPhotoDocument Validation Helper (Dedicated Cloud Photo Payloads)
+    function isValidTaskPhotoDocument(data) {
+      return data.photoId is string && data.photoId.size() >= 1 && data.photoId.size() <= 128 &&
+             data.taskId is string && data.taskId.size() >= 1 && data.taskId.size() <= 128 &&
+             data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 120 &&
+             data.imageBase64 is string && data.imageBase64.size() >= 10 && data.imageBase64.size() <= 500000 &&
+             data.mimeType is string && data.mimeType in ['image/jpeg', 'image/png'] &&
+             data.width is int && data.width >= 0 && data.width <= 8000 &&
+             data.height is int && data.height >= 0 && data.height <= 8000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /task_photos/{photoId} {
+      allow get, list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+                       isValidId(photoId) &&
+                       request.resource.data.keys().hasAll([
+                         'photoId', 'taskId', 'userId', 'authorName',
+                         'imageBase64', 'mimeType', 'width', 'height',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       request.resource.data.keys().hasOnly([
+                         'photoId', 'taskId', 'userId', 'authorName',
+                         'imageBase64', 'mimeType', 'width', 'height',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidTaskPhotoDocument(request.resource.data);
+
+      allow update: if isSignedIn() &&
+                       isValidId(photoId) &&
+                       resource.data.userId == request.auth.uid &&
+                       isValidTaskPhotoDocument(request.resource.data) &&
+                       request.resource.data.userId == resource.data.userId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.photoId == resource.data.photoId &&
+                       request.resource.data.taskId == resource.data.taskId;
+
+      allow delete: if isSignedIn() && isValidId(photoId);
+    }
   }
 }

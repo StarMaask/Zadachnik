@@ -133,6 +133,78 @@ class EzhednevnikRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsEx?.code)
     }
 
+    @Test
+    fun taskPhotosCloudCollection_uploadsAndHydratesAcrossUsers_andBlocksUnauthenticated() = runBlocking {
+        signInTestUser("worker_plitkin@test.com")
+        val workerRepo = EzhednevnikRepository(firestore)
+
+        // 1. Supervisor creates task, Worker uploads full photo to task_photos + saves ref to tasks/{taskId}
+        signInTestUser("head_starshinov@test.com")
+        val headRepo = EzhednevnikRepository(firestore)
+        val taskId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            headRepo.createTask(headEmployee, sampleDraft(assigneeId = workerEmployee.id, minPhotos = 1)).getOrThrow()
+        }
+
+        signInTestUser("worker_plitkin@test.com")
+        val createdTask = withTimeout(DEFAULT_TIMEOUT_MS) { workerRepo.getTaskById(taskId).getOrThrow() }
+        val photoId = "ph_${System.currentTimeMillis()}_202"
+        val fullCloudBase64 = "F".repeat(65_000)
+
+        val uploadRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            workerRepo.uploadTaskPhotoToCloud(
+                taskId = taskId,
+                photoId = photoId,
+                authorName = workerEmployee.shortName,
+                imageBase64 = fullCloudBase64,
+                width = 1080,
+                height = 810
+            )
+        }
+        assertTrue("uploadTaskPhotoToCloud should succeed: ${uploadRes.exceptionOrNull()}", uploadRes.isSuccess)
+
+        val pdocPhotoEncoded = "$photoId|/local/missing/cam.jpg#pdoc=$photoId#b64=${"T".repeat(12_000)}|${workerEmployee.id}|${workerEmployee.shortName}|14.11 18:21|МНС-4|Фотофиксация #1"
+        val saveRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            workerRepo.saveTaskPhotosToFirestore(
+                createdTask.copy(
+                    photoItems = listOf(pdocPhotoEncoded),
+                    status = TaskStatus.ON_REVIEW.code
+                )
+            )
+        }
+        assertTrue("Cross-user saveTaskPhotosToFirestore must succeed: ${saveRes.exceptionOrNull()}", saveRes.isSuccess)
+
+        // 2. Head/Admin signs back in on a different device and fetches both task & full-res task_photos
+        signInTestUser("head_starshinov@test.com")
+        val fetchedTask = withTimeout(DEFAULT_TIMEOUT_MS) { headRepo.getTaskById(taskId).getOrThrow() }
+        assertEquals(1, fetchedTask.decodedPhotos().size)
+        assertTrue(fetchedTask.decodedPhotos().first().uriString.contains("#pdoc=$photoId"))
+
+        val cloudPhotosForTask = withTimeout(DEFAULT_TIMEOUT_MS) {
+            headRepo.fetchTaskPhotosForTaskFromCloud(taskId).getOrThrow()
+        }
+        assertEquals(1, cloudPhotosForTask.size)
+        assertEquals(photoId, cloudPhotosForTask.first().photoId)
+        assertEquals(fullCloudBase64.length, cloudPhotosForTask.first().imageBase64.length)
+
+        val singleCloudPhoto = withTimeout(DEFAULT_TIMEOUT_MS) {
+            headRepo.fetchTaskPhotoFromCloud(photoId).getOrThrow()
+        }
+        assertNotNull(singleCloudPhoto)
+        assertEquals(1080L, singleCloudPhoto?.width)
+
+        // 3. Unauthenticated user cannot read task_photos
+        auth.signOut()
+        val unauthPhotoRead = runCatching {
+            withTimeout(FLOW_TIMEOUT_MS) {
+                firestore.collection("task_photos").document(photoId).get().await()
+            }
+        }
+        assertTrue("Unauthenticated task_photos read must fail", unauthPhotoRead.isFailure)
+        val fsEx = unauthPhotoRead.exceptionOrNull()?.unwrapFirestoreException()
+        assertNotNull("Expected FirebaseFirestoreException", fsEx)
+        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsEx?.code)
+    }
+
     private companion object {
         const val DEFAULT_TIMEOUT_MS = 5000L
         const val FLOW_TIMEOUT_MS = 3000L

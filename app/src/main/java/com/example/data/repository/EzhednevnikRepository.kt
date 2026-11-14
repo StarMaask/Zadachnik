@@ -19,10 +19,12 @@ import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskCommentItem
 import com.example.data.model.TaskDocument
 import com.example.data.model.TaskDraft
+import com.example.data.model.TaskPhotoDocument
 import com.example.data.model.TaskStatus
 import com.example.data.model.UserProfile
 import com.example.data.model.WorkGroup
 import com.example.data.seed.CorporateSeedData
+import com.example.ui.components.PhotoCaptureUtils
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
@@ -1250,6 +1252,10 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             handleFirestoreError(e, OperationType.UPDATE, docRef.path)
             throw e
         }
+        val safePhotoDocId = TaskPhotoDocument.sanitizePhotoDocId(photoId)
+        runCatching {
+            db.collection("task_photos").document(safePhotoDocId).delete().await()
+        }
     }
 
     suspend fun updateSubtasksList(
@@ -1335,6 +1341,124 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         }
     }
 
+    private fun sanitizePhotoItemsForTaskDoc(items: List<String>): List<String> {
+        // Ограничиваем суммарный объём встроенных превью, чтобы документ tasks/{taskId} всегда оставался < 1 МиБ,
+        // но никогда не обрезаем Base64 посередине строки (отбрасываем только сверхлимитный inline #b64, сохраняя #pdoc).
+        val boundedCount = items.takeLast(15)
+        var totalChars = 0
+        return boundedCount.map { raw ->
+            val decoded = PhotoReportItem.decode(raw)
+            val safeDocId = decoded.id.takeIf { it.isNotBlank() }?.let { TaskPhotoDocument.sanitizePhotoDocId(it) }.orEmpty()
+            var candidate = if (safeDocId.isNotBlank()) {
+                decoded.copy(uriString = PhotoCaptureUtils.attachCloudDocId(decoded.uriString, safeDocId)).encode()
+            } else {
+                raw
+            }
+            if (candidate.length > 180_000 || totalChars + candidate.length > 720_000) {
+                val localOnly = PhotoCaptureUtils.extractLocalPath(decoded.uriString)
+                val minimalUri = PhotoCaptureUtils.buildCombinedUri(
+                    localPath = localOnly,
+                    photoDocId = PhotoCaptureUtils.extractCloudPhotoDocId(decoded.uriString) ?: safeDocId,
+                    inlineBase64 = null
+                )
+                candidate = decoded.copy(uriString = minimalUri).encode()
+            }
+            totalChars += candidate.length
+            candidate
+        }
+    }
+
+    suspend fun uploadTaskPhotoToCloud(
+        taskId: String,
+        photoId: String,
+        authorName: String,
+        imageBase64: String,
+        width: Int,
+        height: Int
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        val safePhotoId = TaskPhotoDocument.sanitizePhotoDocId(photoId)
+        val safeTaskId = taskId.trim().take(128)
+        require(safeTaskId.isNotBlank()) { "Task ID must not be blank" }
+        require(imageBase64.length in 10..500_000) {
+            "Недопустимый размер облачного фото (${imageBase64.length} симв.)"
+        }
+
+        val docRef = db.collection("task_photos").document(safePhotoId)
+        try {
+            val existing = docRef.get().await()
+            if (existing.exists()) {
+                if (existing.getString("userId") == uid) {
+                    docRef.update(
+                        mapOf(
+                            "imageBase64" to imageBase64,
+                            "width" to width.coerceIn(0, 8000),
+                            "height" to height.coerceIn(0, 8000),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            } else {
+                val payload = mapOf(
+                    "photoId" to safePhotoId,
+                    "taskId" to safeTaskId,
+                    "userId" to uid,
+                    "authorName" to authorName.ifBlank { "Сотрудник" }.take(120),
+                    "imageBase64" to imageBase64,
+                    "mimeType" to "image/jpeg",
+                    "width" to width.coerceIn(0, 8000),
+                    "height" to height.coerceIn(0, 8000),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.set(payload).await()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun fetchTaskPhotoFromCloud(photoId: String): Result<TaskPhotoDocument?> = runCatching {
+        requireUserId()
+        val safePhotoId = TaskPhotoDocument.sanitizePhotoDocId(photoId)
+        val docRef = db.collection("task_photos").document(safePhotoId)
+        try {
+            val snapshot = docRef.get().await()
+            if (snapshot.exists()) {
+                snapshot.toObject(TaskPhotoDocument::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            } else {
+                null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.GET, docRef.path)
+            throw e
+        }
+    }
+
+    suspend fun fetchTaskPhotosForTaskFromCloud(taskId: String): Result<List<TaskPhotoDocument>> = runCatching {
+        requireUserId()
+        val safeTaskId = taskId.trim()
+        require(safeTaskId.isNotBlank()) { "Task ID must not be blank" }
+        val path = "task_photos"
+        try {
+            db.collection(path)
+                .whereEqualTo("taskId", safeTaskId)
+                .get()
+                .await()
+                .toObjects(TaskPhotoDocument::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.LIST, path)
+            throw e
+        }
+    }
+
     suspend fun addPhotoToTask(
         actor: CorporateEmployee,
         task: TaskDocument,
@@ -1347,23 +1471,25 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             throw IllegalStateException("Фотоотчёт можно дополнять только до подтверждения задачи")
         }
 
+        val generatedPhotoId = "ph_${System.currentTimeMillis()}"
+        val syncedUri = PhotoCaptureUtils.ensureCloudSyncedUriString(uriString, generatedPhotoId)
         val newPhoto = PhotoReportItem(
-            id = "ph_${System.currentTimeMillis()}",
-            uriString = uriString.take(220_000),
+            id = generatedPhotoId,
+            uriString = syncedUri,
             authorId = actor.id,
             authorName = actor.shortName,
             capturedAtText = nowTimeText(),
             gpsCoords = gpsCoords.ifBlank { "55.7558° N, 37.6173° E" }.take(60),
             comment = comment.ifBlank { "Фотофиксация выполнения на объекте" }.take(180)
         )
-        val updatedPhotos = (task.photoItems + newPhoto.encode()).takeLast(15)
+        val updatedPhotos = sanitizePhotoItemsForTaskDoc(task.photoItems + newPhoto.encode())
         val newStatus = if (task.taskStatus == TaskStatus.NEW) TaskStatus.IN_PROGRESS.code else task.status
         val newHistory = (task.historyItems + StatusHistoryEntry(
             timestampText = nowTimeText(),
             actorName = actor.shortName,
             statusCode = newStatus,
             note = "Добавлено фото в отчёт (всего фото: ${updatedPhotos.size})"
-        ).encode()).takeLast(50)
+        ).encode()).takeLast(50).map { it.take(480) }
 
         val docRef = db.collection("tasks").document(task.id)
         try {
@@ -1379,7 +1505,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             throw e
         } catch (e: Exception) {
             val uid = auth.currentUser?.uid
-            if (uid != null) {
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (uid != null && isNotFound) {
                 try {
                     docRef.set(
                         taskToCreatePayload(
@@ -1394,7 +1521,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 } catch (e2: CancellationException) {
                     throw e2
                 } catch (e2: Exception) {
-                    handleFirestoreError(e2, OperationType.UPDATE, docRef.path)
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
                     throw e2
                 }
             } else {
@@ -1408,14 +1535,15 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         updatedTask: TaskDocument
     ): Result<Unit> = runCatching {
         require(updatedTask.id.isNotBlank()) { "Task ID must not be blank" }
-        val safePhotos = updatedTask.photoItems.takeLast(15).map { it.take(220_000) }
+        val safePhotos = sanitizePhotoItemsForTaskDoc(updatedTask.photoItems)
+        val safeHistory = updatedTask.historyItems.takeLast(50).map { it.take(480) }
         val docRef = db.collection("tasks").document(updatedTask.id)
         try {
             docRef.update(
                 mapOf(
                     "photoItems" to safePhotos,
                     "status" to updatedTask.status,
-                    "historyItems" to updatedTask.historyItems.takeLast(50),
+                    "historyItems" to safeHistory,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
@@ -1423,18 +1551,19 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             throw e
         } catch (e: Exception) {
             val uid = auth.currentUser?.uid
-            if (uid != null) {
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (uid != null && isNotFound) {
                 try {
                     docRef.set(
                         taskToCreatePayload(
                             uid,
-                            updatedTask.copy(photoItems = safePhotos)
+                            updatedTask.copy(photoItems = safePhotos, historyItems = safeHistory)
                         )
                     ).await()
                 } catch (e2: CancellationException) {
                     throw e2
                 } catch (e2: Exception) {
-                    handleFirestoreError(e2, OperationType.UPDATE, docRef.path)
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
                     throw e2
                 }
             } else {
@@ -1516,7 +1645,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         val uid = requireUserId()
         require(task.id.isNotBlank()) { "Task ID must not be blank" }
 
-        val safePhotos = task.photoItems.takeLast(15).map { it.take(220_000) }
+        val safePhotos = sanitizePhotoItemsForTaskDoc(task.photoItems)
         val currentPhotos = safePhotos.size
         val targetStatus = if (task.requiresApproval) TaskStatus.ON_REVIEW else TaskStatus.APPROVED
         val historyNote = if (targetStatus == TaskStatus.ON_REVIEW) {
@@ -1530,7 +1659,7 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             actorName = actor.shortName,
             statusCode = targetStatus.code,
             note = historyNote
-        ).encode()).takeLast(50)
+        ).encode()).takeLast(50).map { it.take(480) }
 
         val updatedComments = if (completionNote.isNotBlank()) {
             (task.commentItems + TaskCommentItem(
@@ -1542,9 +1671,9 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
                 mentionedUser = "",
                 createdAtText = nowTimeText(),
                 isRead = false
-            ).encode()).takeLast(50)
+            ).encode()).takeLast(50).map { it.take(480) }
         } else {
-            task.commentItems
+            task.commentItems.takeLast(50).map { it.take(480) }
         }
 
         val docRef = db.collection("tasks").document(task.id)
@@ -1566,24 +1695,30 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            try {
-                docRef.set(
-                    taskToCreatePayload(
-                        uid,
-                        task.copy(
-                            status = targetStatus.code,
-                            photoItems = safePhotos,
-                            historyItems = updatedHistory,
-                            commentItems = updatedComments,
-                            approvedByName = if (targetStatus == TaskStatus.APPROVED) actor.fullName else task.approvedByName
+            val isNotFound = (e as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.NOT_FOUND
+            if (isNotFound) {
+                try {
+                    docRef.set(
+                        taskToCreatePayload(
+                            uid,
+                            task.copy(
+                                status = targetStatus.code,
+                                photoItems = safePhotos,
+                                historyItems = updatedHistory,
+                                commentItems = updatedComments,
+                                approvedByName = if (targetStatus == TaskStatus.APPROVED) actor.fullName else task.approvedByName
+                            )
                         )
-                    )
-                ).await()
-            } catch (e2: CancellationException) {
-                throw e2
-            } catch (e2: Exception) {
-                handleFirestoreError(e2, OperationType.UPDATE, docRef.path)
-                throw e2
+                    ).await()
+                } catch (e2: CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    handleFirestoreError(e2, OperationType.CREATE, docRef.path)
+                    throw e2
+                }
+            } else {
+                handleFirestoreError(e, OperationType.UPDATE, docRef.path)
+                throw e
             }
         }
 

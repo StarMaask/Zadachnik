@@ -240,6 +240,10 @@ fun MainFeatureScreen(
     val subdivisionsList by viewModel.subdivisionsList.collectAsStateWithLifecycle()
     val sitesList by viewModel.sitesList.collectAsStateWithLifecycle()
     val isCloudSyncActive by viewModel.isCloudSyncActive.collectAsStateWithLifecycle()
+    val cloudPhotoCacheVersion by viewModel.cloudPhotoCacheVersion.collectAsStateWithLifecycle()
+    val uploadingPhotoTaskIds by viewModel.uploadingPhotoTaskIds.collectAsStateWithLifecycle()
+    val hydratingPhotoTaskIds by viewModel.hydratingPhotoTaskIds.collectAsStateWithLifecycle()
+    val failedPhotoSyncTaskIds by viewModel.failedPhotoSyncTaskIds.collectAsStateWithLifecycle()
 
     val triggerCloudGoogleConnect: (SiteMemberDocument?) -> Unit = { targetMember ->
         onGoogleSignInClicked(
@@ -1081,7 +1085,13 @@ fun MainFeatureScreen(
             onApproveReport = { note -> viewModel.approveReport(task, note) },
             onRejectReport = { reason -> viewModel.rejectReport(task, reason) },
             onArchiveTask = { viewModel.archiveTask(task) },
-            onDeleteTask = { viewModel.deleteTask(task) }
+            onDeleteTask = { viewModel.deleteTask(task) },
+            cloudPhotoCacheVersion = cloudPhotoCacheVersion,
+            isUploadingPhotosToCloud = task.id in uploadingPhotoTaskIds,
+            isHydratingCloudPhotos = task.id in hydratingPhotoTaskIds,
+            hasCloudPhotoSyncError = task.id in failedPhotoSyncTaskIds,
+            onRetryCloudSync = { viewModel.retryOrHydrateTaskPhotos(task.id) },
+            onRequestCloudPhotosHydration = { viewModel.hydrateTaskPhotosFromCloud(task) }
         )
     }
 

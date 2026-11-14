@@ -165,3 +165,60 @@ test("Audit log: allows create by owner, blocks update and delete", async () => 
   );
   await assertFails(aliceDb.collection("audit_logs").doc("log_1").delete());
 });
+
+test("Task photos collection: allows authenticated upload & cross-user read, blocks unauth, oversize, and cross-user overwrite", async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const now = new Date();
+  const validPhotoPayload = {
+    photoId: "ph_1700000000001_101",
+    taskId: "task_alice_1",
+    userId: ALICE_UID,
+    authorName: "Плиткин Д.",
+    imageBase64: "B".repeat(25000),
+    mimeType: "image/jpeg",
+    width: 1080,
+    height: 810,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Unauthenticated blocked
+  await assertFails(
+    unauthDb.collection("task_photos").doc("ph_1700000000001_101").set(validPhotoPayload)
+  );
+  await assertFails(
+    unauthDb.collection("task_photos").doc("ph_1700000000001_101").get()
+  );
+
+  // Oversize base64 (> 500,000) blocked
+  await assertFails(
+    aliceDb.collection("task_photos").doc("ph_oversize").set({
+      ...validPhotoPayload,
+      photoId: "ph_oversize",
+      imageBase64: "X".repeat(500001),
+    })
+  );
+
+  // Authenticated author uploads full photo
+  await assertSucceeds(
+    aliceDb.collection("task_photos").doc("ph_1700000000001_101").set(validPhotoPayload)
+  );
+
+  // Another authenticated user (supervisor) can read by doc and query by taskId
+  await assertSucceeds(
+    bobDb.collection("task_photos").doc("ph_1700000000001_101").get()
+  );
+  await assertSucceeds(
+    bobDb.collection("task_photos").where("taskId", "==", "task_alice_1").get()
+  );
+
+  // Another user cannot overwrite author's uploaded photo payload
+  await assertFails(
+    bobDb.collection("task_photos").doc("ph_1700000000001_101").update({
+      imageBase64: "C".repeat(1000),
+      updatedAt: new Date(),
+    })
+  );
+});

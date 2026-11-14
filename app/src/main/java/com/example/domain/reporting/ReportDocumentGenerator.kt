@@ -446,7 +446,7 @@ object ReportDocumentGenerator {
         val outFile = File(reportsDir, fileName)
 
         when (preview.exportFormat) {
-            ExportFormat.PDF -> writePdfFile(outFile, preview)
+            ExportFormat.PDF -> writePdfFile(context, outFile, preview)
             ExportFormat.XLSX -> writeXlsxFile(outFile, preview)
             ExportFormat.DOCX -> writeDocxFile(outFile, preview)
             ExportFormat.CSV -> writeCsvFile(outFile, preview)
@@ -688,7 +688,7 @@ object ReportDocumentGenerator {
     // 1. PDF WRITER (Явное визуальное разделение ОТЧЁТА ЗА ДЕНЬ и ПЛАНА НА СЛЕДУЮЩИЙ ДЕНЬ
     //    как на раздельных листах, так и на одном совмещённом листе)
     // =========================================================================
-    private fun writePdfFile(outFile: File, doc: GeneratedDocumentResult) {
+    private fun writePdfFile(context: Context, outFile: File, doc: GeneratedDocumentResult) {
         val pdf = PdfDocument()
         val pageWidth = 842 // A4 Landscape width in points
         val pageHeight = 595 // A4 Landscape height in points
@@ -1078,7 +1078,9 @@ object ReportDocumentGenerator {
                     fallbackAuthor = item.photo.authorName.ifBlank { item.assigneeFio },
                     fallbackTime = item.photo.capturedAtText,
                     fallbackGps = item.photo.gpsCoords,
-                    fallbackTaskTitle = item.taskTitle
+                    fallbackTaskTitle = item.taskTitle,
+                    context = context,
+                    photoId = item.photo.id
                 )
                 if (bmp != null) {
                     val dstRect = RectF(x + 6f, y + 6f, x + cardW - 6f, y + 125f)

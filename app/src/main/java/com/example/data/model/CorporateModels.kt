@@ -586,6 +586,27 @@ data class UserProfile(
 )
 
 @IgnoreExtraProperties
+data class TaskPhotoDocument(
+    @DocumentId val id: String = "",
+    val photoId: String = "",
+    val taskId: String = "",
+    val userId: String = "",
+    val authorName: String = "",
+    val imageBase64: String = "",
+    val mimeType: String = "image/jpeg",
+    val width: Long = 0L,
+    val height: Long = 0L,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    companion object {
+        fun sanitizePhotoDocId(rawId: String): String =
+            rawId.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(128)
+                .ifBlank { "ph_${System.currentTimeMillis()}" }
+    }
+}
+
+@IgnoreExtraProperties
 data class TaskDocument(
     @DocumentId val id: String = "",
     val userId: String = "",

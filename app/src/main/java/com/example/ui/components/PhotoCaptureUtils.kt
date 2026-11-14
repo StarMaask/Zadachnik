@@ -5,12 +5,17 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
+import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
 import android.util.Base64
 import android.util.LruCache
+import androidx.core.content.FileProvider
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -19,15 +24,16 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Утилита для сохранения реальных снимков с камеры (с нанесением штампа даты/времени/объекта),
- * кросс-девайсной упаковки сжатого JPEG в Base64 для синхронизации через Cloud Firestore,
- * генерации графических фотоштампов СМР и загрузки миниатюр/полноэкранных фото на любом устройстве.
+ * Утилита для съёмки и загрузки реальных фотографий (с камеры через FileProvider и из галереи),
+ * корректной обработки EXIF-ориентации и масштабирования, нанесения компактного штампа метаданных
+ * и кросс-девайсной синхронизации сжатого JPEG в Base64 через Cloud Firestore.
  */
 object PhotoCaptureUtils {
 
     private const val B64_DELIMITER = "#b64="
-    private const val MAX_CLOUD_IMAGE_DIMENSION = 560
-    private const val MAX_LOCAL_IMAGE_DIMENSION = 960
+    private const val MAX_CLOUD_IMAGE_DIMENSION = 720
+    private const val MAX_LOCAL_IMAGE_DIMENSION = 1080
+    private const val MAX_CLOUD_JPEG_BYTES = 45_000
 
     private val bitmapCache = object : LruCache<String, Bitmap>(24) {}
 
@@ -37,12 +43,22 @@ object PhotoCaptureUtils {
         return dir
     }
 
+    fun createTempCameraCaptureFile(context: Context): File {
+        val dir = File(context.cacheDir, "camera_tmp")
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, "cam_capture_${System.currentTimeMillis()}.jpg")
+    }
+
+    fun getFileProviderUri(context: Context, file: File): Uri {
+        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }
+
     fun nowStampText(): String =
         SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.forLanguageTag("ru")).format(Date())
 
     /**
      * Сжимает Bitmap в компактный JPEG и кодирует в строку Base64 (без переносов строк и символов '|'),
-     * чтобы снимок гарантированно передавался через Cloud Firestore на телефоны проверяющих ИТР и Руководителя.
+     * чтобы реальный снимок гарантированно передавался через Cloud Firestore на телефоны проверяющих.
      */
     fun encodeBitmapToCloudBase64(source: Bitmap): String {
         return runCatching {
@@ -63,11 +79,11 @@ object PhotoCaptureUtils {
             }
 
             val baos = ByteArrayOutputStream()
-            var quality = 64
+            var quality = 74
             scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
-            while (baos.size() > 28_000 && quality > 36) {
+            while (baos.size() > MAX_CLOUD_JPEG_BYTES && quality > 38) {
                 baos.reset()
-                quality -= 10
+                quality -= 8
                 scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
             }
             Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
@@ -83,9 +99,10 @@ object PhotoCaptureUtils {
             return uriOrPath
         }
         val cleanPath = uriOrPath.removePrefix("file://").trim()
+        if (cleanPath.startsWith("stamp://")) return uriOrPath
         val file = File(cleanPath)
         if (!file.exists()) return uriOrPath
-        val bmp = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull() ?: return uriOrPath
+        val bmp = decodeFileSafely(file, MAX_CLOUD_IMAGE_DIMENSION) ?: return uriOrPath
         val b64 = encodeBitmapToCloudBase64(bmp)
         return if (b64.isNotBlank()) {
             "${file.absolutePath}$B64_DELIMITER$b64"
@@ -94,8 +111,140 @@ object PhotoCaptureUtils {
         }
     }
 
+    private fun computeSampleSize(width: Int, height: Int, maxDim: Int): Int {
+        var inSampleSize = 1
+        while (width / inSampleSize > maxDim * 2 || height / inSampleSize > maxDim * 2) {
+            inSampleSize *= 2
+        }
+        return inSampleSize.coerceAtLeast(1)
+    }
+
+    private fun applyExifOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
+            else -> return bitmap
+        }
+        return runCatching {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        }.getOrDefault(bitmap)
+    }
+
+    private fun decodeFileSafely(file: File, maxDim: Int = MAX_LOCAL_IMAGE_DIMENSION): Bitmap? {
+        if (!file.exists() || file.length() <= 0L) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val decoded = runCatching {
+                val source = ImageDecoder.createSource(file)
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val w = info.size.width.coerceAtLeast(1)
+                    val h = info.size.height.coerceAtLeast(1)
+                    val maxSide = maxOf(w, h)
+                    if (maxSide > maxDim) {
+                        val ratio = maxDim.toFloat() / maxSide.toFloat()
+                        decoder.setTargetSize(
+                            (w * ratio).toInt().coerceAtLeast(1),
+                            (h * ratio).toInt().coerceAtLeast(1)
+                        )
+                    }
+                }
+            }.getOrNull()
+            if (decoded != null) return decoded
+        }
+
+        return runCatching {
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, boundsOpts)
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = computeSampleSize(boundsOpts.outWidth, boundsOpts.outHeight, maxDim)
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val raw = BitmapFactory.decodeFile(file.absolutePath, opts) ?: return null
+            val exif = runCatching { ExifInterface(file.absolutePath) }.getOrNull()
+            val orientation = exif?.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            ) ?: ExifInterface.ORIENTATION_NORMAL
+            applyExifOrientation(raw, orientation)
+        }.getOrNull()
+    }
+
+    private fun decodeUriSafely(
+        context: Context,
+        contentUri: Uri,
+        maxDim: Int = MAX_LOCAL_IMAGE_DIMENSION
+    ): Bitmap? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val decoded = runCatching {
+                val source = ImageDecoder.createSource(context.contentResolver, contentUri)
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val w = info.size.width.coerceAtLeast(1)
+                    val h = info.size.height.coerceAtLeast(1)
+                    val maxSide = maxOf(w, h)
+                    if (maxSide > maxDim) {
+                        val ratio = maxDim.toFloat() / maxSide.toFloat()
+                        decoder.setTargetSize(
+                            (w * ratio).toInt().coerceAtLeast(1),
+                            (h * ratio).toInt().coerceAtLeast(1)
+                        )
+                    }
+                }
+            }.getOrNull()
+            if (decoded != null) return decoded
+        }
+
+        // Надёжный fallback: копируем поток во временный файл, чтобы считать границы, EXIF и декодировать с inSampleSize
+        val tmpCopy = createTempCameraCaptureFile(context)
+        return try {
+            val copied = runCatching {
+                context.contentResolver.openInputStream(contentUri)?.use { input ->
+                    FileOutputStream(tmpCopy).use { out ->
+                        input.copyTo(out)
+                    }
+                    true
+                } ?: false
+            }.getOrDefault(false)
+            if (!copied || !tmpCopy.exists() || tmpCopy.length() <= 0L) return null
+            decodeFileSafely(tmpCopy, maxDim)
+        } finally {
+            runCatching { tmpCopy.delete() }
+        }
+    }
+
     /**
-     * Загружает Bitmap из content:// URI (например, из системного Photo Picker), наносит штамп СМР
+     * Обрабатывает реальный снимок с камеры, сохранённый через FileProvider, наносит компактный штамп
+     * и возвращает комбинированный путь + Base64 (#b64=...) для синхронизации между устройствами.
+     */
+    fun saveCameraFileWithStamp(
+        context: Context,
+        capturedFile: File,
+        taskTitle: String,
+        authorName: String,
+        gpsCoords: String,
+        comment: String
+    ): String? {
+        val decoded = decodeFileSafely(capturedFile, MAX_LOCAL_IMAGE_DIMENSION) ?: return null
+        return try {
+            saveCameraBitmapWithStamp(
+                context = context,
+                sourceBitmap = decoded,
+                taskTitle = taskTitle,
+                authorName = authorName,
+                gpsCoords = gpsCoords,
+                comment = comment
+            )
+        } finally {
+            runCatching { capturedFile.delete() }
+        }
+    }
+
+    /**
+     * Загружает реальное фото из content:// URI (например, из системного Photo Picker), наносит штамп
      * и возвращает комбинированный URI с встроенным Base64 для синхронизации между устройствами.
      */
     fun savePickedUriWithStamp(
@@ -106,12 +255,7 @@ object PhotoCaptureUtils {
         gpsCoords: String,
         comment: String
     ): String? {
-        val decoded = runCatching {
-            context.contentResolver.openInputStream(contentUri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            }
-        }.getOrNull() ?: return null
-
+        val decoded = decodeUriSafely(context, contentUri, MAX_LOCAL_IMAGE_DIMENSION) ?: return null
         return saveCameraBitmapWithStamp(
             context = context,
             sourceBitmap = decoded,
@@ -130,8 +274,15 @@ object PhotoCaptureUtils {
         gpsCoords: String,
         comment: String
     ): String {
-        val srcW = sourceBitmap.width.coerceAtLeast(1)
-        val srcH = sourceBitmap.height.coerceAtLeast(1)
+        val softwareSource = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            sourceBitmap.config == Bitmap.Config.HARDWARE
+        ) {
+            sourceBitmap.copy(Bitmap.Config.ARGB_8888, false) ?: sourceBitmap
+        } else {
+            sourceBitmap
+        }
+        val srcW = softwareSource.width.coerceAtLeast(1)
+        val srcH = softwareSource.height.coerceAtLeast(1)
         val maxSide = maxOf(srcW, srcH)
         val downScale = if (maxSide > MAX_LOCAL_IMAGE_DIMENSION) {
             MAX_LOCAL_IMAGE_DIMENSION.toFloat() / maxSide.toFloat()
@@ -140,17 +291,17 @@ object PhotoCaptureUtils {
         } else {
             1f
         }
-        val targetWidth = (srcW * downScale).toInt().coerceAtLeast(480)
-        val targetHeight = (srcH * downScale).toInt().coerceAtLeast(360)
+        val targetWidth = (srcW * downScale).toInt().coerceAtLeast(320)
+        val targetHeight = (srcH * downScale).toInt().coerceAtLeast(240)
 
         val outBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(outBitmap)
-        canvas.drawBitmap(
-            Bitmap.createScaledBitmap(sourceBitmap, targetWidth, targetHeight, true),
-            0f,
-            0f,
-            null
-        )
+        val scaledSource = if (targetWidth != srcW || targetHeight != srcH) {
+            Bitmap.createScaledBitmap(softwareSource, targetWidth, targetHeight, true)
+        } else {
+            softwareSource
+        }
+        canvas.drawBitmap(scaledSource, 0f, 0f, null)
 
         drawMetadataStampOverlay(
             canvas = canvas,
@@ -177,38 +328,6 @@ object PhotoCaptureUtils {
         return combinedUri
     }
 
-    fun generatePhotoStampFile(
-        context: Context,
-        taskTitle: String,
-        authorName: String,
-        gpsCoords: String,
-        comment: String,
-        photoIndex: Int
-    ): String {
-        val stampTime = nowStampText()
-        val bitmap = createStampBitmap(
-            taskTitle = taskTitle,
-            authorName = authorName,
-            gpsCoords = gpsCoords,
-            comment = comment,
-            stampTimeText = stampTime,
-            photoIndex = photoIndex
-        )
-
-        val file = File(photosDir(context), "stamp_${System.currentTimeMillis()}.jpg")
-        FileOutputStream(file).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)
-        }
-        val b64 = encodeBitmapToCloudBase64(bitmap)
-        val combinedUri = if (b64.isNotBlank()) {
-            "${file.absolutePath}$B64_DELIMITER$b64"
-        } else {
-            file.absolutePath
-        }
-        bitmapCache.put(cacheKeyFor(combinedUri), bitmap)
-        return combinedUri
-    }
-
     fun createStampBitmap(
         taskTitle: String,
         authorName: String,
@@ -222,25 +341,11 @@ object PhotoCaptureUtils {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
-        // Фон чертежной карточки фотофиксации
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.parseColor("#0F172A")
         }
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
 
-        // Координатная сетка
-        val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.parseColor("#1E293B")
-            strokeWidth = 2f
-        }
-        for (x in 0..width step 50) {
-            canvas.drawLine(x.toFloat(), 0f, x.toFloat(), height.toFloat(), gridPaint)
-        }
-        for (y in 0..height step 50) {
-            canvas.drawLine(0f, y.toFloat(), width.toFloat(), y.toFloat(), gridPaint)
-        }
-
-        // Рамка штампа в центре
         val cardPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.parseColor("#1E293B")
             style = Paint.Style.FILL
@@ -250,23 +355,16 @@ object PhotoCaptureUtils {
             style = Paint.Style.STROKE
             strokeWidth = 3.5f
         }
-        val rect = RectF(48f, 44f, (width - 48).toFloat(), (height - 165).toFloat())
+        val rect = RectF(48f, 44f, (width - 48).toFloat(), (height - 150).toFloat())
         canvas.drawRoundRect(rect, 22f, 22f, cardPaint)
         canvas.drawRoundRect(rect, 22f, 22f, borderPaint)
 
-        // Бейдж подтверждённой фиксации
-        val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.parseColor("#1D4ED8")
-            style = Paint.Style.FILL
-        }
-        canvas.drawRoundRect(RectF(80f, 74f, 430f, 118f), 12f, 12f, badgePaint)
-
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.parseColor("#EFF6FF")
-            textSize = 22f
+            textSize = 24f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        canvas.drawText("ФОТОФИКСАЦИЯ #$photoIndex", 98f, 104f, titlePaint)
+        canvas.drawText("ФОТОФИКСАЦИЯ #$photoIndex", 80f, 108f, titlePaint)
 
         val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.WHITE
@@ -280,33 +378,22 @@ object PhotoCaptureUtils {
             color = AndroidColor.parseColor("#CBD5E1")
             textSize = 21f
         }
-        val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.parseColor("#38BDF8")
-            textSize = 21f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        }
-        canvas.drawText(
-            "Отметка: ${comment.ifBlank { "Выполнение СМР на объекте" }.take(44)}",
-            80f,
-            222f,
-            accentPaint
-        )
         canvas.drawText(
             "Исполнитель: ${authorName.ifBlank { "Сотрудник участка" }}",
             80f,
-            268f,
+            240f,
             subPaint
         )
         canvas.drawText(
             "Дата и время: ${stampTimeText.ifBlank { nowStampText() }}",
             80f,
-            314f,
+            286f,
             subPaint
         )
         canvas.drawText(
-            "Геометка: ${gpsCoords.ifBlank { "Участок СМР" }.take(44)}",
+            "Геометка: ${gpsCoords.ifBlank { "Участок" }.take(44)}",
             80f,
-            360f,
+            332f,
             subPaint
         )
 
@@ -333,44 +420,44 @@ object PhotoCaptureUtils {
         comment: String,
         stampTimeText: String = nowStampText()
     ) {
-        val barHeight = (height * 0.20f).coerceAtLeast(104f)
+        val barHeight = (height * 0.14f).coerceIn(78f, 128f)
         val topY = height - barHeight
 
         val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(215, 15, 23, 42)
+            color = AndroidColor.argb(196, 15, 23, 42)
         }
         canvas.drawRect(0f, topY, width.toFloat(), height.toFloat(), barPaint)
 
-        val textScale = (width / 720f).coerceIn(0.72f, 1.45f)
+        val textScale = (width / 760f).coerceIn(0.66f, 1.35f)
         val line1Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = AndroidColor.parseColor("#F8FAFC")
-            textSize = 21f * textScale
+            textSize = 19f * textScale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
         val line2Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.parseColor("#94A3B8")
-            textSize = 17f * textScale
+            color = AndroidColor.parseColor("#CBD5E1")
+            textSize = 15.5f * textScale
         }
 
-        val padX = 22f * textScale
-        val effectiveTitle = taskTitle.ifBlank { comment.ifBlank { "Фотоотчёт СМР" } }
+        val padX = 20f * textScale
+        val effectiveTitle = taskTitle.ifBlank { comment.ifBlank { "Фотофиксация" } }
         canvas.drawText(
             "${stampTimeText.ifBlank { nowStampText() }} • ${effectiveTitle.take(36)}",
             padX,
-            topY + 34f * textScale,
+            topY + 28f * textScale,
             line1Paint
         )
         canvas.drawText(
-            "Автор: ${authorName.ifBlank { "Исполнитель" }} • GPS: ${gpsCoords.ifBlank { "Участок" }.take(34)}",
+            "Автор: ${authorName.ifBlank { "Исполнитель" }} • ${gpsCoords.ifBlank { "Участок" }.take(34)}",
             padX,
-            topY + 64f * textScale,
+            topY + 54f * textScale,
             line2Paint
         )
-        if (comment.isNotBlank()) {
+        if (comment.isNotBlank() && barHeight >= 96f) {
             canvas.drawText(
-                "Комментарий: ${comment.take(48)}",
+                comment.take(52),
                 padX,
-                topY + 92f * textScale,
+                topY + 78f * textScale,
                 line2Paint
             )
         }
@@ -389,9 +476,9 @@ object PhotoCaptureUtils {
 
     /**
      * Загружает Bitmap из:
-     * 1) локального файла на устройстве (если снимок сделан на этом телефоне);
+     * 1) локального файла на устройстве (если снимок сделан/выбран на этом телефоне);
      * 2) встроенного в uriString блока Base64 (#b64=... или data:image/...;base64,...), переданного через Cloud Firestore с другого телефона;
-     * 3) если снимок был отправлен со старой версии приложения без Base64-полезной нагрузки, генерирует графический фотоштамп СМР с метаданными отчёта.
+     * 3) для явно виртуальных старых штампов (stamp://) генерирует карточку; для реальных фото без файла/Base64 возвращает null.
      */
     fun loadBitmapFromUriOrPath(
         uriOrPath: String,
@@ -420,9 +507,7 @@ object PhotoCaptureUtils {
         if (localPart.isNotBlank() && !localPart.startsWith("stamp://") && !localPart.startsWith("data:")) {
             val file = File(localPart)
             if (file.exists()) {
-                val decodedFile = runCatching {
-                    BitmapFactory.decodeFile(file.absolutePath)
-                }.getOrNull()
+                val decodedFile = decodeFileSafely(file, MAX_LOCAL_IMAGE_DIMENSION)
                 if (decodedFile != null) {
                     bitmapCache.put(key, decodedFile)
                     return decodedFile
@@ -442,12 +527,12 @@ object PhotoCaptureUtils {
             }
         }
 
-        // 3. Fallback для ранее отправленных отчётов без Base64 или виртуальных штампов (stamp://)
-        if (uriOrPath.isNotBlank() || fallbackComment.isNotBlank()) {
+        // 3. Явный fallback только для legacy stamp://
+        if (localPart.startsWith("stamp://")) {
             val inferredIndex = Regex("""#(\d+)""").find(fallbackComment)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 1
             val generated = createStampBitmap(
                 taskTitle = fallbackTaskTitle.ifBlank { fallbackComment.ifBlank { "Фотоотчёт по заданию" } },
-                authorName = fallbackAuthor.ifBlank { "Исполнитель СМР" },
+                authorName = fallbackAuthor.ifBlank { "Исполнитель" },
                 gpsCoords = fallbackGps.ifBlank { "Строительный участок" },
                 comment = fallbackComment.ifBlank { "Фотофиксация #$inferredIndex" },
                 stampTimeText = fallbackTime.ifBlank { nowStampText() },

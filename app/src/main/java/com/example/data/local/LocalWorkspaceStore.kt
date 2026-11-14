@@ -22,6 +22,8 @@ object LocalWorkspaceStore {
     private const val KEY_SITE_NAME = "site_name"
     private const val KEY_SUBDIVISIONS = "admin_subdivisions_v2_json"
     private const val KEY_SITES = "admin_sites_v2_json"
+    private const val KEY_NOTIFIED_TASK_EVENTS = "notified_task_events_v1"
+    private const val KEY_TASK_NOTIF_BASELINE_READY = "task_notif_baseline_ready_v1"
 
     val DEFAULT_SUBDIVISIONS: List<String> = emptyList()
 
@@ -39,6 +41,37 @@ object LocalWorkspaceStore {
         "Участок №2 — СМР и Отделка",
         "Участок №3 — Наружные сети и Благоустройство"
     )
+
+    fun loadNotifiedTaskEvents(context: Context): Set<String> {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getStringSet(KEY_NOTIFIED_TASK_EVENTS, emptySet())
+            ?.toSet()
+            ?: emptySet()
+    }
+
+    fun saveNotifiedTaskEvents(context: Context, events: Set<String>) {
+        val bounded = if (events.size > 600) {
+            events.toList().takeLast(600).toSet()
+        } else {
+            events.toSet()
+        }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet(KEY_NOTIFIED_TASK_EVENTS, bounded)
+            .apply()
+    }
+
+    fun isTaskNotifBaselineReady(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_TASK_NOTIF_BASELINE_READY, false)
+    }
+
+    fun setTaskNotifBaselineReady(context: Context, ready: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_TASK_NOTIF_BASELINE_READY, ready)
+            .apply()
+    }
 
     fun loadOrganizationName(context: Context): String {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

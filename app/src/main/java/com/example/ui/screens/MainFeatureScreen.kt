@@ -186,6 +186,8 @@ fun MainFeatureScreen(
 @Composable
 fun MainFeatureScreen(
     session: CorporateLoginSession,
+    initialTaskId: String? = null,
+    onConsumeInitialTaskId: () -> Unit = {},
     onSignOutComplete: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -280,6 +282,14 @@ fun MainFeatureScreen(
     var showCreateTaskDialog by remember { mutableStateOf(false) }
     var createDialogTargetEpochDay by remember(currentEpochDay) { mutableLongStateOf(currentEpochDay) }
     var selectedTaskId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(initialTaskId, tasksState) {
+        val targetId = initialTaskId?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val list = (tasksState as? UiState.Success)?.data ?: emptyList()
+        if (list.any { it.id == targetId }) {
+            selectedTaskId = targetId
+            onConsumeInitialTaskId()
+        }
+    }
     var showSearchBar by remember { mutableStateOf(false) }
     var showTopOverflowMenu by remember { mutableStateOf(false) }
     var showOrgSettingsDialog by remember { mutableStateOf(false) }
@@ -294,8 +304,8 @@ fun MainFeatureScreen(
         onResult = {}
     )
 
-    LaunchedEffect(isAdminOrHead) {
-        if (isAdminOrHead && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS
@@ -1047,6 +1057,7 @@ fun MainFeatureScreen(
             onDismiss = { selectedTaskId = null },
             onAddPhoto = { uri, gps, cmt -> viewModel.addPhotoToTask(task, uri, gps, cmt) },
             onAddPhotosBatch = { items, gps -> viewModel.addPhotosToTask(task, items, gps) },
+            onPhotoCaptureError = { errMsg -> viewModel.showBanner(errMsg) },
             onDeletePhoto = { photoId -> viewModel.deletePhotoFromTask(task, photoId) },
             onToggleSubtask = { subId -> viewModel.toggleSubtask(task, subId) },
             onUpdateSubtaskVolume = { subId, vol -> viewModel.updateSubtaskVolume(task, subId, vol) },

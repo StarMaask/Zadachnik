@@ -40,19 +40,27 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val initialTaskIdFromIntent = intent?.getStringExtra("open_task_id")
         setContent {
             MyApplicationTheme {
-                AppNavigation()
+                AppNavigation(initialOpenTaskId = initialTaskIdFromIntent)
             }
         }
     }
 }
 
 @Composable
-fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
+fun AppNavigation(
+    auth: FirebaseAuth = Firebase.auth,
+    initialOpenTaskId: String? = null
+) {
     val context = LocalContext.current
     val currentUser by auth.authStateFlow()
         .collectAsStateWithLifecycle(initialValue = auth.currentUser)
+
+    var pendingOpenTaskId by remember(initialOpenTaskId) {
+        mutableStateOf(initialOpenTaskId)
+    }
 
     var localCorporateSession by remember {
         mutableStateOf(loadSavedCorporateSession(context))
@@ -96,6 +104,8 @@ fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
         key(activeSession.userId, activeSession.email, activeSession.isHeadActivated) {
             MainFeatureScreen(
                 session = activeSession,
+                initialTaskId = pendingOpenTaskId,
+                onConsumeInitialTaskId = { pendingOpenTaskId = null },
                 onSignOutComplete = {
                     localCorporateSession = null
                 }

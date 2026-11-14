@@ -97,6 +97,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -121,12 +122,10 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import android.graphics.SurfaceTexture
-import android.view.TextureView
+import java.io.File
 import java.util.Calendar
 import java.util.Locale
 import com.example.data.model.CorporateEmployee
@@ -404,6 +403,7 @@ fun TaskDetailDialog(
     onAddPhotosBatch: (items: List<Pair<String, String>>, gpsCoords: String) -> Unit = { items, gps ->
         items.forEach { (uri, comment) -> onAddPhoto(uri, gps, comment) }
     },
+    onPhotoCaptureError: (String) -> Unit = {},
     onDeletePhoto: (photoId: String) -> Unit = {},
     onToggleSubtask: (subtaskId: String) -> Unit,
     onUpdateSubtaskVolume: (subtaskId: String, completedVol: Double) -> Unit = { _, _ -> },
@@ -494,58 +494,147 @@ fun TaskDetailDialog(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showExtraSections by remember { mutableStateOf(false) }
 
-    // Современная студия фотосъёмки СМР без промежуточного подтверждения каждого снимка
-    var continuousShootingMode by remember { mutableStateOf(true) }
+    // Реальная фотосъёмка (через FileProvider + системная камера) и выбор реальных фото из галереи
+    var continuousShootingMode by remember { mutableStateOf(false) }
     var burstShotCount by remember { mutableIntStateOf(0) }
-    var showModernCameraDialog by remember { mutableStateOf(false) }
+    var photoStatusError by remember { mutableStateOf<String?>(null) }
+    var pendingCameraFilePath by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedPhotoForPreview by remember { mutableStateOf<PhotoReportItem?>(null) }
+    var launchNextBurstShot by remember { mutableStateOf<(() -> Unit)?>(null) }
 
-    val cameraLauncher = rememberLauncherForActivityResult(
+    val fallbackCameraPreviewLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap ->
         if (bitmap != null) {
+            val commentStr = photoComment.trim().ifBlank { "Фотофиксация #${task.photoItems.size + 1}" }
             val savedPath = PhotoCaptureUtils.saveCameraBitmapWithStamp(
                 context = context,
                 sourceBitmap = bitmap,
                 taskTitle = task.title,
                 authorName = activeEmployee.shortName,
                 gpsCoords = photoGps,
-                comment = photoComment.ifBlank { "Кадр #${task.photoItems.size + 1}" }
+                comment = commentStr
             )
-            onAddPhoto(
-                savedPath,
-                photoGps,
-                photoComment.ifBlank { "Снимок с камеры #${task.photoItems.size + 1}" }
-            )
+            photoStatusError = null
+            onAddPhoto(savedPath, photoGps, commentStr)
+            photoComment = ""
             burstShotCount++
+        } else {
+            val msg = "Снимок с камеры не получен"
+            photoStatusError = msg
         }
     }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            val effectiveComment = photoComment.ifBlank { "Фотофиксация #${task.photoItems.size + 1}" }
-            val savedPath = PhotoCaptureUtils.savePickedUriWithStamp(
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val path = pendingCameraFilePath
+        pendingCameraFilePath = null
+        val file = path?.let { File(it) }
+        if (success && file != null && file.exists() && file.length() > 0L) {
+            val nextIdx = task.photoItems.size + 1
+            val effectiveComment = photoComment.trim().ifBlank { "Фотофиксация #$nextIdx" }
+            val savedPath = PhotoCaptureUtils.saveCameraFileWithStamp(
                 context = context,
-                contentUri = uri,
+                capturedFile = file,
                 taskTitle = task.title,
                 authorName = activeEmployee.shortName,
                 gpsCoords = photoGps,
                 comment = effectiveComment
             )
             if (savedPath != null) {
+                photoStatusError = null
                 onAddPhoto(savedPath, photoGps, effectiveComment)
                 photoComment = ""
+                burstShotCount++
+                if (continuousShootingMode) {
+                    launchNextBurstShot?.invoke()
+                }
+            } else {
+                val msg = "Не удалось обработать снимок с камеры"
+                photoStatusError = msg
+                onPhotoCaptureError(msg)
+            }
+        } else {
+            file?.let { runCatching { it.delete() } }
+        }
+    }
+
+    val openNativeCamera: () -> Unit = {
+        photoStatusError = null
+        runCatching {
+            val tempFile = PhotoCaptureUtils.createTempCameraCaptureFile(context)
+            val tempUri = PhotoCaptureUtils.getFileProviderUri(context, tempFile)
+            pendingCameraFilePath = tempFile.absolutePath
+            takePictureLauncher.launch(tempUri)
+        }.onFailure {
+            pendingCameraFilePath = null
+            runCatching {
+                fallbackCameraPreviewLauncher.launch(null)
+            }.onFailure {
+                val msg = "Камера недоступна на этом устройстве. Выберите фото из галереи."
+                photoStatusError = msg
+                onPhotoCaptureError(msg)
+            }
+        }
+    }
+    launchNextBurstShot = openNativeCamera
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 5)
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            photoStatusError = null
+            val baseIndex = task.photoItems.size + 1
+            val customBaseComment = photoComment.trim()
+            val savedBatch = mutableListOf<Pair<String, String>>()
+            var failedCount = 0
+            uris.forEachIndexed { idx, uri ->
+                val itemComment = if (customBaseComment.isNotBlank()) {
+                    if (uris.size > 1) "$customBaseComment (${idx + 1})" else customBaseComment
+                } else {
+                    "Фотофиксация #${baseIndex + idx}"
+                }
+                val savedPath = PhotoCaptureUtils.savePickedUriWithStamp(
+                    context = context,
+                    contentUri = uri,
+                    taskTitle = task.title,
+                    authorName = activeEmployee.shortName,
+                    gpsCoords = photoGps,
+                    comment = itemComment
+                )
+                if (savedPath != null) {
+                    savedBatch.add(savedPath to itemComment)
+                } else {
+                    failedCount++
+                }
+            }
+            if (savedBatch.isNotEmpty()) {
+                onAddPhotosBatch(savedBatch, photoGps)
+                photoComment = ""
+            }
+            if (failedCount > 0) {
+                val msg = if (savedBatch.isEmpty()) {
+                    "Не удалось загрузить выбранное фото"
+                } else {
+                    "Загружено ${savedBatch.size} фото, не удалось прочитать: $failedCount"
+                }
+                photoStatusError = msg
+                onPhotoCaptureError(msg)
             }
         }
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
-    ) { _ ->
-        // В любом случае открываем современное окно камеры СМР без промежуточных подтверждений
-        showModernCameraDialog = true
+    ) { granted ->
+        if (granted) {
+            openNativeCamera()
+        } else {
+            val msg = "Доступ к камере запрещён. Выберите реальное фото из галереи или разрешите камеру в настройках."
+            photoStatusError = msg
+            onPhotoCaptureError(msg)
+        }
     }
 
     val tokens = LocalAppThemeTokens.current
@@ -1530,7 +1619,7 @@ fun TaskDetailDialog(
                             }
 
                             if (task.taskStatus != TaskStatus.APPROVED && task.taskStatus != TaskStatus.ARCHIVED) {
-                                // Пунктирная зона Drag-and-Drop / Dropzone для добавления фото
+                                // Пунктирная зона для реальной фотосъёмки или выбора фото из галереи
                                 val dashColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
                                 val dropzoneBg = MaterialTheme.colorScheme.surfaceVariant.copy(
                                     alpha = if (tokens.isDark) 0.25f else 0.35f
@@ -1559,18 +1648,18 @@ fun TaskDetailDialog(
                                                 Manifest.permission.CAMERA
                                             ) == PackageManager.PERMISSION_GRANTED
                                             if (hasCamPerm) {
-                                                showModernCameraDialog = true
+                                                openNativeCamera()
                                             } else {
                                                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                                             }
                                         }
-                                        .padding(vertical = 20.dp, horizontal = 16.dp)
+                                        .padding(vertical = 18.dp, horizontal = 16.dp)
                                         .testTag("capture_camera_button"),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         Surface(
                                             shape = CircleShape,
@@ -1580,7 +1669,7 @@ fun TaskDetailDialog(
                                             Box(contentAlignment = Alignment.Center) {
                                                 Icon(
                                                     imageVector = Icons.Default.CameraAlt,
-                                                    contentDescription = "Добавить фото",
+                                                    contentDescription = "Сделать фото",
                                                     tint = MaterialTheme.colorScheme.primary,
                                                     modifier = Modifier.size(20.dp)
                                                 )
@@ -1593,64 +1682,61 @@ fun TaskDetailDialog(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Нажмите для съёмки с камеры или прикрепите фотофиксацию",
+                                            text = "Нажмите для съёмки реального фото на камеру или выберите из галереи",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             textAlign = TextAlign.Center
                                         )
                                         Row(
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            TextButton(
+                                            OutlinedButton(
+                                                onClick = {
+                                                    val hasCamPerm = ContextCompat.checkSelfPermission(
+                                                        context,
+                                                        Manifest.permission.CAMERA
+                                                    ) == PackageManager.PERMISSION_GRANTED
+                                                    if (hasCamPerm) {
+                                                        openNativeCamera()
+                                                    } else {
+                                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                                    }
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier.testTag("native_camera_photo_button")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.CameraAlt,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = "Камера",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                            Button(
                                                 onClick = {
                                                     photoPickerLauncher.launch(
                                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                                     )
                                                 },
-                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                shape = RoundedCornerShape(10.dp),
                                                 modifier = Modifier.testTag("pick_gallery_photo_button")
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.PhotoCamera,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(5.dp))
-                                                Text(
-                                                    text = "Из галереи",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    fontWeight = FontWeight.SemiBold
-                                                )
-                                            }
-                                            TextButton(
-                                                onClick = {
-                                                    val savedStampPath = PhotoCaptureUtils.generatePhotoStampFile(
-                                                        context = context,
-                                                        taskTitle = task.title,
-                                                        authorName = activeEmployee.shortName,
-                                                        gpsCoords = photoGps,
-                                                        comment = photoComment.ifBlank { "Контрольный снимок узла" },
-                                                        photoIndex = task.photoItems.size + 1
-                                                    )
-                                                    onAddPhoto(
-                                                        savedStampPath,
-                                                        photoGps,
-                                                        photoComment.ifBlank { "Фотофиксация #${task.photoItems.size + 1}" }
-                                                    )
-                                                    photoComment = ""
-                                                },
-                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                                modifier = Modifier.testTag("instant_photo_stamp_button")
                                             ) {
                                                 Icon(
                                                     imageVector = Icons.Default.AddAPhoto,
                                                     contentDescription = null,
-                                                    modifier = Modifier.size(14.dp)
+                                                    modifier = Modifier.size(15.dp)
                                                 )
-                                                Spacer(modifier = Modifier.width(5.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
                                                 Text(
-                                                    text = "+ Быстрая фотофиксация",
+                                                    text = "Из галереи",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
@@ -1659,7 +1745,22 @@ fun TaskDetailDialog(
                                     }
                                 }
 
-                                // Аккуратный тумблер «Непрерывная съёмка» с подписью мелким шрифтом
+                                photoStatusError?.let { errText ->
+                                    Surface(
+                                        color = crimsonSecondary.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            text = errText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = crimsonSecondary,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                        )
+                                    }
+                                }
+
+                                // Тумблер «Серия кадров подряд» (повторный запуск камеры после кадра)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1668,7 +1769,7 @@ fun TaskDetailDialog(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "Непрерывная съёмка (серия кадров подряд)",
+                                        text = "Серия кадров (непрерывная съёмка с камеры)",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1944,27 +2045,6 @@ fun TaskDetailDialog(
                 }
             }
         }
-    }
-
-    if (showModernCameraDialog) {
-        ModernPhotoCaptureDialog(
-            taskTitle = task.title,
-            authorName = activeEmployee.shortName,
-            gpsCoords = photoGps,
-            initialComment = photoComment,
-            existingPhotoCount = task.photoItems.size,
-            minRequiredPhotos = task.minPhotoCount.toInt().coerceAtLeast(1),
-            onOpenSystemCamera = {
-                showModernCameraDialog = false
-                cameraLauncher.launch(null)
-            },
-            onSaveCapturedPhotos = { capturedItems ->
-                onAddPhotosBatch(capturedItems, photoGps)
-                photoComment = ""
-                showModernCameraDialog = false
-            },
-            onDismiss = { showModernCameraDialog = false }
-        )
     }
 
     selectedPhotoForPreview?.let { photoItem ->
@@ -2345,560 +2425,6 @@ fun FullScreenPhotoDialog(
             }
         }
     }
-}
-
-/**
- * Современная студия фотосъёмки СМР:
- * - Снимает кадры мгновенно по нажатию на кнопку затвора (или касанием видоискателя) БЕЗ промежуточного диалога подтверждения каждого снимка.
- * - Отображает живой видоискатель камеры (при наличии разрешения и камеры) с инженерным штампом СМР (дата/время, GPS, автор, задача).
- * - Накапливает серию снимков в нижней ленте миниатюр с возможностью удалить лишний кадр.
- * - Завершает фотосъёмку и прикрепляет все сделанные кадры по нажатию кнопки «Сохранить».
- */
-@Suppress("DEPRECATION")
-@Composable
-fun ModernPhotoCaptureDialog(
-    taskTitle: String,
-    authorName: String,
-    gpsCoords: String,
-    initialComment: String,
-    existingPhotoCount: Int,
-    minRequiredPhotos: Int,
-    onOpenSystemCamera: () -> Unit,
-    onSaveCapturedPhotos: (List<Pair<String, String>>) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val context = LocalContext.current
-    val hasCameraPermission = remember {
-        ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    val capturedSessionItems = remember { mutableStateListOf<Pair<String, String>>() }
-    var captionInput by remember { mutableStateOf(initialComment) }
-    var tapToShoot by remember { mutableStateOf(true) }
-    var lastShotFlashTrigger by remember { mutableIntStateOf(0) }
-    var liveTextureView by remember { mutableStateOf<TextureView?>(null) }
-
-    val takeInstantShot: () -> Unit = {
-        val shotNum = existingPhotoCount + capturedSessionItems.size + 1
-        val effectiveCaption = captionInput.trim().ifBlank { "Фотофиксация #$shotNum" }
-        val liveBitmap = runCatching { liveTextureView?.bitmap }.getOrNull()
-        val savedPath = if (liveBitmap != null && liveBitmap.width > 32 && liveBitmap.height > 32) {
-            PhotoCaptureUtils.saveCameraBitmapWithStamp(
-                context = context,
-                sourceBitmap = liveBitmap,
-                taskTitle = taskTitle,
-                authorName = authorName,
-                gpsCoords = gpsCoords,
-                comment = effectiveCaption
-            )
-        } else {
-            PhotoCaptureUtils.generatePhotoStampFile(
-                context = context,
-                taskTitle = taskTitle,
-                authorName = authorName,
-                gpsCoords = gpsCoords,
-                comment = effectiveCaption,
-                photoIndex = shotNum
-            )
-        }
-        capturedSessionItems.add(savedPath to effectiveCaption)
-        lastShotFlashTrigger++
-    }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .systemBarsPadding()
-                .imePadding()
-                .padding(horizontal = 12.dp, vertical = 20.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.88f),
-                shape = RoundedCornerShape(24.dp),
-                color = Color(0xFF090D16),
-                shadowElevation = 18.dp,
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.SpaceBetween
-                ) {
-                    // 1. ВЕРХНЯЯ ПАНЕЛЬ КАМЕРЫ СМР
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF10B981))
-                                )
-                                Text(
-                                    text = "КАМЕРА СМР",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF10B981),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = taskTitle.ifBlank { "Фотофиксация выполнения работ" },
-                                style = MaterialTheme.typography.titleSmall,
-                                color = Color.White,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            val totalWithSession = existingPhotoCount + capturedSessionItems.size
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = if (totalWithSession >= minRequiredPhotos) {
-                                    Color(0xFF10B981).copy(alpha = 0.22f)
-                                } else {
-                                    Color(0xFF3B82F6).copy(alpha = 0.22f)
-                                }
-                            ) {
-                                Text(
-                                    text = "Кадров: $totalWithSession / $minRequiredPhotos",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (totalWithSession >= minRequiredPhotos) {
-                                        Color(0xFF34D399)
-                                    } else {
-                                        Color(0xFF60A5FA)
-                                    },
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                )
-                            }
-
-                            if (capturedSessionItems.isNotEmpty()) {
-                                Button(
-                                    onClick = {
-                                        onSaveCapturedPhotos(capturedSessionItems.toList())
-                                    },
-                                    shape = RoundedCornerShape(999.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF10B981),
-                                        contentColor = Color.White
-                                    ),
-                                    modifier = Modifier
-                                        .height(34.dp)
-                                        .testTag("top_save_captured_photos_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Готово (${capturedSessionItems.size})",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-
-                            IconButton(
-                                onClick = onDismiss,
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.08f))
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Закрыть камеру",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                // 2. ОБЛАСТЬ ВИДОИСКАТЕЛЯ С ЖИВЫМ ШТАМПОМ СМР И ТАПОМ ДЛЯ СЪЁМКИ
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color(0xFF111827),
-                                    Color(0xFF1E293B),
-                                    Color(0xFF0F172A)
-                                )
-                            )
-                        )
-                        .clickable(enabled = tapToShoot) {
-                            takeInstantShot()
-                        }
-                        .testTag("camera_viewfinder_box")
-                ) {
-                    if (hasCameraPermission) {
-                        AndroidView(
-                            factory = { ctx ->
-                                TextureView(ctx).apply {
-                                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                        private var cameraInstance: android.hardware.Camera? = null
-
-                                        override fun onSurfaceTextureAvailable(
-                                            surface: SurfaceTexture,
-                                            width: Int,
-                                            height: Int
-                                        ) {
-                                            runCatching {
-                                                cameraInstance = android.hardware.Camera.open()?.apply {
-                                                    setDisplayOrientation(90)
-                                                    setPreviewTexture(surface)
-                                                    startPreview()
-                                                }
-                                            }
-                                        }
-
-                                        override fun onSurfaceTextureSizeChanged(
-                                            surface: SurfaceTexture,
-                                            width: Int,
-                                            height: Int
-                                        ) = Unit
-
-                                        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                                            runCatching {
-                                                cameraInstance?.stopPreview()
-                                                cameraInstance?.release()
-                                            }
-                                            cameraInstance = null
-                                            return true
-                                        }
-
-                                        override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
-                                    }
-                                    liveTextureView = this
-                                }
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-
-                    // Инженерная прицельная сетка и рамка фокуса
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(20.dp)
-                            .drawBehind {
-                                val stroke = 2.dp.toPx()
-                                val cornerLen = 28.dp.toPx()
-                                val bracketColor = Color.White.copy(alpha = 0.55f)
-                                // Верхний левый угол
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, 0f), androidx.compose.ui.geometry.Offset(cornerLen, 0f), stroke)
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, 0f), androidx.compose.ui.geometry.Offset(0f, cornerLen), stroke)
-                                // Верхний правый угол
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, 0f), androidx.compose.ui.geometry.Offset(size.width - cornerLen, 0f), stroke)
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, 0f), androidx.compose.ui.geometry.Offset(size.width, cornerLen), stroke)
-                                // Нижний левый угол
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, size.height), androidx.compose.ui.geometry.Offset(cornerLen, size.height), stroke)
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(0f, size.height), androidx.compose.ui.geometry.Offset(0f, size.height - cornerLen), stroke)
-                                // Нижний правый угол
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, size.height), androidx.compose.ui.geometry.Offset(size.width - cornerLen, size.height), stroke)
-                                drawLine(bracketColor, androidx.compose.ui.geometry.Offset(size.width, size.height), androidx.compose.ui.geometry.Offset(size.width, size.height - cornerLen), stroke)
-                            }
-                    )
-
-                    // Верхний бейдж режима съёмки без подтверждения
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = Color.Black.copy(alpha = 0.55f)
-                        ) {
-                            Text(
-                                text = if (lastShotFlashTrigger > 0) {
-                                    "✓ Кадр #${capturedSessionItems.size} снят мгновенно — продолжайте съёмку или нажмите «Сохранить»"
-                                } else {
-                                    "Нажмите на затвор или экран для мгновенного снимка без подтверждения"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-
-                    // Центральный индикатор видоискателя
-                    Column(
-                        modifier = Modifier.align(Alignment.Center),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.White.copy(alpha = 0.08f),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
-                            modifier = Modifier.size(64.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.PhotoCamera,
-                                    contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.75f),
-                                    modifier = Modifier.size(28.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Нижний живой штамп СМР прямо на видоискателе
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0xFF0F172A).copy(alpha = 0.82f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(14.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "ШТАМП СМР • ${PhotoCaptureUtils.nowStampText()}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF60A5FA),
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Исп.: $authorName • Участок: ${gpsCoords.ifBlank { "Участок №1" }}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFFCBD5E1),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            TextButton(
-                                onClick = onOpenSystemCamera,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                modifier = Modifier.testTag("system_camera_fallback_button")
-                            ) {
-                                Text(
-                                    text = "Сист. камера",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF93C5FD)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // 3. ЛЕНТА ОТСНЯТЫХ КАДРОВ СЕССИИ + ПОДПИСЬ
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (capturedSessionItems.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            capturedSessionItems.forEachIndexed { idx, (path, cap) ->
-                                val thumb = remember(path) {
-                                    PhotoCaptureUtils.loadBitmapFromUriOrPath(path)
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = Color(0xFF1E293B),
-                                    border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.5f)),
-                                    modifier = Modifier.size(width = 110.dp, height = 66.dp)
-                                ) {
-                                    Box(modifier = Modifier.fillMaxSize()) {
-                                        if (thumb != null) {
-                                            Image(
-                                                bitmap = thumb.asImageBitmap(),
-                                                contentDescription = cap,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
-                                        }
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = Color.Black.copy(alpha = 0.65f),
-                                            modifier = Modifier
-                                                .align(Alignment.BottomStart)
-                                                .padding(4.dp)
-                                        ) {
-                                            Text(
-                                                text = "#${idx + 1}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = Color.White,
-                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = { capturedSessionItems.removeAt(idx) },
-                                            modifier = Modifier
-                                                .align(Alignment.TopEnd)
-                                                .size(22.dp)
-                                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "Удалить кадр",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    TextField(
-                        value = captionInput,
-                        onValueChange = { captionInput = it },
-                        placeholder = {
-                            Text(
-                                "Примечание на фотоштамп (необязательно)...",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF94A3B8)
-                            )
-                        },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color(0xFF1E293B),
-                            unfocusedContainerColor = Color(0xFF1E293B).copy(alpha = 0.75f),
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("camera_caption_input")
-                    )
-
-                    // 4. ПАНЕЛЬ ЗАТВОРА (БЕЗ ПОДТВЕРЖДЕНИЯ КАЖДОГО СНИМКА) + КНОПКА «СОХРАНИТЬ» ДЛЯ ЗАВЕРШЕНИЯ ФОТОСЪЁМКИ
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp, bottom = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedButton(
-                            onClick = onDismiss,
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                            modifier = Modifier.height(46.dp)
-                        ) {
-                            Text("Отмена", color = Color.White)
-                        }
-
-                        // Кнопка мгновенного спуска затвора (можно нажимать многократно без подтверждений)
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(62.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.18f))
-                                .clickable { takeInstantShot() }
-                                .testTag("shutter_capture_button")
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = Color.White,
-                                modifier = Modifier.size(48.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.CameraAlt,
-                                        contentDescription = "Сделать снимок",
-                                        tint = Color(0xFF0F172A),
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        // Кнопка «Сохранить» для завершения фотосъёмки
-                        Button(
-                            onClick = {
-                                if (capturedSessionItems.isEmpty()) {
-                                    takeInstantShot()
-                                }
-                                onSaveCapturedPhotos(capturedSessionItems.toList())
-                            },
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF10B981),
-                                contentColor = Color.White
-                            ),
-                            modifier = Modifier
-                                .height(46.dp)
-                                .testTag("save_captured_photos_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (capturedSessionItems.isEmpty()) {
-                                    "Сохранить"
-                                } else {
-                                    "Сохранить (${capturedSessionItems.size})"
-                                },
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 }
 
 /**

@@ -575,8 +575,118 @@ class ExampleUnitTest {
         assertEquals("", freshMember.groupName)
         assertEquals("", freshMember.effectiveSiteName)
     }
+
+    @Test
+    fun `task report notification evaluator notifies supervisor on completion with photo and suppresses self actions`() {
+        val workerEmp = com.example.data.model.CorporateEmployee(
+            id = "emp_w1",
+            fullName = "Сидоров А.В.",
+            shortName = "Сидоров А.В.",
+            position = "Электромонтажник",
+            role = CorporateRole.WORKER,
+            groupId = "grp_1",
+            groupName = "ЛПДС Быково",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = "emp_itr1",
+            phone = "+79001112233",
+            email = "worker@site.ru"
+        )
+        val headEmp = com.example.data.model.CorporateEmployee(
+            id = "emp_head1",
+            fullName = "Ковалёв Д.С.",
+            shortName = "Ковалёв Д.С.",
+            position = "Начальник участка",
+            role = CorporateRole.HEAD,
+            groupId = "grp_1",
+            groupName = "ЛПДС Быково",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = null,
+            phone = "+79003334455",
+            email = "head@site.ru"
+        )
+        val employees = listOf(workerEmp, headEmp)
+
+        val submittedReportTask = TaskDocument(
+            id = "task_rep_notif_1",
+            userId = "u1",
+            title = "Монтаж шкафа",
+            creatorId = headEmp.id,
+            creatorName = headEmp.fullName,
+            assigneeId = workerEmp.id,
+            assigneeName = workerEmp.shortName,
+            status = com.example.data.model.TaskStatus.ON_REVIEW.code,
+            photoItems = listOf("ph1|/tmp/p1.jpg#b64=AAA|emp_w1|Сидоров А.В.|14.11 15:00|Участок|Фото шкафа"),
+            historyItems = listOf(
+                com.example.data.model.StatusHistoryEntry(
+                    timestampText = "14.11 15:00",
+                    actorName = workerEmp.shortName,
+                    statusCode = com.example.data.model.TaskStatus.ON_REVIEW.code,
+                    note = "Выполнено и передано на проверку"
+                ).encode()
+            )
+        )
+
+        // Supervisor receives notification with photo count on ON_REVIEW
+        val headEval = com.example.ui.viewmodel.EzhednevnikViewModel.computePendingTaskNotifications(
+            tasks = listOf(submittedReportTask),
+            currentEmployee = headEmp,
+            employees = employees,
+            seenEventKeys = emptySet(),
+            isBaselineReady = false
+        )
+        assertEquals(1, headEval.eventsToNotify.size)
+        assertEquals(
+            com.example.ui.viewmodel.EzhednevnikViewModel.TaskNotificationType.REPORT_SUBMITTED,
+            headEval.eventsToNotify.first().type
+        )
+        assertTrue(headEval.eventsToNotify.first().title.contains("фото", ignoreCase = true))
+        assertTrue(headEval.eventsToNotify.first().body.contains("Фото: 1 шт."))
+
+        // Re-running with seen keys suppresses duplicate notification
+        val headRepeatEval = com.example.ui.viewmodel.EzhednevnikViewModel.computePendingTaskNotifications(
+            tasks = listOf(submittedReportTask),
+            currentEmployee = headEmp,
+            employees = employees,
+            seenEventKeys = headEval.keysToMarkSeen,
+            isBaselineReady = true
+        )
+        assertTrue(headRepeatEval.eventsToNotify.isEmpty())
+
+        // Worker who submitted it does NOT get self-notification
+        val workerSelfEval = com.example.ui.viewmodel.EzhednevnikViewModel.computePendingTaskNotifications(
+            tasks = listOf(submittedReportTask),
+            currentEmployee = workerEmp,
+            employees = employees,
+            seenEventKeys = emptySet(),
+            isBaselineReady = true
+        )
+        assertTrue(workerSelfEval.eventsToNotify.isEmpty())
+
+        // Supervisor rejects -> Worker receives rejection notification with reason
+        val rejectedTask = submittedReportTask.copy(
+            status = com.example.data.model.TaskStatus.REJECTED.code,
+            rejectionReason = "Не видно маркировку кабеля",
+            historyItems = submittedReportTask.historyItems + com.example.data.model.StatusHistoryEntry(
+                timestampText = "14.11 15:10",
+                actorName = headEmp.shortName,
+                statusCode = com.example.data.model.TaskStatus.REJECTED.code,
+                note = "Отклонено: Не видно маркировку кабеля"
+            ).encode()
+        )
+        val workerRejectEval = com.example.ui.viewmodel.EzhednevnikViewModel.computePendingTaskNotifications(
+            tasks = listOf(rejectedTask),
+            currentEmployee = workerEmp,
+            employees = employees,
+            seenEventKeys = emptySet(),
+            isBaselineReady = true
+        )
+        assertEquals(1, workerRejectEval.eventsToNotify.size)
+        assertEquals(
+            com.example.ui.viewmodel.EzhednevnikViewModel.TaskNotificationType.TASK_REJECTED,
+            workerRejectEval.eventsToNotify.first().type
+        )
+        assertTrue(workerRejectEval.eventsToNotify.first().body.contains("Не видно маркировку кабеля"))
+    }
 }
-
-
-
-

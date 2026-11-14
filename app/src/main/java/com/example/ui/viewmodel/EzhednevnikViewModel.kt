@@ -103,6 +103,11 @@ class EzhednevnikViewModel(
     val isCloudSyncActive: StateFlow<Boolean> = _isCloudSyncActive.asStateFlow()
 
     private val notifiedPendingMemberKeys = mutableSetOf<String>()
+    private val notifiedTaskEventKeys = mutableSetOf<String>().apply {
+        appContext?.let { addAll(LocalWorkspaceStore.loadNotifiedTaskEvents(it)) }
+    }
+    private var taskNotifBaselineReady: Boolean =
+        appContext?.let { LocalWorkspaceStore.isTaskNotifBaselineReady(it) } ?: false
 
     private val effectiveUserId: String
         get() = try {
@@ -548,6 +553,7 @@ class EzhednevnikViewModel(
         }
         initializeUserAndRoleStatus()
         observeMemberRoleUpdates()
+        observeTaskReportNotifications()
         startPeriodicCloudMembersSync()
     }
 
@@ -816,6 +822,116 @@ class EzhednevnikViewModel(
             )
         } catch (_: Exception) {
             // Безопасная обработка при отсутствии разрешения POST_NOTIFICATIONS или в unit-тестах
+        }
+    }
+
+    private fun markTaskEventKeysSeen(keys: Collection<String>) {
+        if (keys.isEmpty()) return
+        synchronized(notifiedTaskEventKeys) {
+            var changed = false
+            keys.forEach { k ->
+                if (k.isNotBlank() && notifiedTaskEventKeys.add(k)) {
+                    changed = true
+                }
+            }
+            if (changed) {
+                appContext?.let { LocalWorkspaceStore.saveNotifiedTaskEvents(it, notifiedTaskEventKeys) }
+            }
+        }
+    }
+
+    private fun postSystemNotificationForTaskEvent(event: TaskNotificationEvent) {
+        val ctx = appContext ?: return
+        try {
+            val channelId = "task_reports_notifications_channel"
+            val notificationManager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId,
+                    "Отчёты и задачи",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Уведомления телефона о сдаче отчётов, фотофиксации, подтверждении и отклонении задач"
+                    enableVibration(true)
+                    enableLights(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val intent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("open_task_id", event.taskId)
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                ctx,
+                event.eventKey.hashCode(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = NotificationCompat.Builder(ctx, channelId)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(event.title)
+                .setContentText(event.body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(event.body))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+
+            val notifId = 20000 + (event.eventKey.hashCode() and 0x7FFF)
+            notificationManager.notify(notifId, notification)
+        } catch (_: Exception) {
+            // Безопасная обработка при отсутствии разрешения POST_NOTIFICATIONS или в unit-тестах
+        }
+    }
+
+    private fun observeTaskReportNotifications() {
+        viewModelScope.launch {
+            combine(
+                tasksState,
+                activeEmployee,
+                availableEmployees
+            ) { tState, currentEmp, employeesList ->
+                val tasksList = (tState as? UiState.Success)?.data ?: emptyList()
+                Triple(tasksList, currentEmp, employeesList)
+            }.collect { (tasksList, currentEmp, employeesList) ->
+                if (tasksList.isEmpty()) return@collect
+                val seenSnapshot = synchronized(notifiedTaskEventKeys) { notifiedTaskEventKeys.toSet() }
+                val outcome = computePendingTaskNotifications(
+                    tasks = tasksList,
+                    currentEmployee = currentEmp,
+                    employees = employeesList,
+                    seenEventKeys = seenSnapshot,
+                    isBaselineReady = taskNotifBaselineReady
+                )
+                if (outcome.keysToMarkSeen.isNotEmpty()) {
+                    markTaskEventKeysSeen(outcome.keysToMarkSeen)
+                }
+                if (!taskNotifBaselineReady) {
+                    taskNotifBaselineReady = true
+                    appContext?.let { LocalWorkspaceStore.setTaskNotifBaselineReady(it, true) }
+                }
+                if (outcome.eventsToNotify.isNotEmpty()) {
+                    outcome.eventsToNotify.take(5).forEach { ev ->
+                        postSystemNotificationForTaskEvent(ev)
+                    }
+                    val firstEv = outcome.eventsToNotify.first()
+                    if (firstEv.type == TaskNotificationType.REPORT_SUBMITTED ||
+                        firstEv.type == TaskNotificationType.TASK_REJECTED ||
+                        firstEv.type == TaskNotificationType.TASK_APPROVED
+                    ) {
+                        _bannerMessage.value = "${firstEv.title}: ${firstEv.body}"
+                    }
+                }
+            }
+        }
+    }
+
+    fun showBanner(message: String) {
+        if (message.isNotBlank()) {
+            _bannerMessage.value = message
         }
     }
 
@@ -1870,7 +1986,8 @@ class EzhednevnikViewModel(
             .withUpdatedVolume(resolvedTaskTargetVol, 0.0, resolvedTaskUnit)
             .withUpdatedAssignees(allAssigneeIds, allAssigneeFullNames)
 
-        // Мгновенно сохраняем задачу локально
+        // Мгновенно сохраняем задачу локально и помечаем как собственную, чтобы не пришло само-уведомление
+        markTaskEventKeysSeen(listOf(taskEventKeyNew(baseTask.id)))
         upsertLocalTask(baseTask)
         _searchQuery.value = ""
         _selectedCalendarEpochDay.value = draft.dueDateEpochDay
@@ -2038,6 +2155,12 @@ class EzhednevnikViewModel(
                 nextStatus,
                 "Добавлено фото в отчёт (+${encodedNew.size} шт., всего: ${updatedPhotos.size} шт.)"
             ).encode()
+        )
+        markTaskEventKeysSeen(
+            listOf(
+                taskEventKeyReportSubmitted(updatedTask),
+                taskEventKeyApproved(updatedTask)
+            )
         )
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Фотоотчёт сохранён (всего фото: ${updatedPhotos.size} шт.)"
@@ -2492,6 +2615,12 @@ class EzhednevnikViewModel(
                 reportLogNote
             ).encode()
         )
+        markTaskEventKeysSeen(
+            listOf(
+                taskEventKeyReportSubmitted(updatedTask),
+                taskEventKeyApproved(updatedTask)
+            )
+        )
         upsertLocalTask(updatedTask)
         _bannerMessage.value = reportLogNote
 
@@ -2548,6 +2677,12 @@ class EzhednevnikViewModel(
                 if (targetVol > 0.0) it.withUpdatedVolume(targetVol, targetVol, unitLabel) else it
             }
 
+        markTaskEventKeysSeen(
+            listOf(
+                taskEventKeyReportSubmitted(updatedTask),
+                taskEventKeyApproved(updatedTask)
+            )
+        )
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Задача «${currentTask.title}» отмечена выполненной (${nextStatus.titleRu})"
 
@@ -2595,6 +2730,7 @@ class EzhednevnikViewModel(
                 cleanComment.ifBlank { "Отчёт подтверждён (${supervisor.role.titleRu})" }
             ).encode()
         ).withUpdatedRevision()
+        markTaskEventKeysSeen(listOf(taskEventKeyApproved(updatedTask)))
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Выполнение задачи подтверждено и перенесено в выполненные задачи"
 
@@ -2640,6 +2776,7 @@ class EzhednevnikViewModel(
                 "Отклонено: $cleanReason"
             ).encode()
         ).withUpdatedRevision()
+        markTaskEventKeysSeen(listOf(taskEventKeyRejected(updatedTask)))
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Задание отклонено и возвращено исполнителю в работу: $cleanReason"
 
@@ -2806,7 +2943,167 @@ class EzhednevnikViewModel(
     private fun nowText(): String =
         SimpleDateFormat("dd.MM HH:mm", Locale.forLanguageTag("ru")).format(Date())
 
+    enum class TaskNotificationType {
+        REPORT_SUBMITTED,
+        TASK_APPROVED,
+        TASK_REJECTED,
+        TASK_ASSIGNED
+    }
+
+    data class TaskNotificationEvent(
+        val eventKey: String,
+        val taskId: String,
+        val type: TaskNotificationType,
+        val title: String,
+        val body: String
+    )
+
+    data class TaskNotificationEvaluation(
+        val eventsToNotify: List<TaskNotificationEvent>,
+        val keysToMarkSeen: Set<String>
+    )
+
     companion object {
         private const val STOP_TIMEOUT_MILLIS = 5000L
+
+        fun taskEventKeyNew(taskId: String): String = "new|$taskId"
+
+        fun taskEventKeyReportSubmitted(task: TaskDocument): String =
+            "rev|${task.id}|${task.status}|${task.historyItems.size}|${task.photoItems.size}"
+
+        fun taskEventKeyApproved(task: TaskDocument): String =
+            "app|${task.id}|${task.historyItems.size}"
+
+        fun taskEventKeyRejected(task: TaskDocument): String =
+            "rej|${task.id}|${task.historyItems.size}"
+
+        /**
+         * Чистая функция вычисления новых телефонных уведомлений по задачам и отчётам:
+         * - Руководителю / ИТР / Создателю при сдаче отчёта о выполнении (в том числе с фото)
+         * - Исполнителю / Создателю при принятии отчёта
+         * - Исполнителю при отклонении задания с причиной
+         * - Исполнителю при назначении нового задания другим пользователем
+         */
+        fun computePendingTaskNotifications(
+            tasks: List<TaskDocument>,
+            currentEmployee: CorporateEmployee,
+            employees: List<CorporateEmployee>,
+            seenEventKeys: Set<String>,
+            isBaselineReady: Boolean
+        ): TaskNotificationEvaluation {
+            val eventsToNotify = mutableListOf<TaskNotificationEvent>()
+            val keysToMarkSeen = mutableSetOf<String>()
+            val shortLower = currentEmployee.shortName.trim().lowercase()
+            val fullLower = currentEmployee.fullName.trim().lowercase()
+
+            tasks.forEach { task ->
+                val lastActor = task.decodedHistory().lastOrNull()?.actorName.orEmpty().trim().lowercase()
+                val isLastActorMe = lastActor.isNotBlank() &&
+                    (lastActor == shortLower || lastActor == fullLower)
+                val status = task.taskStatus
+                val isAssignedToMe = task.isAssignedToEmployee(currentEmployee)
+                val isCreator = task.creatorId == currentEmployee.id
+
+                // 1. Отчёт о выполнении задачи (ON_REVIEW или завершение без обязательной приёмки)
+                val isCompletedReport = status == TaskStatus.ON_REVIEW ||
+                    (status == TaskStatus.APPROVED && !task.requiresApproval)
+                val isSupervisorForTask = task.canBeApprovedBy(currentEmployee, employees) ||
+                    isCreator ||
+                    currentEmployee.role.isAdminOrHead
+                if (isCompletedReport && isSupervisorForTask) {
+                    val revKey = taskEventKeyReportSubmitted(task)
+                    if (revKey !in seenEventKeys) {
+                        keysToMarkSeen.add(revKey)
+                        if (!isLastActorMe) {
+                            val photoCount = task.photoItems.size
+                            val title = if (photoCount > 0) {
+                                "Отчёт с фото о выполнении задачи"
+                            } else {
+                                "Отчёт о выполнении задачи"
+                            }
+                            val pct = task.completionPercent()
+                            val photoSuffix = if (photoCount > 0) " • Фото: $photoCount шт." else ""
+                            val body = "«${task.title}» — ${task.assigneeName} ($pct%)$photoSuffix"
+                            eventsToNotify.add(
+                                TaskNotificationEvent(
+                                    eventKey = revKey,
+                                    taskId = task.id,
+                                    type = TaskNotificationType.REPORT_SUBMITTED,
+                                    title = title,
+                                    body = body
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // 2. Отчёт принят и подтверждён руководителем / ИТР
+                if (status == TaskStatus.APPROVED && task.requiresApproval && (isAssignedToMe || isCreator)) {
+                    val appKey = taskEventKeyApproved(task)
+                    if (appKey !in seenEventKeys) {
+                        keysToMarkSeen.add(appKey)
+                        // На самом первом запуске подавляем уведомления по старым уже принятым задачам
+                        if (isBaselineReady && !isLastActorMe) {
+                            val approver = task.approvedByName?.takeIf { it.isNotBlank() } ?: "руководитель"
+                            eventsToNotify.add(
+                                TaskNotificationEvent(
+                                    eventKey = appKey,
+                                    taskId = task.id,
+                                    type = TaskNotificationType.TASK_APPROVED,
+                                    title = "Отчёт по задаче принят",
+                                    body = "«${task.title}» — подтвердил(а) $approver"
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // 3. Задание отклонено на доработку
+                if (status == TaskStatus.REJECTED && isAssignedToMe) {
+                    val rejKey = taskEventKeyRejected(task)
+                    if (rejKey !in seenEventKeys) {
+                        keysToMarkSeen.add(rejKey)
+                        if (!isLastActorMe) {
+                            val reasonText = task.rejectionReason?.takeIf { it.isNotBlank() }
+                                ?: "откройте карточку для просмотра комментария"
+                            eventsToNotify.add(
+                                TaskNotificationEvent(
+                                    eventKey = rejKey,
+                                    taskId = task.id,
+                                    type = TaskNotificationType.TASK_REJECTED,
+                                    title = "Задание отклонено на доработку",
+                                    body = "«${task.title}» — $reasonText"
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // 4. Назначено новое задание от другого сотрудника
+                if (status == TaskStatus.NEW && isAssignedToMe && !isCreator) {
+                    val newKey = taskEventKeyNew(task.id)
+                    if (newKey !in seenEventKeys) {
+                        keysToMarkSeen.add(newKey)
+                        if (isBaselineReady && !isLastActorMe) {
+                            val fromName = task.creatorName.ifBlank { "руководитель" }
+                            eventsToNotify.add(
+                                TaskNotificationEvent(
+                                    eventKey = newKey,
+                                    taskId = task.id,
+                                    type = TaskNotificationType.TASK_ASSIGNED,
+                                    title = "Новое задание",
+                                    body = "«${task.title}» от $fromName • срок до ${task.deadlineTime}"
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            return TaskNotificationEvaluation(
+                eventsToNotify = eventsToNotify,
+                keysToMarkSeen = keysToMarkSeen
+            )
+        }
     }
 }

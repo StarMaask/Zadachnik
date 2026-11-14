@@ -153,8 +153,8 @@ fun PersonaModeSwitcherBar(
 ) {
     val tokens = LocalAppThemeTokens.current
     Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (tokens.isDark) 0.7f else 0.85f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (tokens.isDark) 0.55f else 0.72f),
         modifier = modifier
             .fillMaxWidth()
             .testTag("persona_mode_switcher")
@@ -162,24 +162,25 @@ fun PersonaModeSwitcherBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             allowedModes.forEach { mode ->
                 val isSelected = selectedMode == mode || allowedModes.size == 1
                 val displayLabel = labelTransform(mode)
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(9.dp),
                     color = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
-                    shadowElevation = if (isSelected && !tokens.isDark) 2.dp else 0.dp,
+                    shadowElevation = if (isSelected && !tokens.isDark) 1.5.dp else 0.dp,
                     modifier = Modifier
                         .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
                         .clickable { onSelectMode(mode) }
                         .testTag("persona_tab_${mode.name}")
                 ) {
                     Box(
                         contentAlignment = Alignment.Center,
-                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                        modifier = Modifier.padding(vertical = 7.dp, horizontal = 6.dp)
                     ) {
                         Text(
                             text = if (allowedModes.size == 1) {
@@ -242,183 +243,147 @@ fun WorkerTodayHeaderCard(
     val russianLocale = remember { Locale.forLanguageTag("ru-RU") }
     val dayStripOffsets = remember { (-1..4).toList() }
 
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = tokens.cardShadowElevationDp.dp,
-        border = if (tokens.cardBorderWidthDp > 0f) {
-            BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
-        } else {
-            null
-        },
-        modifier = Modifier.fillMaxWidth()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        // Верхняя строка: заголовок + компактный селектор даты (без лишней рамки и дубля кнопки «+ Задача»)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Верхняя строка: заголовок и кнопка «+ Задача» + компактный селектор даты
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = headerTitle,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = headerSubtitle ?: if (totalTasksToday > 0) {
-                            "Выполнено на смену: $completedTasksToday из $totalTasksToday"
-                        } else {
-                            "Сменное задание и контроль объёмов"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Button(
-                        onClick = onCreateTaskClick,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .height(34.dp)
-                            .testTag("worker_header_add_task_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Задача",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                        modifier = Modifier
-                            .height(34.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(onClick = onToggleExpandCalendar)
-                            .testTag("worker_expand_calendar_button")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CalendarMonth,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Text(
-                                text = dayRelationText,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = headerTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = headerSubtitle ?: if (totalTasksToday > 0) {
+                        "Выполнено на смену: $completedTasksToday из $totalTasksToday"
+                    } else {
+                        "Сменное задание и контроль объёмов"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
-            // Горизонтальный компактный скролл дат (с быстрой пилюлей «Все даты»)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (onSelectAllDates != null) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isAllDatesSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                        },
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(onClick = onSelectAllDates)
-                            .testTag("worker_date_pill_all")
-                    ) {
-                        Text(
-                            text = "Все даты",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (isAllDatesSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isAllDatesSelected) {
-                                MaterialTheme.colorScheme.onPrimary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
-                        )
-                    }
-                }
-                dayStripOffsets.forEach { offset ->
-                    val dayEpoch = currentEpochDay + offset
-                    val localDate = remember(dayEpoch) { LocalDate.ofEpochDay(dayEpoch) }
-                    val isSelected = !isAllDatesSelected && dayEpoch == selectedEpochDay
-                    val isToday = dayEpoch == currentEpochDay
-                    val shortDow = remember(localDate) {
-                        localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, russianLocale)
-                            .replaceFirstChar { if (it.isLowerCase()) it.titlecase(russianLocale) else it.toString() }
-                    }
-                    val pillText = when (offset) {
-                        -1 -> "Вчера, ${localDate.dayOfMonth}"
-                        0 -> "Сегодня, ${localDate.dayOfMonth}"
-                        1 -> "Завтра, ${localDate.dayOfMonth}"
-                        else -> "$shortDow, ${localDate.dayOfMonth}.${String.format(Locale.US, "%02d", localDate.monthValue)}"
-                    }
+            Spacer(modifier = Modifier.width(8.dp))
 
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = when {
-                            isSelected -> MaterialTheme.colorScheme.primary
-                            isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = if (tokens.isDark) 0.16f else 0.1f),
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = onToggleExpandCalendar)
+                    .testTag("worker_expand_calendar_button")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CalendarMonth,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = dayRelationText,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        // Воздушный горизонтальный скролл дат прямо на фоне
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (onSelectAllDates != null) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (isAllDatesSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    shadowElevation = if (!tokens.isDark && !isAllDatesSelected) 1.dp else 0.dp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable(onClick = onSelectAllDates)
+                        .testTag("worker_date_pill_all")
+                ) {
+                    Text(
+                        text = "Все даты",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (isAllDatesSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isAllDatesSelected) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onSelectDate(dayEpoch) }
-                    ) {
-                        Text(
-                            text = pillText,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Medium,
-                            color = when {
-                                isSelected -> MaterialTheme.colorScheme.onPrimary
-                                isToday -> MaterialTheme.colorScheme.primary
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
-                        )
-                    }
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                    )
+                }
+            }
+            dayStripOffsets.forEach { offset ->
+                val dayEpoch = currentEpochDay + offset
+                val localDate = remember(dayEpoch) { LocalDate.ofEpochDay(dayEpoch) }
+                val isSelected = !isAllDatesSelected && dayEpoch == selectedEpochDay
+                val isToday = dayEpoch == currentEpochDay
+                val shortDow = remember(localDate) {
+                    localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, russianLocale)
+                        .replaceFirstChar { if (it.isLowerCase()) it.titlecase(russianLocale) else it.toString() }
+                }
+                val pillText = when (offset) {
+                    -1 -> "Вчера, ${localDate.dayOfMonth}"
+                    0 -> "Сегодня, ${localDate.dayOfMonth}"
+                    1 -> "Завтра, ${localDate.dayOfMonth}"
+                    else -> "$shortDow, ${localDate.dayOfMonth}.${String.format(Locale.US, "%02d", localDate.monthValue)}"
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = when {
+                        isSelected -> MaterialTheme.colorScheme.primary
+                        isToday -> MaterialTheme.colorScheme.primary.copy(alpha = if (tokens.isDark) 0.16f else 0.1f)
+                        else -> MaterialTheme.colorScheme.surface
+                    },
+                    shadowElevation = if (!tokens.isDark && !isSelected) 1.dp else 0.dp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable { onSelectDate(dayEpoch) }
+                ) {
+                    Text(
+                        text = pillText,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Medium,
+                        color = when {
+                            isSelected -> MaterialTheme.colorScheme.onPrimary
+                            isToday -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                    )
                 }
             }
         }
@@ -447,6 +412,7 @@ fun WorkerPersonaTaskCard(
     val doneCount = subtasks.count { it.isDone }
     val requiredPhotos = task.minPhotoCount.toInt()
     val currentPhotos = task.photoItems.size
+    val taskStatusColor = statusColor(task.taskStatus)
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -466,68 +432,52 @@ fun WorkerPersonaTaskCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Заголовок + статус (лаконичный бейдж)
+            // 1. Заголовок + минималистичный статус с цветной точкой (без громоздких рамок)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
                 Text(
                     text = task.title,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = statusColor(task.taskStatus).copy(alpha = if (tokens.isDark) 0.18f else 0.12f)
+                Spacer(modifier = Modifier.width(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(top = 3.dp)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(taskStatusColor)
+                    )
                     Text(
                         text = task.taskStatus.titleRu,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = statusColor(task.taskStatus),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        color = taskStatusColor
                     )
                 }
             }
 
-            if (showAssigneeName && task.assigneeName.isNotBlank()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    Text(
-                        text = "Исполнитель: ${task.assigneeName}",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            // Тонкий прогресс (2.5dp) и компактная строка
+            // 2. Единый лаконичный прогресс (цифры + тонкая линия 3dp)
             if (targetVol > 0.0 || subtasks.isNotEmpty()) {
                 val summaryLabel = when {
-                    targetVol > 0.0 -> "Объём: ${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
-                    subtasks.isNotEmpty() -> "Чек-лист: $doneCount из ${subtasks.size} выполнено"
+                    targetVol > 0.0 -> "${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
+                    subtasks.isNotEmpty() -> "$doneCount из ${subtasks.size} этапов"
                     else -> ""
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     if (summaryLabel.isNotBlank()) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -536,24 +486,22 @@ fun WorkerPersonaTaskCard(
                         ) {
                             Text(
                                 text = summaryLabel,
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            if (pct > 0) {
-                                Text(
-                                    text = "$pct%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
-                                )
-                            }
+                            Text(
+                                text = "$pct%",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
                     LinearProgressIndicator(
                         progress = { progressRatio },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(2.5.dp)
+                            .height(3.dp)
                             .clip(RoundedCornerShape(2.dp)),
                         color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant
@@ -561,47 +509,48 @@ fun WorkerPersonaTaskCard(
                 }
             }
 
-            // Нижняя строка: гео/срок + фото
+            // 3. Тихая мета-строка: исполнитель / локация · фото · дедлайн
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.LocationOn,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    Text(
-                        text = task.geoLocation.orEmpty().ifBlank { "Участок №1" } + " • до ${task.deadlineTime}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                val metaLeft = buildString {
+                    if (showAssigneeName && task.assigneeName.isNotBlank()) {
+                        append(task.assigneeName)
+                        append(" · ")
+                    }
+                    append(task.geoLocation.orEmpty().ifBlank { "Участок №1" })
+                    if (task.deadlineTime.isNotBlank()) {
+                        append(" · до ${task.deadlineTime}")
+                    }
                 }
+                Text(
+                    text = metaLeft,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
 
                 if (task.requiresPhotoReport) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.CameraAlt,
                             contentDescription = "Фотоотчёт",
                             tint = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) doneColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
                         Text(
-                            text = if (requiredPhotos > 0) "$currentPhotos/$requiredPhotos фото" else "$currentPhotos фото",
+                            text = if (requiredPhotos > 0) "$currentPhotos/$requiredPhotos" else "$currentPhotos",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -619,25 +568,35 @@ fun WorkerPersonaTaskCard(
                 ) {
                     Button(
                         onClick = onApproveTask,
+                        shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF10B981),
-                            contentColor = Color.White
+                            containerColor = doneColor,
+                            contentColor = if (tokens.isHighContrastField) Color(0xFF111312) else Color.White
                         ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .height(34.dp)
+                            .height(36.dp)
                     ) {
-                        Text("Принять", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        Text("Принять", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                     }
-                    OutlinedButton(
-                        onClick = onRejectTask,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
                         modifier = Modifier
                             .weight(1f)
-                            .height(34.dp)
+                            .height(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onRejectTask)
                     ) {
-                        Text("Отклонить", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "Отклонить",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                     }
                 }
             }
@@ -645,13 +604,13 @@ fun WorkerPersonaTaskCard(
             if (!task.rejectionReason.isNullOrBlank() && task.taskStatus == TaskStatus.REJECTED) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Причина отклонения: ${task.rejectionReason}",
+                        text = "Возврат: ${task.rejectionReason}",
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -700,209 +659,213 @@ fun ItrHorizontalDateStrip(
     }
     var scopeMenuExpanded by remember { mutableStateOf(false) }
 
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = tokens.cardShadowElevationDp.dp,
-        border = if (tokens.cardBorderWidthDp > 0f) {
-            BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
-        } else {
-            null
-        },
-        modifier = Modifier.fillMaxWidth()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+        // Верхняя строка прямо на фоне: селектор области видимости (Все / Бригада / Участок / Мои) + выбор даты/периода
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Верхняя строка: компактный селектор области видимости (Все / Бригада / Участок / Личные) + кнопка «+ Задача»
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Компактный чип-селектор области видимости с выпадающим меню
-                Box {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (tokens.isDark) 0.5f else 0.7f),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { scopeMenuExpanded = true }
-                            .testTag("itr_scope_dropdown_trigger")
+            Box {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = if (!tokens.isDark) 1.5.dp else 0.dp,
+                    border = if (tokens.cardBorderWidthDp > 0f) {
+                        BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
+                    } else {
+                        null
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { scopeMenuExpanded = true }
+                        .testTag("itr_scope_dropdown_trigger")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = when (selectedScope) {
-                                    ItrScopeFilter.ALL -> Icons.Default.Dashboard
-                                    ItrScopeFilter.SUBDIVISION -> Icons.Default.Groups
-                                    ItrScopeFilter.SITE -> Icons.Default.Apartment
-                                    ItrScopeFilter.PERSONAL -> Icons.Default.Person
-                                },
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            val scopeLabel = when (selectedScope) {
-                                ItrScopeFilter.ALL -> "Все задачи ($allCount)"
-                                ItrScopeFilter.SUBDIVISION -> "Моя бригада ($subdivisionCount)"
-                                ItrScopeFilter.SITE -> "Весь участок ($siteCount)"
-                                ItrScopeFilter.PERSONAL -> "Мои задачи ($personalCount)"
-                            }
-                            Text(
-                                text = scopeLabel,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Icon(
-                                imageVector = Icons.Default.ArrowDropDown,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-
-                    DropdownMenu(
-                        expanded = scopeMenuExpanded,
-                        onDismissRequest = { scopeMenuExpanded = false }
-                    ) {
-                        if (activeEmployee?.role?.isAdminOrHead == true) {
-                            DropdownMenuItem(
-                                text = { Text("Все задачи ($allCount)") },
-                                leadingIcon = { Icon(Icons.Default.Dashboard, contentDescription = null) },
-                                onClick = {
-                                    onSelectScope(ItrScopeFilter.ALL)
-                                    scopeMenuExpanded = false
-                                }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("Моя бригада ($subdivisionCount)") },
-                            leadingIcon = { Icon(Icons.Default.Groups, contentDescription = null) },
-                            onClick = {
-                                onSelectScope(ItrScopeFilter.SUBDIVISION)
-                                scopeMenuExpanded = false
-                            }
+                        Icon(
+                            imageVector = when (selectedScope) {
+                                ItrScopeFilter.ALL -> Icons.Default.Dashboard
+                                ItrScopeFilter.SUBDIVISION -> Icons.Default.Groups
+                                ItrScopeFilter.SITE -> Icons.Default.Apartment
+                                ItrScopeFilter.PERSONAL -> Icons.Default.Person
+                            },
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(15.dp)
                         )
-                        DropdownMenuItem(
-                            text = { Text("Весь участок ($siteCount)") },
-                            leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
-                            onClick = {
-                                onSelectScope(ItrScopeFilter.SITE)
-                                scopeMenuExpanded = false
-                            }
+                        val scopeLabel = when (selectedScope) {
+                            ItrScopeFilter.ALL -> "Все задачи ($allCount)"
+                            ItrScopeFilter.SUBDIVISION -> "Моя бригада ($subdivisionCount)"
+                            ItrScopeFilter.SITE -> "Весь участок ($siteCount)"
+                            ItrScopeFilter.PERSONAL -> "Мои задачи ($personalCount)"
+                        }
+                        Text(
+                            text = scopeLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-                        DropdownMenuItem(
-                            text = { Text("Мои задачи ($personalCount)") },
-                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                            onClick = {
-                                onSelectScope(ItrScopeFilter.PERSONAL)
-                                scopeMenuExpanded = false
-                            }
+                        Icon(
+                            imageVector = Icons.Default.ArrowDropDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
 
-                // Кнопка создания задачи
-                Button(
-                    onClick = { onCreateTaskForDate(selectedEpochDay) },
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier
-                        .height(34.dp)
-                        .testTag("itr_header_add_task_button")
+                DropdownMenu(
+                    expanded = scopeMenuExpanded,
+                    onDismissRequest = { scopeMenuExpanded = false }
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
+                    if (activeEmployee?.role?.isAdminOrHead == true) {
+                        DropdownMenuItem(
+                            text = { Text("Все задачи ($allCount)") },
+                            leadingIcon = { Icon(Icons.Default.Dashboard, contentDescription = null) },
+                            onClick = {
+                                onSelectScope(ItrScopeFilter.ALL)
+                                scopeMenuExpanded = false
+                            }
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Моя бригада ($subdivisionCount)") },
+                        leadingIcon = { Icon(Icons.Default.Groups, contentDescription = null) },
+                        onClick = {
+                            onSelectScope(ItrScopeFilter.SUBDIVISION)
+                            scopeMenuExpanded = false
+                        }
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Задача",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold
+                    DropdownMenuItem(
+                        text = { Text("Весь участок ($siteCount)") },
+                        leadingIcon = { Icon(Icons.Default.Apartment, contentDescription = null) },
+                        onClick = {
+                            onSelectScope(ItrScopeFilter.SITE)
+                            scopeMenuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Мои задачи ($personalCount)") },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        onClick = {
+                            onSelectScope(ItrScopeFilter.PERSONAL)
+                            scopeMenuExpanded = false
+                        }
                     )
                 }
             }
 
-            // Горизонтальный скролл дат (полоска дней недели iOS-стиль)
-            Row(
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = if (tokens.isDark) 0.16f else 0.1f),
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = onToggleFullCalendar)
+                    .testTag("itr_calendar_toggle_button")
             ) {
-                val ruLocale = remember { Locale.forLanguageTag("ru") }
-                daysWindow.forEach { dayEpoch ->
-                    val localDate = remember(dayEpoch) { LocalDate.ofEpochDay(dayEpoch) }
-                    val dayOfWeekShort = remember(localDate, ruLocale) {
-                        localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, ruLocale)
-                            .replaceFirstChar { it.titlecase(ruLocale) }
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CalendarMonth,
+                        contentDescription = "Календарь",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    val dateLabel = remember(selectedEpochDay) {
+                        ReportDocumentGenerator.formatEpochDay(selectedEpochDay)
                     }
-                    val isSelected = dayEpoch == selectedEpochDay
-                    val isToday = dayEpoch == currentEpochDay
-                    val count = countByDay[dayEpoch] ?: 0
+                    Text(
+                        text = if (selectedEpochDay == currentEpochDay) "Сегодня" else dateLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
 
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = when {
-                            isSelected -> MaterialTheme.colorScheme.primary
-                            isToday -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
-                        },
-                        modifier = Modifier
-                            .width(54.dp)
-                            .clickable { onSelectDate(dayEpoch) }
-                            .testTag("itr_date_pill_$dayEpoch")
+        // Воздушный горизонтальный скролл дат (iOS / Linear стиль без тяжелой подложки)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val ruLocale = remember { Locale.forLanguageTag("ru") }
+            daysWindow.forEach { dayEpoch ->
+                val localDate = remember(dayEpoch) { LocalDate.ofEpochDay(dayEpoch) }
+                val dayOfWeekShort = remember(localDate, ruLocale) {
+                    localDate.dayOfWeek.getDisplayName(TextStyle.SHORT, ruLocale)
+                        .replaceFirstChar { it.titlecase(ruLocale) }
+                }
+                val isSelected = dayEpoch == selectedEpochDay
+                val isToday = dayEpoch == currentEpochDay
+                val count = countByDay[dayEpoch] ?: 0
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = when {
+                        isSelected -> MaterialTheme.colorScheme.primary
+                        isToday -> MaterialTheme.colorScheme.primary.copy(alpha = if (tokens.isDark) 0.18f else 0.11f)
+                        else -> MaterialTheme.colorScheme.surface
+                    },
+                    shadowElevation = if (!tokens.isDark && !isSelected) 1.dp else 0.dp,
+                    modifier = Modifier
+                        .width(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onSelectDate(dayEpoch) }
+                        .testTag("itr_date_pill_$dayEpoch")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(vertical = 7.dp, horizontal = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Column(
-                            modifier = Modifier.padding(vertical = 7.dp, horizontal = 4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = dayOfWeekShort,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                }
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = localDate.dayOfMonth.toString(),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isSelected) {
-                                    MaterialTheme.colorScheme.onPrimary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                }
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Box(
-                                modifier = Modifier
-                                    .size(4.5.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        when {
-                                            count == 0 -> Color.Transparent
-                                            isSelected -> MaterialTheme.colorScheme.onPrimary
-                                            isToday -> MaterialTheme.colorScheme.primary
-                                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                        }
-                                    )
-                            )
-                        }
+                        Text(
+                            text = dayOfWeekShort,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = localDate.dayOfMonth.toString(),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(4.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    when {
+                                        count == 0 -> Color.Transparent
+                                        isSelected -> MaterialTheme.colorScheme.onPrimary
+                                        isToday -> MaterialTheme.colorScheme.primary
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                                    }
+                                )
+                        )
                     }
                 }
             }
@@ -1092,21 +1055,27 @@ fun ItrFilterPillsRow(
                 ItrQuickFilter.ALL -> allCount
             }
             Surface(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(50),
                 color = if (isSelected) {
                     MaterialTheme.colorScheme.primary
                 } else {
                     MaterialTheme.colorScheme.surface
                 },
-                shadowElevation = if (!tokens.isDark && !isSelected) 2.dp else 0.dp,
+                shadowElevation = if (!tokens.isDark && !isSelected) 1.dp else 0.dp,
+                border = if (tokens.cardBorderWidthDp > 0f && !isSelected) {
+                    BorderStroke(tokens.cardBorderWidthDp.dp, tokens.cardBorderColor)
+                } else {
+                    null
+                },
                 modifier = Modifier
+                    .clip(RoundedCornerShape(50))
                     .clickable { onSelectFilter(filter) }
                     .testTag("itr_filter_pill_${filter.name}")
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Text(
                         text = filter.titleRu,
@@ -1118,24 +1087,16 @@ fun ItrFilterPillsRow(
                             MaterialTheme.colorScheme.onSurface
                         }
                     )
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.2f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        }
-                    ) {
+                    if (count > 0) {
                         Text(
                             text = count.toString(),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = if (isSelected) {
-                                MaterialTheme.colorScheme.onPrimary
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                            }
                         )
                     }
                 }
@@ -1163,6 +1124,7 @@ fun ItrPersonaTaskCard(
     val pct = task.completionPercent()
     val subtasks = remember(task.subtaskItems) { task.decodedSubtasks() }
     val doneCount = subtasks.count { it.isDone }
+    val taskStatusColor = statusColor(task.taskStatus)
     val initials = remember(task.assigneeName, task.tags) {
         if (task.allAssigneeNames.size > 1) {
             "${task.allAssigneeNames.size}"
@@ -1195,48 +1157,54 @@ fun ItrPersonaTaskCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Заголовок + статус (лаконичный бейдж)
+            // 1. Заголовок + минималистичная точка статуса
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
                 Text(
                     text = task.title,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = statusColor(task.taskStatus).copy(alpha = if (tokens.isDark) 0.18f else 0.12f)
+                Spacer(modifier = Modifier.width(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(top = 3.dp)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(taskStatusColor)
+                    )
                     Text(
                         text = task.taskStatus.titleRu,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = statusColor(task.taskStatus),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        color = taskStatusColor
                     )
                 }
             }
 
-            // Прогресс: чистый текст («Выполнено X из Y» или «Объём») + ультратонкая линия (2.5dp)
+            // 2. Единый лаконичный прогресс (цифры + тонкая полоса 3dp)
             if (targetVol > 0.0 || subtasks.isNotEmpty()) {
                 val progressRatio = (pct / 100f).coerceIn(0f, 1f)
                 val summaryLabel = when {
-                    targetVol > 0.0 -> "Объём: ${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
-                    subtasks.isNotEmpty() -> "Чек-лист: $doneCount из ${subtasks.size} выполнено"
+                    targetVol > 0.0 -> "${SubtaskItem.formatVolumeNumber(completedVol)} / ${SubtaskItem.formatVolumeNumber(targetVol)} $unitLabel"
+                    subtasks.isNotEmpty() -> "$doneCount из ${subtasks.size} этапов"
                     else -> ""
                 }
 
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     if (summaryLabel.isNotBlank()) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1245,24 +1213,22 @@ fun ItrPersonaTaskCard(
                         ) {
                             Text(
                                 text = summaryLabel,
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            if (pct > 0) {
-                                Text(
-                                    text = "$pct%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
-                                )
-                            }
+                            Text(
+                                text = "$pct%",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
                     LinearProgressIndicator(
                         progress = { progressRatio },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(2.5.dp)
+                            .height(3.dp)
                             .clip(RoundedCornerShape(2.dp)),
                         color = if (pct >= 100) doneColor else MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant
@@ -1270,7 +1236,7 @@ fun ItrPersonaTaskCard(
                 }
             }
 
-            // Нижняя строка-визитка: аватарка исполнителя + ФИО + локация/срок + иконка фото
+            // 3. Тихая нижняя строка: мини-аватар + исполнитель + фото + дедлайн
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1284,7 +1250,7 @@ fun ItrPersonaTaskCard(
                     Surface(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(22.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Text(
@@ -1296,12 +1262,8 @@ fun ItrPersonaTaskCard(
                         }
                     }
                     Text(
-                        text = if (task.allAssigneeNames.size > 1) {
-                            "Исполнители (${task.allAssigneeNames.size}): ${task.assigneeName}"
-                        } else {
-                            task.assigneeName.ifBlank { "Без исполнителя" }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
+                        text = task.assigneeName.ifBlank { "Без исполнителя" },
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -1328,7 +1290,8 @@ fun ItrPersonaTaskCard(
                             Text(
                                 text = if (requiredPhotos > 0) "$currentPhotos/$requiredPhotos" else "$currentPhotos",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (currentPhotos >= requiredPhotos && requiredPhotos > 0) doneColor else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -1346,13 +1309,13 @@ fun ItrPersonaTaskCard(
             if (!task.rejectionReason.isNullOrBlank() && task.taskStatus == TaskStatus.REJECTED) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Причина отклонения: ${task.rejectionReason}",
+                        text = "Возврат: ${task.rejectionReason}",
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -1495,14 +1458,15 @@ fun DirectorExecutiveDashboard(
                         )
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        val readinessPct = (overallReadinessFraction * 100f).toInt()
                         Text(
-                            text = "$approvedCount/${activeTasks.size}",
-                            style = MaterialTheme.typography.titleMedium,
+                            text = "$readinessPct%",
+                            style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "сдано",
+                            text = "$approvedCount из ${activeTasks.size}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1511,7 +1475,7 @@ fun DirectorExecutiveDashboard(
 
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
                         text = "Готовность объекта",
@@ -1521,16 +1485,34 @@ fun DirectorExecutiveDashboard(
                     )
                     if (totalPlannedVolume > 0.0) {
                         Text(
-                            text = "Объём: ${SubtaskItem.formatVolumeNumber(totalCompletedVolume)} / ${SubtaskItem.formatVolumeNumber(totalPlannedVolume)}",
-                            style = MaterialTheme.typography.bodySmall,
+                            text = "${SubtaskItem.formatVolumeNumber(totalCompletedVolume)} / ${SubtaskItem.formatVolumeNumber(totalPlannedVolume)}",
+                            style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
-                    LegendRowItem(color = doneColor, label = "Принято", count = approvedCount)
-                    LegendRowItem(color = MaterialTheme.colorScheme.primary, label = "В работе", count = inProgressCount)
-                    LegendRowItem(color = Color(0xFF7C3AED), label = "На проверке", count = onReviewCount)
-                    LegendRowItem(color = Color(0xFFDC2626), label = "Риски / срыв", count = overdueOrRejectedCount)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            LegendRowItem(color = doneColor, label = "Принято", count = approvedCount)
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            LegendRowItem(color = MaterialTheme.colorScheme.primary, label = "В работе", count = inProgressCount)
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            LegendRowItem(color = Color(0xFF7C3AED), label = "Проверка", count = onReviewCount)
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            LegendRowItem(color = Color(0xFFDC2626), label = "Риски", count = overdueOrRejectedCount)
+                        }
+                    }
                 }
             }
         }
@@ -1947,7 +1929,6 @@ fun DirectorExecutiveDashboard(
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = doneColor.copy(alpha = 0.08f),
-                                border = BorderStroke(1.dp, doneColor.copy(alpha = 0.3f)),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onOpenTaskDetail(task) }

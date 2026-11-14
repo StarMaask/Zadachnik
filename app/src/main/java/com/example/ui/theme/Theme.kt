@@ -247,7 +247,7 @@ fun designTokensForMode(mode: AppThemeMode): AppThemeDesignTokens = when (mode) 
     AppThemeMode.CLASSIC_LIGHT -> AppThemeDesignTokens(
         mode = AppThemeMode.CLASSIC_LIGHT,
         isDark = false,
-        cardShadowElevationDp = 4f,
+        cardShadowElevationDp = 2f,
         cardBorderWidthDp = 0f, // Никаких жестких обводок (borders) — разделение за счет фонов и мягких теней
         cardBorderColor = Color.Transparent,
         useGlassmorphism = false,
@@ -255,20 +255,20 @@ fun designTokensForMode(mode: AppThemeMode): AppThemeDesignTokens = when (mode) 
         isHighContrastField = false,
         statusDoneColor = ClassicLightStatusDone,
         statusInProgressColor = Color(0xFFD97706),
-        buttonCornerRadiusDp = 14
+        buttonCornerRadiusDp = 12
     )
     AppThemeMode.OBSIDIAN_DARK -> AppThemeDesignTokens(
         mode = AppThemeMode.OBSIDIAN_DARK,
         isDark = true,
-        cardShadowElevationDp = 2.5f,
-        cardBorderWidthDp = 0.8f,
+        cardShadowElevationDp = 0f,
+        cardBorderWidthDp = 0.75f,
         cardBorderColor = ObsidianGlassBorder,
         useGlassmorphism = true,
         useButtonGlow = true,
         isHighContrastField = false,
         statusDoneColor = ObsidianAccentEmerald,
         statusInProgressColor = Color(0xFFF59E0B),
-        buttonCornerRadiusDp = 14
+        buttonCornerRadiusDp = 12
     )
     AppThemeMode.TACTICAL_FIELD -> AppThemeDesignTokens(
         mode = AppThemeMode.TACTICAL_FIELD,
@@ -281,13 +281,13 @@ fun designTokensForMode(mode: AppThemeMode): AppThemeDesignTokens = when (mode) 
         isHighContrastField = true,
         statusDoneColor = TacticalStatusLime,
         statusInProgressColor = TacticalAccentAmber,
-        buttonCornerRadiusDp = 14
+        buttonCornerRadiusDp = 12
     )
 }
 
 val AppShapes = Shapes(
-    small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(14.dp),
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(12.dp),
     large = RoundedCornerShape(16.dp)
 )
 

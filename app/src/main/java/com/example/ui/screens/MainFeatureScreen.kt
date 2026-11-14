@@ -65,6 +65,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
@@ -77,6 +78,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -298,6 +300,7 @@ fun MainFeatureScreen(
     var showTopOverflowMenu by remember { mutableStateOf(false) }
     var showOrgSettingsDialog by remember { mutableStateOf(false) }
     var showThemeSettingsDialog by remember { mutableStateOf(false) }
+    var showPendingMemberSheet by remember { mutableStateOf(false) }
 
     val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
     val isAdminOrHead = activeEmployee.role.isAdminOrHead
@@ -388,14 +391,14 @@ fun MainFeatureScreen(
                             }
                         ) {
                             Text(
-                                text = "Ежедневник • $siteName",
+                                text = siteName.ifBlank { "Ежедневник" },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "${activeEmployee.shortName} (${activeEmployee.role.titleRu}) • $organizationName",
+                                text = "${activeEmployee.shortName} · ${activeEmployee.role.titleRu}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -405,20 +408,33 @@ fun MainFeatureScreen(
                     },
                     actions = {
                         if (currentTab == MainNavDestination.TODAY) {
-                            IconButton(
-                                onClick = {
-                                    createDialogTargetEpochDay = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
-                                        selectedCalendarEpochDay
-                                    } else if (selectedFilter == TaskFilterTab.TOMORROW) {
-                                        currentEpochDay + 1L
-                                    } else {
-                                        currentEpochDay
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        createDialogTargetEpochDay = if (selectedFilter == TaskFilterTab.CALENDAR_DATE) {
+                                            selectedCalendarEpochDay
+                                        } else if (selectedFilter == TaskFilterTab.TOMORROW) {
+                                            currentEpochDay + 1L
+                                        } else {
+                                            currentEpochDay
+                                        }
+                                        showCreateTaskDialog = true
                                     }
-                                    showCreateTaskDialog = true
-                                },
-                                modifier = Modifier.testTag("top_add_task_button")
+                                    .testTag("top_add_task_button")
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = "Новая задача")
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Новая задача",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                             IconButton(
                                 onClick = {
@@ -430,38 +446,24 @@ fun MainFeatureScreen(
                             }
                         }
 
-                        if (isAdminOrHead) {
+                        if (isAdminOrHead && pendingMembersCount > 0) {
                             IconButton(
                                 onClick = {
-                                    viewModel.refreshSiteMembersQueue(showBanner = true)
-                                    currentTab = MainNavDestination.ADMIN
+                                    viewModel.refreshSiteMembersQueue(showBanner = false)
+                                    showPendingMemberSheet = true
                                 },
                                 modifier = Modifier.testTag("top_pending_members_button")
                             ) {
-                                if (pendingMembersCount > 0) {
-                                    BadgedBox(
-                                        badge = { Badge { Text(pendingMembersCount.toString()) } }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Notifications,
-                                            contentDescription = "Заявки пользователей ($pendingMembersCount)",
-                                            tint = Color(0xFFD97706)
-                                        )
-                                    }
-                                } else {
+                                BadgedBox(
+                                    badge = { Badge { Text(pendingMembersCount.toString()) } }
+                                ) {
                                     Icon(
                                         imageVector = Icons.Default.Notifications,
-                                        contentDescription = "Заявки пользователей"
+                                        contentDescription = "Заявки пользователей ($pendingMembersCount)",
+                                        tint = Color(0xFFD97706)
                                     )
                                 }
                             }
-                        }
-
-                        IconButton(
-                            onClick = { showThemeSettingsDialog = true },
-                            modifier = Modifier.testTag("top_theme_switcher_button")
-                        ) {
-                            Icon(Icons.Default.Palette, contentDescription = "Оформление (Темы)")
                         }
 
                         Box {
@@ -689,200 +691,98 @@ fun MainFeatureScreen(
                         }
                     }
 
-                    // Если администратор вошёл локально без Google-сессии, показываем кнопку подключения облака
+                    // Компактная 1-строчная пилюля без жёсткой рамки при отключённом облаке
                     if (isAdminOrHead && !isCloudSyncActive) {
                         Surface(
-                            color = Color(0xFFFEF3C7),
-                            border = BorderStroke(1.dp, Color(0xFFD97706)),
-                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFD97706).copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { triggerCloudGoogleConnect(currentMemberRecord) }
                                 .testTag("admin_cloud_sync_prompt")
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.VerifiedUser,
-                                    contentDescription = null,
-                                    tint = Color(0xFFD97706),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Облачная синхронизация заявок не активна",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF92400E)
-                                    )
-                                    Text(
-                                        text = "Подключите аккаунт Google, чтобы принимать заявки с других телефонов",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFF92400E)
-                                    )
-                                }
-                                TextButton(
-                                    onClick = { triggerCloudGoogleConnect(currentMemberRecord) },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                    modifier = Modifier.testTag("admin_connect_cloud_button")
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
                                 ) {
+                                    Icon(
+                                        imageVector = Icons.Default.VerifiedUser,
+                                        contentDescription = null,
+                                        tint = Color(0xFFD97706),
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                     Text(
-                                        text = "Подключить",
+                                        text = "Облачная синхронизация не активна",
                                         style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFB45309)
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
+                                Text(
+                                    text = "Подключить ›",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFD97706),
+                                    modifier = Modifier.testTag("admin_connect_cloud_button")
+                                )
                             }
                         }
                     }
 
-                    // Наглядная карточка-извещение о новых пользователях, ожидающих подтверждения (с быстрым назначением роли в 1 клик)
+                    // Единая компактная 1-строчная пилюля о заявках на доступ (подробности — в BottomSheet)
                     if (isAdminOrHead && pendingMembersList.isNotEmpty() && currentTab != MainNavDestination.ADMIN) {
                         val firstPending = pendingMembersList.first()
-                        var quickSelectedRole by remember(firstPending.memberId) {
-                            mutableStateOf(CorporateRole.WORKER)
-                        }
                         Surface(
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.5.dp, Color(0xFFD97706)),
-                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xFFD97706).copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { showPendingMemberSheet = true }
                                 .testTag("global_pending_member_alert_card")
                         ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.HourglassTop,
-                                            contentDescription = null,
-                                            tint = Color(0xFFD97706),
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "Ожидает подтверждения (${pendingMembersList.size}): ${firstPending.fullName}",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    TextButton(
-                                        onClick = { currentTab = MainNavDestination.ADMIN },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                        modifier = Modifier.testTag("open_all_pending_requests_button")
-                                    ) {
-                                        Text(
-                                            text = "Все заявки →",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFD97706)
-                                        )
-                                    }
-                                }
-
-                                val pendingMeta = buildString {
-                                    if (firstPending.email.isNotBlank() && !firstPending.email.endsWith("@site1.ru")) {
-                                        append(firstPending.email)
-                                        append(" • ")
-                                    }
-                                    append(firstPending.position.ifBlank { "Специалист" })
-                                    if (firstPending.groupName.isNotBlank()) append(" • ${firstPending.groupName}")
-                                    if (firstPending.effectiveSiteName.isNotBlank()) append(" • ${firstPending.effectiveSiteName}")
+                                    Icon(
+                                        imageVector = Icons.Default.HourglassTop,
+                                        contentDescription = null,
+                                        tint = Color(0xFFD97706),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Заявка (${pendingMembersList.size}): ${firstPending.fullName}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                                 Text(
-                                    text = pendingMeta,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = "Назначить ›",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFD97706)
                                 )
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    CorporateRole.entries.forEach { roleOpt ->
-                                        FilterChip(
-                                            selected = quickSelectedRole == roleOpt,
-                                            onClick = { quickSelectedRole = roleOpt },
-                                            label = {
-                                                Text(
-                                                    text = roleOpt.shortTitleRu,
-                                                    style = MaterialTheme.typography.labelSmall
-                                                )
-                                            }
-                                        )
-                                    }
-                                }
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            val grp = (CorporateSeedData.workGroups.firstOrNull {
-                                                it.id == firstPending.groupId
-                                            } ?: CorporateSeedData.workGroups.first()).let { base ->
-                                                if (firstPending.groupName.isNotBlank()) {
-                                                    base.copy(
-                                                        id = firstPending.groupId.ifBlank { base.id },
-                                                        name = firstPending.groupName
-                                                    )
-                                                } else {
-                                                    base
-                                                }
-                                            }
-                                            viewModel.assignRoleToMember(
-                                                firstPending,
-                                                quickSelectedRole,
-                                                grp,
-                                                firstPending.position
-                                            )
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = Color(0xFF10B981),
-                                            contentColor = Color.White
-                                        ),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                        modifier = Modifier
-                                            .weight(1.3f)
-                                            .height(38.dp)
-                                            .testTag("quick_approve_pending_${firstPending.memberId}")
-                                    ) {
-                                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Подтвердить (${quickSelectedRole.shortTitleRu})", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                                    }
-                                    OutlinedButton(
-                                        onClick = { viewModel.rejectMemberAccess(firstPending) },
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                        modifier = Modifier
-                                            .weight(0.7f)
-                                            .height(38.dp)
-                                    ) {
-                                        Text("Отклонить", style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
                             }
                         }
                     }
@@ -1110,8 +1010,136 @@ fun MainFeatureScreen(
             onDismiss = viewModel::closeReportPreview
         )
     }
+
+    if (showPendingMemberSheet && pendingMembersList.isNotEmpty()) {
+        val firstPending = pendingMembersList.first()
+        var quickSelectedRole by remember(firstPending.memberId) {
+            mutableStateOf(CorporateRole.WORKER)
+        }
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showPendingMemberSheet = false },
+            sheetState = sheetState,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Заявка на доступ (${pendingMembersList.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(
+                        onClick = {
+                            showPendingMemberSheet = false
+                            currentTab = MainNavDestination.ADMIN
+                        },
+                        modifier = Modifier.testTag("open_all_pending_requests_button")
+                    ) {
+                        Text("Весь список ›")
+                    }
+                }
+                Text(
+                    text = firstPending.fullName,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                val pendingMeta = buildString {
+                    if (firstPending.email.isNotBlank() && !firstPending.email.endsWith("@site1.ru")) {
+                        append(firstPending.email)
+                        append(" · ")
+                    }
+                    append(firstPending.position.ifBlank { "Специалист" })
+                    if (firstPending.groupName.isNotBlank()) append(" · ${firstPending.groupName}")
+                    if (firstPending.effectiveSiteName.isNotBlank()) append(" · ${firstPending.effectiveSiteName}")
+                }
+                Text(
+                    text = pendingMeta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CorporateRole.entries.forEach { roleOpt ->
+                        FilterChip(
+                            selected = quickSelectedRole == roleOpt,
+                            onClick = { quickSelectedRole = roleOpt },
+                            label = { Text(roleOpt.shortTitleRu) }
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.rejectMemberAccess(firstPending)
+                            showPendingMemberSheet = false
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                    ) {
+                        Text("Отклонить")
+                    }
+                    Button(
+                        onClick = {
+                            val grp = (CorporateSeedData.workGroups.firstOrNull {
+                                it.id == firstPending.groupId
+                            } ?: CorporateSeedData.workGroups.first()).let { base ->
+                                if (firstPending.groupName.isNotBlank()) {
+                                    base.copy(
+                                        id = firstPending.groupId.ifBlank { base.id },
+                                        name = firstPending.groupName
+                                    )
+                                } else {
+                                    base
+                                }
+                            }
+                            viewModel.assignRoleToMember(
+                                firstPending,
+                                quickSelectedRole,
+                                grp,
+                                firstPending.position
+                            )
+                            showPendingMemberSheet = false
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF10B981),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .weight(1.4f)
+                            .height(48.dp)
+                            .testTag("quick_approve_pending_${firstPending.memberId}")
+                    ) {
+                        Text("Назначить ${quickSelectedRole.shortTitleRu}")
+                    }
+                }
+            }
+        }
+    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TodayTasksContent(
     activeEmployee: CorporateEmployee,
@@ -1379,53 +1407,9 @@ private fun TodayTasksContent(
         modifier = Modifier
             .fillMaxSize()
             .testTag("today_tasks_list"),
-        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 112.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Компактное уведомление для Администратора / Руководителя при наличии новых заявок
-        if (activeEmployee.role.isAdminOrHead && pendingMembersCount > 0) {
-            item {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0xFFFEF3C7),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpenRoleAssignments() }
-                        .testTag("head_pending_roles_banner")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.HourglassTop,
-                                contentDescription = null,
-                                tint = Color(0xFFD97706),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Новые пользователи ожидают роли: $pendingMembersCount чел.",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFF92400E)
-                            )
-                        }
-                        Text(
-                            text = "Открыть →",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFB45309)
-                        )
-                    }
-                }
-            }
-        }
 
         // Переключатель ролевых интерфейсов: ИТР видит «Рабочие | ИТР», Руководитель/Админ видит «Рабочие | ИТР | Руководитель»
         if (allowedModes.size > 1) {
@@ -1513,29 +1497,30 @@ private fun TodayTasksContent(
                         onCreateTaskClick = { onOpenCreateDialogForDate(activeWorkerDate) },
                         onSelectDate = { chosenDay ->
                             onSelectCalendarDate(chosenDay)
-                        }
+                        },
+                        onToggleExpandCalendar = { showFullMonthCalendar = true }
                     )
                 }
 
                 // Наглядный переключатель: В работе | Выполненные задачи
                 item {
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                .padding(3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Surface(
-                                shape = RoundedCornerShape(9.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 color = if (!workerShowCompletedTab) MaterialTheme.colorScheme.surface else Color.Transparent,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(9.dp))
+                                    .clip(RoundedCornerShape(8.dp))
                                     .clickable { workerShowCompletedTab = false }
                                     .testTag("worker_tab_active")
                             ) {
@@ -1545,15 +1530,15 @@ private fun TodayTasksContent(
                                     fontWeight = if (!workerShowCompletedTab) FontWeight.Bold else FontWeight.Medium,
                                     color = if (!workerShowCompletedTab) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                                    modifier = Modifier.padding(vertical = 7.dp, horizontal = 6.dp)
                                 )
                             }
                             Surface(
-                                shape = RoundedCornerShape(9.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 color = if (workerShowCompletedTab) MaterialTheme.colorScheme.surface else Color.Transparent,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(9.dp))
+                                    .clip(RoundedCornerShape(8.dp))
                                     .clickable { workerShowCompletedTab = true }
                                     .testTag("worker_tab_completed")
                             ) {
@@ -1563,7 +1548,7 @@ private fun TodayTasksContent(
                                     fontWeight = if (workerShowCompletedTab) FontWeight.Bold else FontWeight.Medium,
                                     color = if (workerShowCompletedTab) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                                    modifier = Modifier.padding(vertical = 7.dp, horizontal = 6.dp)
                                 )
                             }
                         }
@@ -1597,50 +1582,6 @@ private fun TodayTasksContent(
                         )
                     }
                 }
-                if (acceptedAndArchivedCount > 0 && !workerShowCompletedTab) {
-                    item {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFF10B981).copy(alpha = 0.1f),
-                            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { workerShowCompletedTab = true }
-                                .testTag("open_accepted_archive_banner")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        tint = Color(0xFF059669),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(
-                                        text = "Выполненные задачи ($acceptedAndArchivedCount) — показать список",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF059669)
-                                    )
-                                }
-                                Text(
-                                    text = "Открыть →",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF059669)
-                                )
-                            }
-                        }
-                    }
-                }
             }
 
             // =========================================================================
@@ -1660,6 +1601,7 @@ private fun TodayTasksContent(
                             }
                         },
                         onCreateTaskForDate = onOpenCreateDialogForDate,
+                        onToggleFullCalendar = { showFullMonthCalendar = true },
                         activeEmployee = activeEmployee,
                         selectedScope = selectedItrScope,
                         allCount = itrAllCount,
@@ -1741,50 +1683,6 @@ private fun TodayTasksContent(
                                     },
                                     onQuickComplete = { onQuickCompleteTask(task) }
                                 )
-                            }
-                        }
-                        if (itrCompletedCount > 0 && selectedItrFilter != ItrQuickFilter.COMPLETED) {
-                            item {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = Color(0xFF10B981).copy(alpha = 0.1f),
-                                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { selectedItrFilter = ItrQuickFilter.COMPLETED }
-                                        .testTag("open_accepted_archive_banner")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.CheckCircle,
-                                                contentDescription = null,
-                                                tint = Color(0xFF059669),
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Text(
-                                                text = "Выполненные задачи ($itrCompletedCount) — показать выполненные",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = Color(0xFF059669)
-                                            )
-                                        }
-                                        Text(
-                                            text = "Открыть →",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF059669)
-                                        )
-                                    }
-                                }
                             }
                         }
                     }
@@ -1903,6 +1801,47 @@ private fun TodayTasksContent(
                 }
             }
         )
+    }
+
+    if (showFullMonthCalendar) {
+        val calendarSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showFullMonthCalendar = false },
+            sheetState = calendarSheetState,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(bottom = 24.dp)
+            ) {
+                CorporateCalendarSection(
+                    currentEpochDay = currentEpochDay,
+                    selectedCalendarEpochDay = selectedCalendarEpochDay,
+                    isCalendarFilterActive = selectedFilter == TaskFilterTab.CALENDAR_DATE,
+                    allVisibleTasks = visibleTasks,
+                    onSelectDate = { day ->
+                        onSelectCalendarDate(day)
+                        showFullMonthCalendar = false
+                    },
+                    onCreateTaskForDate = { day ->
+                        showFullMonthCalendar = false
+                        onOpenCreateDialogForDate(day)
+                    },
+                    onOpenReportingTab = {
+                        showFullMonthCalendar = false
+                        onOpenReportingTab()
+                    },
+                    canAccessReporting = activeEmployee.role.canExportConsolidatedPersonnelReport(),
+                    onTaskClick = { task ->
+                        showFullMonthCalendar = false
+                        onTaskClick(task)
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -2043,11 +1982,34 @@ private fun EmptyTasksCleanCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Сменный план чист. Чтобы добавить новое поручение или объём работ, нажмите кнопку «+ Новая задача» в правом нижнем углу.",
+                text = "Сменный план на эту дату пуст. Поставьте задачу или перенесите незавершённое.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            Button(
+                onClick = onCreateClick,
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                modifier = Modifier
+                    .height(46.dp)
+                    .testTag("empty_state_create_task_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Новая задача",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

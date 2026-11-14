@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -16,7 +17,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -44,8 +47,12 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ThumbDown
+import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -62,11 +69,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,6 +92,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.local.LocalWorkspaceStore
@@ -100,12 +110,13 @@ import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
 import com.example.ui.auth.SiteSelectionDialog
 import com.example.ui.components.TaskItemCard
+import com.example.ui.theme.LocalAppThemeTokens
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
 import java.util.Locale
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ApprovalsQueueScreen(
     activeEmployee: CorporateEmployee,
@@ -116,6 +127,12 @@ fun ApprovalsQueueScreen(
     onApproveTask: (TaskDocument) -> Unit = {},
     onRejectTask: (TaskDocument, String) -> Unit = { _, _ -> }
 ) {
+    val tokens = LocalAppThemeTokens.current
+    val emeraldPrimary = tokens.statusDoneColor
+    val crimsonSecondary = Color(0xFFEF4444)
+    val tonalSurface = MaterialTheme.colorScheme.surfaceVariant.copy(
+        alpha = if (tokens.isDark) 0.28f else 0.42f
+    )
     val isWorkerRole = activeEmployee.role == CorporateRole.WORKER
     val onReviewTasks = remember(allTasks) {
         allTasks.filter {
@@ -149,103 +166,108 @@ fun ApprovalsQueueScreen(
         modifier = Modifier
             .fillMaxSize()
             .testTag("approvals_queue_list"),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 36.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (isWorkerRole) {
-                                    "Принятые отчёты и архив заданий"
-                                } else {
-                                    "Приёмка работ и архив принятых отчётов"
-                                },
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = if (isWorkerRole) {
-                                    "Принято: ${approvedAndArchivedTasks.size} • На проверке: ${onReviewTasks.size}"
-                                } else {
-                                    "Для рабочих подтверждает ИТР / Руководитель • Работу ИТР подтверждает Руководитель"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text(
+                            text = if (isWorkerRole) "Выполненные задачи" else "Приёмка работ",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            text = if (isWorkerRole) {
+                                "Принято: ${approvedAndArchivedTasks.size} • На проверке: ${onReviewTasks.size}"
+                            } else {
+                                "На проверке: ${onReviewTasks.size} • Принято: ${approvedAndArchivedTasks.size}"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.FactCheck,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
+                }
 
-                    // Переключатель вкладок: Очередь приёмки / Принятые отчёты (Архив)
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                        modifier = Modifier.fillMaxWidth()
+                // Сегментированный переключатель без рамок
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = tonalSurface,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
+                        val tab0Selected = selectedTabIndex == 0
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (tab0Selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+                            shadowElevation = if (tab0Selected && !tokens.isDark) 1.5.dp else 0.dp,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { selectedTabIndex = 0 }
+                                .testTag("approvals_tab_review")
                         ) {
-                            val tab0Selected = selectedTabIndex == 0
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (tab0Selected) MaterialTheme.colorScheme.surface else Color.Transparent,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { selectedTabIndex = 0 }
-                                    .testTag("approvals_tab_review")
-                            ) {
-                                Text(
-                                    text = "На проверке (${onReviewTasks.size})",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = if (tab0Selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (tab0Selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
-                                )
-                            }
+                            Text(
+                                text = "На проверке (${onReviewTasks.size})",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (tab0Selected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (tab0Selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp)
+                            )
+                        }
 
-                            val tab1Selected = selectedTabIndex == 1
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (tab1Selected) MaterialTheme.colorScheme.surface else Color.Transparent,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { selectedTabIndex = 1 }
-                                    .testTag("approvals_tab_archive")
-                            ) {
-                                Text(
-                                    text = "Выполненные задачи (${approvedAndArchivedTasks.size})",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = if (tab1Selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (tab1Selected) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
-                                )
-                            }
+                        val tab1Selected = selectedTabIndex == 1
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (tab1Selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+                            shadowElevation = if (tab1Selected && !tokens.isDark) 1.5.dp else 0.dp,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { selectedTabIndex = 1 }
+                                .testTag("approvals_tab_archive")
+                        ) {
+                            Text(
+                                text = "Выполненные (${approvedAndArchivedTasks.size})",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (tab1Selected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (tab1Selected) emeraldPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp)
+                            )
                         }
                     }
                 }
@@ -256,17 +278,46 @@ fun ApprovalsQueueScreen(
             if (onReviewTasks.isEmpty()) {
                 item {
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(
+                            alpha = if (tokens.isDark) 0.22f else 0.34f
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = "Нет задач, ожидающих подтверждения.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(16.dp)
-                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(emeraldPrimary.copy(alpha = 0.14f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = emeraldPrimary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Text(
+                                text = "Очередь приёмки пуста",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Новые отчёты и фотофиксация появятся здесь, как только исполнители отправят задачи на проверку.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
                 }
             } else {
@@ -277,7 +328,7 @@ fun ApprovalsQueueScreen(
                     val assigneeRole = remember(task, availableEmployees, activeEmployee) {
                         task.resolveAssigneeRole(availableEmployees, activeEmployee)
                     }
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         TaskItemCard(
                             task = task,
                             onClick = { onTaskClick(task) }
@@ -287,54 +338,90 @@ fun ApprovalsQueueScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                OutlinedButton(
+                                Button(
                                     onClick = {
                                         rejectCommentInput = ""
                                         taskPendingReject = task
                                     },
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f)),
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = crimsonSecondary.copy(alpha = if (tokens.isDark) 0.18f else 0.11f),
+                                        contentColor = crimsonSecondary
+                                    ),
+                                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(44.dp)
+                                        .height(48.dp)
                                         .testTag("queue_reject_${task.id}")
                                 ) {
-                                    Text("Отклонить", fontWeight = FontWeight.SemiBold)
+                                    Icon(
+                                        imageVector = Icons.Default.ThumbDown,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Отклонить",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                                 Button(
                                     onClick = {
                                         onApproveTask(task)
                                         approvedOutcomeTask = task
                                     },
-                                    shape = RoundedCornerShape(10.dp),
+                                    shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF10B981),
+                                        containerColor = emeraldPrimary,
                                         contentColor = Color.White
                                     ),
                                     modifier = Modifier
                                         .weight(1.35f)
-                                        .height(44.dp)
+                                        .height(48.dp)
                                         .testTag("queue_approve_${task.id}")
                                 ) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Принять отчёт", fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = "Принять отчёт",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         } else if (!isWorkerRole && assigneeRole == CorporateRole.ITR) {
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(
-                                    text = "Отчёт ИТР — подтверждает Руководитель",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Отчёт ИТР — подтверждает Руководитель",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
                             }
                         }
                     }
@@ -343,19 +430,30 @@ fun ApprovalsQueueScreen(
 
             if (rejectedTasks.isNotEmpty()) {
                 item {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Возвращено на доработку (${rejectedTasks.size})",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.error
-                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(crimsonSecondary)
+                        )
+                        Text(
+                            text = "Возвращено на доработку (${rejectedTasks.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
                 }
                 items(rejectedTasks, key = { "rejected_${it.id}" }) { task ->
                     val canVerifyThisTask = remember(task, activeEmployee, availableEmployees) {
                         task.canBeApprovedBy(activeEmployee, availableEmployees)
                     }
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         TaskItemCard(
                             task = task,
                             onClick = { onTaskClick(task) }
@@ -366,18 +464,22 @@ fun ApprovalsQueueScreen(
                                     onApproveTask(task)
                                     approvedOutcomeTask = task
                                 },
-                                shape = RoundedCornerShape(10.dp),
+                                shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF10B981),
+                                    containerColor = emeraldPrimary,
                                     contentColor = Color.White
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(42.dp)
+                                    .height(48.dp)
                             ) {
                                 Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Принять работу после доработки", fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "Принять после доработки",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
@@ -388,17 +490,46 @@ fun ApprovalsQueueScreen(
             if (approvedAndArchivedTasks.isEmpty()) {
                 item {
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(
+                            alpha = if (tokens.isDark) 0.22f else 0.34f
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = "Принятых и подтверждённых отчётов пока нет. После подтверждения отчёты скрываются с главной страницы и сохраняются здесь.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(16.dp)
-                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.FactCheck,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Text(
+                                text = "Выполненных задач пока нет",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Подтверждённые отчёты автоматически переносятся с главной ленты в этот архив.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
                 }
             } else {
@@ -417,90 +548,188 @@ fun ApprovalsQueueScreen(
             listOf(
                 "Недостаточно фотоотчёта",
                 "Объём выполнен не полностью",
-                "Замечание по качеству СМР",
+                "Замечание по качеству работ",
                 "Требуется корректировка данных"
             )
         }
-        AlertDialog(
+        val rejectSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
             onDismissRequest = { taskPendingReject = null },
-            title = { Text("Отклонение задания") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Укажите комментарий, почему произошло отклонение задачи «${targetTask.title}»:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        quickRejectReasons.forEach { preset ->
-                            FilterChip(
-                                selected = rejectCommentInput == preset,
-                                onClick = { rejectCommentInput = preset },
-                                label = { Text(preset, style = MaterialTheme.typography.labelSmall) }
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = rejectCommentInput,
-                        onValueChange = { rejectCommentInput = it },
-                        label = { Text("Комментарий (причина отклонения) *") },
-                        placeholder = { Text("Опишите причину возврата на доработку...") },
-                        minLines = 2,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("queue_rejection_reason_input")
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val cleanReason = rejectCommentInput.trim()
-                        if (cleanReason.isNotBlank()) {
-                            onRejectTask(targetTask, cleanReason)
-                            taskPendingReject = null
-                            rejectedOutcomeInfo = targetTask.title to cleanReason
-                        }
-                    },
-                    enabled = rejectCommentInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    modifier = Modifier.testTag("queue_confirm_reject_button")
+            sheetState = rejectSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                )
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 16.dp)
+                    .navigationBarsPadding()
+                    .imePadding(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Отклонить", color = Color.White)
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(crimsonSecondary.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ThumbDown,
+                            contentDescription = null,
+                            tint = crimsonSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Отклонение задания",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = targetTask.title,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { taskPendingReject = null }) {
-                    Text("Отмена")
+
+                Text(
+                    text = "Выберите быструю причину или опишите замечания для доработки:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickRejectReasons.forEach { preset ->
+                        FilterChip(
+                            selected = rejectCommentInput == preset,
+                            onClick = { rejectCommentInput = preset },
+                            label = { Text(preset, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = rejectCommentInput,
+                    onValueChange = { rejectCommentInput = it },
+                    label = { Text("Причина отклонения *") },
+                    placeholder = { Text("Что нужно исправить или дополнить...") },
+                    minLines = 2,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("queue_rejection_reason_input")
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { taskPendingReject = null },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(50.dp)
+                    ) {
+                        Text("Отмена", fontWeight = FontWeight.SemiBold)
+                    }
+                    Button(
+                        onClick = {
+                            val cleanReason = rejectCommentInput.trim()
+                            if (cleanReason.isNotBlank()) {
+                                onRejectTask(targetTask, cleanReason)
+                                taskPendingReject = null
+                                rejectedOutcomeInfo = targetTask.title to cleanReason
+                            }
+                        },
+                        enabled = rejectCommentInput.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = crimsonSecondary,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .weight(1.3f)
+                            .height(50.dp)
+                            .testTag("queue_confirm_reject_button")
+                    ) {
+                        Text("Вернуть в работу", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
-        )
+        }
     }
 
     rejectedOutcomeInfo?.let { (taskTitle, commentText) ->
         AlertDialog(
             onDismissRequest = { rejectedOutcomeInfo = null },
-            title = { Text("Задание отклонено") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Задание «$taskTitle» отклонено и возвращено исполнителю на доработку.")
-                    Text(
-                        text = "Комментарий: $commentText",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.error
+            icon = {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(crimsonSecondary.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ThumbDown,
+                        contentDescription = null,
+                        tint = crimsonSecondary,
+                        modifier = Modifier.size(22.dp)
                     )
+                }
+            },
+            title = { Text("Задание отклонено", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Задание «$taskTitle» возвращено исполнителю на доработку.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = crimsonSecondary.copy(alpha = 0.10f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Комментарий: $commentText",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = crimsonSecondary,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = { rejectedOutcomeInfo = null },
-                    modifier = Modifier.testTag("queue_confirm_rejected_outcome_button")
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("queue_confirm_rejected_outcome_button")
                 ) {
-                    Text("ОК")
+                    Text("ОК", fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -512,10 +741,27 @@ fun ApprovalsQueueScreen(
                 approvedOutcomeTask = null
                 selectedTabIndex = 1
             },
-            title = { Text("Отчёт принят") },
+            icon = {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(emeraldPrimary.copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = emeraldPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            },
+            title = { Text("Отчёт принят", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    "Выполнение задания «${acceptedTask.title}» подтверждено. Принятый отчёт перемещён с главной страницы во вкладку «Принятые / Архив»."
+                    text = "Выполнение задания «${acceptedTask.title}» подтверждено и перенесено во вкладку «Выполненные».",
+                    style = MaterialTheme.typography.bodySmall
                 )
             },
             confirmButton = {
@@ -524,13 +770,16 @@ fun ApprovalsQueueScreen(
                         approvedOutcomeTask = null
                         selectedTabIndex = 1
                     },
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF10B981),
+                        containerColor = emeraldPrimary,
                         contentColor = Color.White
                     ),
-                    modifier = Modifier.testTag("queue_confirm_approved_outcome_button")
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("queue_confirm_approved_outcome_button")
                 ) {
-                    Text("ОК")
+                    Text("ОК", fontWeight = FontWeight.Bold)
                 }
             }
         )

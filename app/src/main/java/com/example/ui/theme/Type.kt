@@ -25,25 +25,36 @@ val Typography = Typography(
         fontFamily = ManropeFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 28.sp,
-        lineHeight = 34.sp
+        lineHeight = 34.sp,
+        fontFeatureSettings = "tnum"
     ),
     headlineMedium = TextStyle(
         fontFamily = ManropeFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 22.sp,
-        lineHeight = 28.sp
+        lineHeight = 28.sp,
+        fontFeatureSettings = "tnum"
     ),
     titleLarge = TextStyle(
         fontFamily = ManropeFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 19.sp,
-        lineHeight = 25.sp
+        lineHeight = 25.sp,
+        fontFeatureSettings = "tnum"
     ),
     titleMedium = TextStyle(
         fontFamily = ManropeFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 16.sp,
-        lineHeight = 22.sp
+        lineHeight = 22.sp,
+        fontFeatureSettings = "tnum"
+    ),
+    titleSmall = TextStyle(
+        fontFamily = ManropeFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        fontFeatureSettings = "tnum"
     ),
     bodyLarge = TextStyle(
         fontFamily = InterFontFamily,
@@ -57,16 +68,32 @@ val Typography = Typography(
         fontSize = 14.sp,
         lineHeight = 20.sp
     ),
+    bodySmall = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        fontFeatureSettings = "tnum"
+    ),
     labelLarge = TextStyle(
         fontFamily = InterFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 13.sp,
-        lineHeight = 18.sp
+        lineHeight = 18.sp,
+        fontFeatureSettings = "tnum"
     ),
     labelMedium = TextStyle(
         fontFamily = InterFontFamily,
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
-        lineHeight = 16.sp
+        lineHeight = 16.sp,
+        fontFeatureSettings = "tnum"
+    ),
+    labelSmall = TextStyle(
+        fontFamily = InterFontFamily,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        fontFeatureSettings = "tnum"
     )
 )

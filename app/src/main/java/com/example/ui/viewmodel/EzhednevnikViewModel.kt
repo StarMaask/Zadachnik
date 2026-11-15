@@ -636,6 +636,12 @@ class EzhednevnikViewModel(
         _isCloudSyncActive.value = isCloudAuthenticated
         initializeUserAndRoleStatus()
         refreshSiteMembersQueue(showBanner = true)
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                syncSiteMembersFromCloudSilently()
+                syncTasksAndPhotosWithCloudSilently()
+            }
+        }
     }
 
     private fun startPeriodicCloudMembersSync() {
@@ -1789,8 +1795,8 @@ class EzhednevnikViewModel(
         val newPosition = customPosition?.takeIf { it.isNotBlank() }
             ?: targetMember.position.ifBlank { assignedRole.titleRu }
         val preservedGroup = assignedGroup.copy(
-            id = targetMember.groupId.ifBlank { assignedGroup.id },
-            name = targetMember.groupName.ifBlank { assignedGroup.name }
+            id = assignedGroup.id.ifBlank { targetMember.groupId },
+            name = assignedGroup.name.ifBlank { targetMember.groupName }
         )
 
         val draftApproved = targetMember.copy(
@@ -2034,19 +2040,36 @@ class EzhednevnikViewModel(
             }
         }
 
-        // Обновляем ФИО и подразделение в текущих задачах этого сотрудника
-        val updatedTasks = _localTasks.value.map { t ->
-            if (t.assigneeId == key || t.assigneeId == originalRawKey || normalizeMemberKey(t.assigneeId) == key) {
-                t.copy(
-                    assigneeId = key,
-                    assigneeName = cleanName,
-                    groupName = resolvedGroupName
-                )
-            } else {
-                t
+        // Обновляем ФИО, ID и подразделение во всех задачах этого сотрудника (включая мульти-исполнителей и облачные задачи)
+        val oldEmployeeMatcher = targetMember.toCorporateEmployee(defaultSiteName = _siteName.value)
+        val allKnownTasksMap = LinkedHashMap<String, TaskDocument>()
+        (tasksState.value as? UiState.Success)?.data.orEmpty().forEach { t ->
+            if (t.id.isNotBlank()) allKnownTasksMap[t.id] = t
+        }
+        _localTasks.value.forEach { t ->
+            if (t.id.isNotBlank()) allKnownTasksMap[t.id] = t
+        }
+        val changedTasksForCloud = mutableListOf<TaskDocument>()
+        allKnownTasksMap.values.forEach { task ->
+            val updatedTask = task.withReplacedEmployeeDetails(
+                oldEmployee = oldEmployeeMatcher,
+                newMemberKey = key,
+                newFullName = cleanName,
+                newGroupId = resolvedGroupId,
+                newGroupName = resolvedGroupName
+            )
+            if (updatedTask != null && updatedTask != task) {
+                allKnownTasksMap[task.id] = updatedTask
+                markTaskPendingCloudSync(updatedTask.id)
+                changedTasksForCloud.add(updatedTask)
             }
         }
-        persistTasksLocally(updatedTasks)
+        if (changedTasksForCloud.isNotEmpty()) {
+            val localIdSet = _localTasks.value.map { it.id }.toMutableSet()
+            changedTasksForCloud.forEach { localIdSet.add(it.id) }
+            val nextLocalList = allKnownTasksMap.values.filter { it.id in localIdSet }
+            persistTasksLocally(nextLocalList)
+        }
 
         appendLocalAudit(
             actor = actor,
@@ -2060,6 +2083,20 @@ class EzhednevnikViewModel(
         viewModelScope.launch {
             if (isCloudAuthenticated) {
                 repository.updateSiteMemberDetails(actor, updatedMember)
+                changedTasksForCloud.forEach { updatedTask ->
+                    val res = repository.updateTaskAssigneesInFirestore(
+                        task = updatedTask,
+                        assigneeId = updatedTask.assigneeId,
+                        assigneeName = updatedTask.assigneeName,
+                        groupId = updatedTask.groupId,
+                        groupName = updatedTask.groupName,
+                        tags = updatedTask.tags,
+                        historyItems = updatedTask.historyItems
+                    )
+                    if (res.isSuccess) {
+                        clearTaskPendingCloudSync(updatedTask.id)
+                    }
+                }
             }
         }
     }
@@ -2371,7 +2408,11 @@ class EzhednevnikViewModel(
             }
         }
 
-        _bannerMessage.value = "Задача «$cleanTitle» назначена (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)}, исп.: $allAssigneeShortNames)"
+        _bannerMessage.value = if (isCloudAuthenticated) {
+            "Задача «$cleanTitle» назначена (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)}, исп.: $allAssigneeShortNames)"
+        } else {
+            "Задача «$cleanTitle» сохранена на устройстве — подключите Google для отправки команде"
+        }
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -2586,13 +2627,17 @@ class EzhednevnikViewModel(
             PhotoCaptureUtils.deletePhotoFileIfLocal(targetPhoto.uriString, appContext, photoId)
         }
         val remainingEncoded = decoded.filterNot { it.id == photoId }.map { it.encode() }
-        val updatedTask = currentTask.copy(photoItems = remainingEncoded)
+        val updatedTask = currentTask.copy(photoItems = remainingEncoded).withUpdatedRevision()
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = "Фото удалено"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.deletePhotoFromTask(activeEmployee.value, currentTask, photoId)
+                val res = repository.deletePhotoFromTask(activeEmployee.value, currentTask, photoId)
+                if (res.isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -3046,6 +3091,7 @@ class EzhednevnikViewModel(
                 taskEventKeyApproved(updatedTask)
             )
         )
+        markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
         _bannerMessage.value = reportLogNote
 
@@ -3072,6 +3118,7 @@ class EzhednevnikViewModel(
                         val reason = submitRes.exceptionOrNull()?.localizedMessage ?: photoErr ?: "ошибка сети"
                         _bannerMessage.value = "Отчёт сохранён локально, ошибка отправки в облако: $reason"
                     } else {
+                        clearTaskPendingCloudSync(updatedTask.id)
                         _failedPhotoSyncTaskIds.value = _failedPhotoSyncTaskIds.value - updatedTask.id
                     }
                 } finally {

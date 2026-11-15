@@ -398,6 +398,7 @@ fun WorkerPersonaTaskCard(
     onToggleSubtask: (String) -> Unit = {},
     canApprove: Boolean = false,
     showAssigneeName: Boolean = false,
+    availableEmployees: List<CorporateEmployee> = emptyList(),
     onApproveTask: (() -> Unit)? = null,
     onRejectTask: (() -> Unit)? = null
 ) {
@@ -413,6 +414,9 @@ fun WorkerPersonaTaskCard(
     val requiredPhotos = task.minPhotoCount.toInt()
     val currentPhotos = task.photoItems.size
     val taskStatusColor = statusColor(task.taskStatus)
+    val displayAssigneeName = remember(task.assigneeName, task.tags, availableEmployees) {
+        task.resolveDisplayAssigneeName(availableEmployees)
+    }
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -516,8 +520,8 @@ fun WorkerPersonaTaskCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val metaLeft = buildString {
-                    if (showAssigneeName && task.assigneeName.isNotBlank()) {
-                        append(task.assigneeName)
+                    if (showAssigneeName && displayAssigneeName.isNotBlank()) {
+                        append(displayAssigneeName)
                         append(" · ")
                     }
                     append(task.geoLocation.orEmpty().ifBlank { "Участок №1" })
@@ -1112,6 +1116,7 @@ fun ItrPersonaTaskCard(
     onDelete: (() -> Unit)? = null,
     onToggleSubtask: ((String) -> Unit)? = null,
     canApprove: Boolean = false,
+    availableEmployees: List<CorporateEmployee> = emptyList(),
     onQuickComplete: (() -> Unit)? = null,
     onApproveTask: (() -> Unit)? = null,
     onRejectTask: (() -> Unit)? = null
@@ -1125,11 +1130,21 @@ fun ItrPersonaTaskCard(
     val subtasks = remember(task.subtaskItems) { task.decodedSubtasks() }
     val doneCount = subtasks.count { it.isDone }
     val taskStatusColor = statusColor(task.taskStatus)
-    val initials = remember(task.assigneeName, task.tags) {
-        if (task.allAssigneeNames.size > 1) {
-            "${task.allAssigneeNames.size}"
+    val displayAssigneeNames = remember(task.assigneeName, task.tags, availableEmployees) {
+        task.resolveDisplayAssigneeNames(availableEmployees)
+    }
+    val displayAssigneeName = remember(displayAssigneeNames, task.assigneeName) {
+        if (displayAssigneeNames.isNotEmpty()) {
+            displayAssigneeNames.joinToString(", ").take(120)
         } else {
             task.assigneeName
+        }
+    }
+    val initials = remember(displayAssigneeName, displayAssigneeNames) {
+        if (displayAssigneeNames.size > 1) {
+            "${displayAssigneeNames.size}"
+        } else {
+            displayAssigneeName
                 .trim()
                 .split(Regex("\\s+"))
                 .filter { it.isNotBlank() }
@@ -1262,7 +1277,7 @@ fun ItrPersonaTaskCard(
                         }
                     }
                     Text(
-                        text = task.assigneeName.ifBlank { "Без исполнителя" },
+                        text = displayAssigneeName.ifBlank { "Без исполнителя" },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -1341,6 +1356,7 @@ fun DirectorExecutiveDashboard(
     allTasks: List<TaskDocument>,
     activeStaffCount: Int,
     auditLogs: List<AuditLogDocument>,
+    availableEmployees: List<CorporateEmployee> = emptyList(),
     onApproveTask: (TaskDocument) -> Unit,
     onRejectTask: (TaskDocument) -> Unit,
     onOpenTaskDetail: (TaskDocument) -> Unit
@@ -1720,7 +1736,7 @@ fun DirectorExecutiveDashboard(
                                         }
                                     }
                                     Text(
-                                        text = "${task.assigneeName} • ${task.geoLocation.orEmpty().ifBlank { "Участок №1" }} • 📷 ${task.photoItems.size}/${task.minPhotoCount}",
+                                        text = "${task.resolveDisplayAssigneeName(availableEmployees)} • ${task.geoLocation.orEmpty().ifBlank { "Участок №1" }} • 📷 ${task.photoItems.size}/${task.minPhotoCount}",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1843,7 +1859,7 @@ fun DirectorExecutiveDashboard(
                                         ""
                                     }
                                     Text(
-                                        text = "${task.assigneeName} • ${task.groupName.ifBlank { task.geoLocation.orEmpty() }} • ${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)}$volSuffix • 📷 ${task.photoItems.size}",
+                                        text = "${task.resolveDisplayAssigneeName(availableEmployees)} • ${task.groupName.ifBlank { task.geoLocation.orEmpty() }} • ${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)}$volSuffix • 📷 ${task.photoItems.size}",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1959,7 +1975,7 @@ fun DirectorExecutiveDashboard(
                                         }
                                     }
                                     Text(
-                                        text = "Исполнитель: ${task.assigneeName} • Дата: ${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} • 📷 ${task.photoItems.size}",
+                                        text = "Исполнитель: ${task.resolveDisplayAssigneeName(availableEmployees)} • Дата: ${ReportDocumentGenerator.formatEpochDay(task.dueDateEpochDay)} • 📷 ${task.photoItems.size}",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

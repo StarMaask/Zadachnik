@@ -947,7 +947,9 @@ fun TaskDetailDialog(
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    val initials = task.assigneeName
+                                    val resolvedNames = task.resolveDisplayAssigneeNames(availableEmployees)
+                                    val resolvedJoined = task.resolveDisplayAssigneeName(availableEmployees)
+                                    val initials = resolvedJoined
                                         .split(" ", ",")
                                         .filter { it.isNotBlank() }
                                         .take(2)
@@ -960,7 +962,7 @@ fun TaskDetailDialog(
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Text(
-                                                text = if (task.allAssigneeNames.size > 1) "${task.allAssigneeNames.size}" else initials,
+                                                text = if (resolvedNames.size > 1) "${resolvedNames.size}" else initials,
                                                 style = MaterialTheme.typography.labelSmall,
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.primary
@@ -969,8 +971,8 @@ fun TaskDetailDialog(
                                     }
                                     Column {
                                         Text(
-                                            text = if (task.allAssigneeNames.size > 1) {
-                                                "Исполнители (${task.allAssigneeNames.size})"
+                                            text = if (resolvedNames.size > 1) {
+                                                "Исполнители (${resolvedNames.size})"
                                             } else {
                                                 "Исполнитель"
                                             },
@@ -978,7 +980,7 @@ fun TaskDetailDialog(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                         Text(
-                                            text = task.assigneeName.ifBlank { "Не назначен" },
+                                            text = resolvedJoined.ifBlank { "Не назначен" },
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface,

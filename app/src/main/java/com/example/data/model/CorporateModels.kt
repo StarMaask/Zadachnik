@@ -751,6 +751,46 @@ data class TaskDocument(
             return (fromTag.ifEmpty { fromField }).distinct()
         }
 
+    fun resolveDisplayAssigneeNames(allEmployees: List<CorporateEmployee>): List<String> {
+        val storedNames = allAssigneeNames
+        if (allEmployees.isEmpty()) return storedNames
+        val ids = allAssigneeIds
+        if (ids.isEmpty()) return storedNames
+        val resolved = mutableListOf<String>()
+        ids.forEachIndexed { idx, rawId ->
+            val cleanId = rawId.trim()
+            val canonicalRaw = SiteMemberDocument.canonicalMemberId(cleanId, "")
+            val matchedEmp = allEmployees.firstOrNull { emp ->
+                val empId = emp.id.trim()
+                val empCanonical = SiteMemberDocument.canonicalMemberId(empId, emp.email).trim()
+                (cleanId.isNotBlank() && (empId.equals(cleanId, ignoreCase = true) || empCanonical.equals(cleanId, ignoreCase = true))) ||
+                    (canonicalRaw.isNotBlank() && (empId.equals(canonicalRaw, ignoreCase = true) || empCanonical.equals(canonicalRaw, ignoreCase = true)))
+            }
+            val fallbackName = storedNames.getOrNull(idx).orEmpty()
+            val finalName = matchedEmp?.fullName?.trim()?.takeIf { it.isNotBlank() } ?: fallbackName
+            if (finalName.isNotBlank()) {
+                resolved.add(finalName)
+            }
+        }
+        if (storedNames.size > ids.size) {
+            storedNames.drop(ids.size).forEach { extraName ->
+                if (extraName.isNotBlank() && resolved.none { it.equals(extraName, ignoreCase = true) }) {
+                    resolved.add(extraName)
+                }
+            }
+        }
+        return resolved.ifEmpty { storedNames }.distinct()
+    }
+
+    fun resolveDisplayAssigneeName(allEmployees: List<CorporateEmployee>): String {
+        val resolved = resolveDisplayAssigneeNames(allEmployees)
+        return if (resolved.isNotEmpty()) {
+            resolved.joinToString(", ").take(120)
+        } else {
+            assigneeName
+        }
+    }
+
     fun isAssignedToEmployee(emp: CorporateEmployee): Boolean {
         val empIdClean = emp.id.trim()
         val empCanonicalId = SiteMemberDocument.canonicalMemberId(emp.id, emp.email).trim()
@@ -794,6 +834,88 @@ data class TaskDocument(
             assigneeName = joinedNames,
             tags = updatedTags
         )
+    }
+
+    /**
+     * Обновляет ID, ФИО и подразделение сотрудника во всех полях задачи (включая мульти-исполнителей __asgn__ и создателя).
+     */
+    fun withReplacedEmployeeDetails(
+        oldEmployee: CorporateEmployee,
+        newMemberKey: String,
+        newFullName: String,
+        newGroupId: String,
+        newGroupName: String
+    ): TaskDocument? {
+        val oldRawId = oldEmployee.id.trim()
+        val oldCanonical = SiteMemberDocument.canonicalMemberId(oldRawId, oldEmployee.email).trim()
+        val cleanNewKey = newMemberKey.trim().ifBlank { oldCanonical.ifBlank { oldRawId } }
+        val cleanNewName = newFullName.trim().ifBlank { oldEmployee.fullName }
+
+        fun idMatchesTarget(rawId: String): Boolean {
+            val clean = rawId.trim()
+            if (clean.isBlank()) return false
+            val canonical = SiteMemberDocument.canonicalMemberId(clean, "")
+            return (oldRawId.isNotBlank() && clean.equals(oldRawId, ignoreCase = true)) ||
+                (oldCanonical.isNotBlank() && (clean.equals(oldCanonical, ignoreCase = true) || canonical.equals(oldCanonical, ignoreCase = true))) ||
+                (cleanNewKey.isNotBlank() && (clean.equals(cleanNewKey, ignoreCase = true) || canonical.equals(cleanNewKey, ignoreCase = true)))
+        }
+
+        val oldFullLower = oldEmployee.fullName.trim().lowercase()
+        val oldShortLower = oldEmployee.shortName.trim().lowercase()
+        fun nameMatchesTarget(rawName: String): Boolean {
+            val clean = rawName.trim().lowercase()
+            if (clean.isBlank()) return false
+            return (oldFullLower.isNotBlank() && clean == oldFullLower) ||
+                (oldShortLower.isNotBlank() && oldShortLower != "сотрудник" && clean == oldShortLower)
+        }
+
+        val matchesAssignee = isAssignedToEmployee(oldEmployee) || allAssigneeIds.any { idMatchesTarget(it) }
+        val matchesCreator = idMatchesTarget(creatorId) || (creatorId.isBlank() && nameMatchesTarget(creatorName))
+        if (!matchesAssignee && !matchesCreator) return null
+
+        var result = this
+        if (matchesAssignee) {
+            val ids = allAssigneeIds
+            val names = allAssigneeNames
+            val count = maxOf(ids.size, names.size, 1)
+            val updatedIds = mutableListOf<String>()
+            val updatedNames = mutableListOf<String>()
+            var replacedAnySlot = false
+            for (i in 0 until count) {
+                val slotId = ids.getOrNull(i).orEmpty().trim()
+                val slotName = names.getOrNull(i).orEmpty().trim()
+                if (idMatchesTarget(slotId) || nameMatchesTarget(slotName)) {
+                    replacedAnySlot = true
+                    if (cleanNewKey.isNotBlank()) updatedIds.add(cleanNewKey)
+                    if (cleanNewName.isNotBlank()) updatedNames.add(cleanNewName)
+                } else {
+                    if (slotId.isNotBlank()) updatedIds.add(slotId)
+                    if (slotName.isNotBlank()) updatedNames.add(slotName)
+                }
+            }
+            if (!replacedAnySlot) {
+                if (cleanNewKey.isNotBlank()) updatedIds.add(cleanNewKey)
+                if (cleanNewName.isNotBlank()) updatedNames.add(cleanNewName)
+            }
+            val finalIds = updatedIds.ifEmpty { listOfNotNull(cleanNewKey.takeIf { it.isNotBlank() }) }
+            val finalNames = updatedNames.ifEmpty { listOfNotNull(cleanNewName.takeIf { it.isNotBlank() }) }
+            result = result.withUpdatedAssignees(finalIds, finalNames)
+            val isPrimaryAssignee = idMatchesTarget(assigneeId) ||
+                finalIds.firstOrNull().equals(cleanNewKey, ignoreCase = true)
+            if (isPrimaryAssignee) {
+                result = result.copy(
+                    groupId = newGroupId.ifBlank { result.groupId },
+                    groupName = newGroupName.ifBlank { result.groupName }
+                )
+            }
+        }
+        if (matchesCreator) {
+            result = result.copy(
+                creatorId = cleanNewKey.ifBlank { result.creatorId },
+                creatorName = cleanNewName.ifBlank { result.creatorName }
+            )
+        }
+        return result.withUpdatedRevision()
     }
 
     fun withUpdatedVolume(newTarget: Double, newCompleted: Double, newUnit: String): TaskDocument {
@@ -943,12 +1065,26 @@ data class TaskDocument(
     /**
      * Проверка принадлежности задачи к тематическому подразделению (бригаде / службе).
      */
-    fun belongsToSubdivision(targetGroupName: String, targetGroupId: String): Boolean {
+    fun belongsToSubdivision(
+        targetGroupName: String,
+        targetGroupId: String,
+        allEmployees: List<CorporateEmployee> = emptyList()
+    ): Boolean {
         if (targetGroupId.isNotBlank() && groupId.isNotBlank() && groupId.equals(targetGroupId, ignoreCase = true)) {
             return true
         }
         if (targetGroupName.isNotBlank() && groupName.isNotBlank() && groupName.equals(targetGroupName, ignoreCase = true)) {
             return true
+        }
+        if (allEmployees.isNotEmpty() && (targetGroupId.isNotBlank() || targetGroupName.isNotBlank())) {
+            val matchedAssignees = allEmployees.filter { isAssignedToEmployee(it) }
+            if (matchedAssignees.any { emp ->
+                    (targetGroupId.isNotBlank() && emp.groupId.equals(targetGroupId, ignoreCase = true)) ||
+                        (targetGroupName.isNotBlank() && emp.groupName.equals(targetGroupName, ignoreCase = true))
+                }
+            ) {
+                return true
+            }
         }
         return false
     }
@@ -1073,7 +1209,7 @@ data class TaskDocument(
             return true
         }
         // Задачи своего подразделения на своём участке
-        if (belongsToSubdivision(itr.groupName, itr.groupId) && (sameSite || itr.siteName.isBlank())) {
+        if (belongsToSubdivision(itr.groupName, itr.groupId, allEmployees) && (sameSite || itr.siteName.isBlank())) {
             return true
         }
         return false

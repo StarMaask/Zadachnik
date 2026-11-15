@@ -259,7 +259,7 @@ fun MainFeatureScreen(
             onAuthSuccess = {
                 viewModel.onCloudAuthConnected()
             },
-            onAuthError = {},
+            onAuthError = { msg -> viewModel.showBanner(msg) },
             scope = scope
         )
     }
@@ -691,8 +691,8 @@ fun MainFeatureScreen(
                         }
                     }
 
-                    // Компактная 1-строчная пилюля без жёсткой рамки при отключённом облаке
-                    if (isAdminOrHead && !isCloudSyncActive) {
+                    // Компактная 1-строчная пилюля без жёсткой рамки при отключённом облаке (видна всем ролям)
+                    if (!isCloudSyncActive) {
                         Surface(
                             color = Color(0xFFD97706).copy(alpha = 0.12f),
                             shape = RoundedCornerShape(10.dp),
@@ -720,7 +720,7 @@ fun MainFeatureScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        text = "Облачная синхронизация не активна",
+                                        text = "Облачная синхронизация не активна — задачи видны только здесь",
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Medium,
                                         color = MaterialTheme.colorScheme.onSurface,
@@ -1243,13 +1243,13 @@ private fun TodayTasksContent(
             when (selectedItrScope) {
                 ItrScopeFilter.ALL -> true
                 ItrScopeFilter.SUBDIVISION -> {
-                    task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                    task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId, availableEmployees) ||
                         task.creatorId == activeEmployee.id ||
                         task.isAssignedToEmployee(activeEmployee)
                 }
                 ItrScopeFilter.SITE -> {
                     task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees) ||
-                        task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                        task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId, availableEmployees) ||
                         task.creatorId == activeEmployee.id ||
                         task.isAssignedToEmployee(activeEmployee)
                 }
@@ -1265,13 +1265,13 @@ private fun TodayTasksContent(
             when (selectedItrScope) {
                 ItrScopeFilter.ALL -> true
                 ItrScopeFilter.SUBDIVISION -> {
-                    task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                    task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId, availableEmployees) ||
                         task.creatorId == activeEmployee.id ||
                         task.isAssignedToEmployee(activeEmployee)
                 }
                 ItrScopeFilter.SITE -> {
                     task.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees) ||
-                        task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                        task.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId, availableEmployees) ||
                         task.creatorId == activeEmployee.id ||
                         task.isAssignedToEmployee(activeEmployee)
                 }
@@ -1283,9 +1283,9 @@ private fun TodayTasksContent(
     }
 
     val itrAllCount = remember(activeHomeTasks) { activeHomeTasks.size }
-    val itrSubdivisionCount = remember(activeHomeTasks, activeEmployee) {
+    val itrSubdivisionCount = remember(activeHomeTasks, activeEmployee, availableEmployees) {
         activeHomeTasks.count {
-            it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+            it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId, availableEmployees) ||
                 it.creatorId == activeEmployee.id ||
                 it.isAssignedToEmployee(activeEmployee)
         }
@@ -1293,7 +1293,7 @@ private fun TodayTasksContent(
     val itrSiteCount = remember(activeHomeTasks, activeEmployee, availableEmployees) {
         activeHomeTasks.count {
             it.belongsToSite(activeEmployee.siteName, activeEmployee.siteId, availableEmployees) ||
-                it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId) ||
+                it.belongsToSubdivision(activeEmployee.groupName, activeEmployee.groupId, availableEmployees) ||
                 it.creatorId == activeEmployee.id ||
                 it.isAssignedToEmployee(activeEmployee)
         }
@@ -1310,6 +1310,7 @@ private fun TodayTasksContent(
         workerTabCompletedTasks,
         itrScopeTasks,
         itrCompletedScopeTasks,
+        availableEmployees,
         effectivePersonaMode,
         selectedItrFilter,
         selectedItrScope,
@@ -1332,6 +1333,7 @@ private fun TodayTasksContent(
             val matchesQuery = searchQuery.isBlank() ||
                 task.title.contains(searchQuery, ignoreCase = true) ||
                 task.assigneeName.contains(searchQuery, ignoreCase = true) ||
+                task.resolveDisplayAssigneeName(availableEmployees).contains(searchQuery, ignoreCase = true) ||
                 task.description.contains(searchQuery, ignoreCase = true)
 
             val matchesModeAndFilter = when (effectivePersonaMode) {
@@ -1571,6 +1573,7 @@ private fun TodayTasksContent(
                             onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
                             canApprove = task.canBeApprovedBy(activeEmployee, availableEmployees),
                             showAssigneeName = isWorkerTabForSupervisor,
+                            availableEmployees = availableEmployees,
                             onApproveTask = {
                                 onApproveTask(task)
                                 homeApprovedOutcomeTask = task
@@ -1673,6 +1676,7 @@ private fun TodayTasksContent(
                                     onDelete = { onDeleteTask(task) },
                                     onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
                                     canApprove = task.canBeApprovedBy(activeEmployee, availableEmployees),
+                                    availableEmployees = availableEmployees,
                                     onApproveTask = {
                                         onApproveTask(task)
                                         homeApprovedOutcomeTask = task
@@ -1698,6 +1702,7 @@ private fun TodayTasksContent(
                         allTasks = visibleTasks,
                         activeStaffCount = activeStaffCount,
                         auditLogs = auditLogs,
+                        availableEmployees = availableEmployees,
                         onApproveTask = { task ->
                             onApproveTask(task)
                             homeApprovedOutcomeTask = task

@@ -14,6 +14,7 @@ import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -1014,5 +1015,97 @@ class ExampleUnitTest {
         assertTrue(allPreviewRows.any { it.taskTitle.contains("Проверка датчиков") })
         assertTrue(allPreviewRows.any { it.taskTitle.contains("Совместная наладка щита") })
         assertTrue(allPreviewRows.any { it.taskTitle.contains("Ревизия задвижки на НПС-2") })
+    }
+
+    @Test
+    fun `multi-assignee subdivision matching, live name resolution, and employee update propagation`() {
+        val plitkin = CorporateEmployee(
+            id = "usr_plitkin",
+            fullName = "Плиткин Д.А.",
+            shortName = "Плиткин Д.А.",
+            position = "инженер по КИПиА",
+            role = CorporateRole.ITR,
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = null,
+            phone = "",
+            email = "plitkin@company.ru"
+        )
+        val smyuOld = CorporateEmployee(
+            id = "usr_starmaks",
+            fullName = "StarMaks",
+            shortName = "StarMaks",
+            position = "Электромеханик по САиПТО",
+            role = CorporateRole.ITR,
+            groupId = "grp_default",
+            groupName = "Основное подразделение",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = null,
+            phone = "",
+            email = "starmaks@company.ru"
+        )
+        val smyuUpdated = smyuOld.copy(
+            fullName = "СМЮ",
+            shortName = "СМЮ",
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ"
+        )
+        val otherSubdivisionWorker = CorporateEmployee(
+            id = "usr_other",
+            fullName = "Иванов И.И.",
+            shortName = "Иванов И.И.",
+            position = "Слесарь",
+            role = CorporateRole.WORKER,
+            groupId = "grp_energo",
+            groupName = "Энергослужба",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС \"Быково\"",
+            supervisorId = null,
+            phone = "",
+            email = "ivanov@company.ru"
+        )
+        val updatedEmployees = listOf(plitkin, smyuUpdated, otherSubdivisionWorker)
+
+        // Task created when assignee had outdated subdivision & old name StarMaks
+        val multiAssigneeTask = TaskDocument(
+            id = "task_bolgarka",
+            title = "взять на работу 150-ю болгарку",
+            creatorId = smyuOld.id,
+            creatorName = smyuOld.fullName,
+            groupId = "grp_default",
+            groupName = "Основное подразделение",
+            siteId = "site_bykovo",
+            geoLocation = "ЛПДС \"Быково\""
+        ).withUpdatedAssignees(
+            ids = listOf(plitkin.id, smyuOld.id),
+            names = listOf(plitkin.fullName, smyuOld.fullName)
+        )
+
+        // 1. Live display name resolves stale StarMaks -> СМЮ
+        assertEquals("Плиткин Д.А., СМЮ", multiAssigneeTask.resolveDisplayAssigneeName(updatedEmployees))
+        assertEquals(listOf("Плиткин Д.А.", "СМЮ"), multiAssigneeTask.resolveDisplayAssigneeNames(updatedEmployees))
+
+        // 2. Subdivision matching finds the task in Admin/ITR brigade "УЭСАиТМ" via current employee membership
+        assertFalse(multiAssigneeTask.belongsToSubdivision("УЭСАиТМ", "grp_uesaitm"))
+        assertTrue(multiAssigneeTask.belongsToSubdivision("УЭСАиТМ", "grp_uesaitm", updatedEmployees))
+        assertFalse(multiAssigneeTask.belongsToSubdivision("Энергослужба", "grp_energo", updatedEmployees))
+
+        // 3. Employee update propagation updates secondary assignee & creator inside __asgn__ and fields
+        val propagatedTask = multiAssigneeTask.withReplacedEmployeeDetails(
+            oldEmployee = smyuOld,
+            newMemberKey = smyuUpdated.id,
+            newFullName = "СМЮ",
+            newGroupId = "grp_uesaitm",
+            newGroupName = "УЭСАиТМ"
+        )
+        assertNotNull(propagatedTask)
+        assertEquals("Плиткин Д.А., СМЮ", propagatedTask!!.assigneeName)
+        assertEquals(listOf(plitkin.id, smyuUpdated.id), propagatedTask.allAssigneeIds)
+        assertEquals(listOf("Плиткин Д.А.", "СМЮ"), propagatedTask.allAssigneeNames)
+        assertEquals("СМЮ", propagatedTask.creatorName)
+        assertTrue(propagatedTask.revisionTimestamp > 0L)
     }
 }

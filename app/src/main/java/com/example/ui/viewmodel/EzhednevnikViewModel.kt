@@ -36,6 +36,11 @@ import com.example.data.repository.EzhednevnikRepository
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.GeneratedDocumentResult
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.domain.rpg.GamificationConfig
+import com.example.domain.rpg.LeaderboardPrivacy
+import com.example.domain.rpg.RpgOperationResult
+import com.example.domain.rpg.RpgProgressionEngine
+import com.example.domain.rpg.RpgWorkspaceState
 import com.example.ui.auth.CorporateLoginSession
 import com.example.ui.auth.saveCorporateSession
 import com.example.ui.components.PhotoCaptureUtils
@@ -198,6 +203,61 @@ class EzhednevnikViewModel(
 
     private val _autoScheduleReportNight = MutableStateFlow(true)
     val autoScheduleReportNight: StateFlow<Boolean> = _autoScheduleReportNight.asStateFlow()
+
+    private val _rpgState = MutableStateFlow(
+        appContext?.let { LocalWorkspaceStore.loadRpgState(it) } ?: RpgWorkspaceState()
+    )
+    val rpgState: StateFlow<RpgWorkspaceState> = _rpgState.asStateFlow()
+
+    private fun persistRpgState(nextState: RpgWorkspaceState) {
+        _rpgState.value = nextState
+        appContext?.let { LocalWorkspaceStore.saveRpgState(it, nextState) }
+    }
+
+    private fun resolveTaskAssigneesForRpg(task: TaskDocument): List<CorporateEmployee> {
+        val employees = availableEmployees.value
+        val byId = employees.filter { emp -> emp.id in task.allAssigneeIds }
+        if (byId.isNotEmpty()) return byId
+        if (task.assigneeId.isNotBlank()) {
+            val displayName = task.assigneeName.ifBlank { "Исполнитель" }
+            return listOf(
+                CorporateEmployee(
+                    id = task.assigneeId,
+                    fullName = displayName,
+                    shortName = displayName,
+                    position = CorporateRole.WORKER.titleRu,
+                    role = CorporateRole.WORKER,
+                    groupId = task.groupId,
+                    groupName = task.groupName,
+                    siteId = task.siteId,
+                    siteName = _siteName.value,
+                    supervisorId = null,
+                    phone = "",
+                    email = ""
+                )
+            )
+        }
+        return listOf(activeEmployee.value)
+    }
+
+    private fun formatRpgOutcomeBanner(res: RpgOperationResult): String {
+        val parts = mutableListOf<String>()
+        if (res.bannerNote.isNotBlank()) parts.add(res.bannerNote)
+        if (res.leveledUpTo != null) parts.add("Новый уровень: ${res.leveledUpTo}!")
+        if (res.unlockedAchievementIds.isNotEmpty()) {
+            val titles = res.unlockedAchievementIds.mapNotNull { id ->
+                RpgProgressionEngine.achievementCatalog.firstOrNull { it.id == id }?.titleRu
+            }
+            if (titles.isNotEmpty()) parts.add("Ачивка: ${titles.joinToString(", ")}")
+        }
+        if (res.completedQuestIds.isNotEmpty()) {
+            val qTitles = res.completedQuestIds.mapNotNull { id ->
+                RpgProgressionEngine.questCatalog.firstOrNull { it.id == id }?.titleRu
+            }
+            if (qTitles.isNotEmpty()) parts.add("Квест: ${qTitles.joinToString(", ")}")
+        }
+        return parts.joinToString(" • ")
+    }
 
     private val _organizationName = MutableStateFlow(
         appContext?.let { LocalWorkspaceStore.loadOrganizationName(it) } ?: CorporateSeedData.DEFAULT_ORG_NAME
@@ -2843,18 +2903,78 @@ class EzhednevnikViewModel(
     }
 
     fun deleteTask(task: TaskDocument) {
-        val taskId = task.id
+        val currentTask = findTaskById(task.id) ?: task
+        val taskId = currentTask.id
         if (taskId.isBlank()) return
+        val actor = activeEmployee.value
+        val rollbackRes = RpgProgressionEngine.rollbackTaskOnCancellationOrDelete(
+            state = _rpgState.value,
+            task = currentTask,
+            actor = actor,
+            reason = "Удаление задачи «${currentTask.title}»"
+        )
+        persistRpgState(rollbackRes.state)
         clearTaskPendingCloudSync(taskId)
         _deletedTaskIds.value = _deletedTaskIds.value + taskId
         appContext?.let { LocalWorkspaceStore.addDeletedTaskId(it, taskId) }
         val remaining = _localTasks.value.filterNot { it.id == taskId }
         persistTasksLocally(remaining)
-        _bannerMessage.value = "Задача «${task.title}» удалена"
+        appendLocalAudit(
+            actor = actor,
+            actionType = "DELETE_TASK",
+            targetType = "TASK",
+            targetId = taskId,
+            details = "Удалена задача «${currentTask.title}» (с откатом XP при наличии)"
+        )
+        _bannerMessage.value = "Задача «${currentTask.title}» удалена"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                repository.deleteTask(activeEmployee.value, task)
+                repository.deleteTask(actor, currentTask)
+            }
+        }
+    }
+
+    fun cancelTask(task: TaskDocument) {
+        val currentTask = findTaskById(task.id) ?: task
+        val actor = activeEmployee.value
+        if (!currentTask.canBeCancelledBy(actor)) {
+            _bannerMessage.value = "Отменить задачу может только её создатель, ИТР или администратор"
+            return
+        }
+        val rollbackRes = RpgProgressionEngine.rollbackTaskOnCancellationOrDelete(
+            state = _rpgState.value,
+            task = currentTask,
+            actor = actor,
+            reason = "Отмена задачи «${currentTask.title}»"
+        )
+        persistRpgState(rollbackRes.state)
+        val updatedTask = currentTask.copy(
+            status = TaskStatus.CANCELLED.code,
+            historyItems = (currentTask.historyItems + StatusHistoryEntry(
+                nowText(),
+                actor.shortName,
+                TaskStatus.CANCELLED.code,
+                "Задача отменена (${actor.shortName}), XP откачен"
+            ).encode()).takeLast(50)
+        ).withUpdatedRevision()
+        markTaskPendingCloudSync(updatedTask.id)
+        upsertLocalTask(updatedTask)
+        appendLocalAudit(
+            actor = actor,
+            actionType = "CANCEL_TASK",
+            targetType = "TASK",
+            targetId = updatedTask.id,
+            details = "Отменена задача «${updatedTask.title}» (с откатом связанных XP/квестов)"
+        )
+        _bannerMessage.value = "Задача «${updatedTask.title}» отменена, XP откачен"
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                val res = repository.upsertTaskInFirestore(updatedTask)
+                if (res.isSuccess) {
+                    clearTaskPendingCloudSync(updatedTask.id)
+                }
             }
         }
     }
@@ -3422,7 +3542,7 @@ class EzhednevnikViewModel(
                 nextStatus.code,
                 reportLogNote
             ).encode()
-        )
+        ).withLockedCompletionPriority(currentTask.taskPriority)
         markTaskEventKeysSeen(
             listOf(
                 taskEventKeyReportSubmitted(updatedTask),
@@ -3431,7 +3551,21 @@ class EzhednevnikViewModel(
         )
         markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = reportLogNote
+        if (nextStatus == TaskStatus.APPROVED) {
+            val rpgRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
+                state = _rpgState.value,
+                task = updatedTask,
+                assignees = resolveTaskAssigneesForRpg(updatedTask),
+                supervisor = null,
+                currentEpochDay = _currentEpochDay.value,
+                isApprovalStep = false
+            )
+            persistRpgState(rpgRes.state)
+            val rpgMsg = formatRpgOutcomeBanner(rpgRes)
+            _bannerMessage.value = if (rpgMsg.isNotBlank()) "$reportLogNote • $rpgMsg" else reportLogNote
+        } else {
+            _bannerMessage.value = reportLogNote
+        }
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -3510,6 +3644,7 @@ class EzhednevnikViewModel(
             .let {
                 if (targetVol > 0.0) it.withUpdatedVolume(targetVol, targetVol, unitLabel) else it
             }
+            .withLockedCompletionPriority(currentTask.taskPriority)
 
         markTaskEventKeysSeen(
             listOf(
@@ -3519,7 +3654,25 @@ class EzhednevnikViewModel(
         )
         markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Задача «${currentTask.title}» отмечена выполненной (${nextStatus.titleRu})"
+        if (nextStatus == TaskStatus.APPROVED) {
+            val rpgRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
+                state = _rpgState.value,
+                task = updatedTask,
+                assignees = resolveTaskAssigneesForRpg(updatedTask),
+                supervisor = null,
+                currentEpochDay = _currentEpochDay.value,
+                isApprovalStep = false
+            )
+            persistRpgState(rpgRes.state)
+            val rpgMsg = formatRpgOutcomeBanner(rpgRes)
+            _bannerMessage.value = if (rpgMsg.isNotBlank()) {
+                "Задача «${currentTask.title}» выполнена • $rpgMsg"
+            } else {
+                "Задача «${currentTask.title}» отмечена выполненной (${nextStatus.titleRu})"
+            }
+        } else {
+            _bannerMessage.value = "Задача «${currentTask.title}» отмечена выполненной (${nextStatus.titleRu})"
+        }
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -3567,11 +3720,26 @@ class EzhednevnikViewModel(
                 TaskStatus.APPROVED.code,
                 cleanComment.ifBlank { "Отчёт подтверждён (${supervisor.role.titleRu})" }
             ).encode()
-        ).withUpdatedRevision()
+        ).withLockedCompletionPriority(currentTask.taskPriority).withUpdatedRevision()
         markTaskEventKeysSeen(listOf(taskEventKeyApproved(updatedTask)))
         markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Выполнение задачи подтверждено и перенесено в выполненные задачи"
+
+        val rpgRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
+            state = _rpgState.value,
+            task = updatedTask,
+            assignees = resolveTaskAssigneesForRpg(updatedTask),
+            supervisor = supervisor,
+            currentEpochDay = _currentEpochDay.value,
+            isApprovalStep = true
+        )
+        persistRpgState(rpgRes.state)
+        val rpgMsg = formatRpgOutcomeBanner(rpgRes)
+        _bannerMessage.value = if (rpgMsg.isNotBlank()) {
+            "Отчёт подтверждён • $rpgMsg"
+        } else {
+            "Выполнение задачи подтверждено и перенесено в выполненные задачи"
+        }
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -3621,7 +3789,16 @@ class EzhednevnikViewModel(
         markTaskEventKeysSeen(listOf(taskEventKeyRejected(updatedTask)))
         markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
-        _bannerMessage.value = "Задание отклонено и возвращено исполнителю в работу: $cleanReason"
+
+        val rejRes = RpgProgressionEngine.recordTaskRejection(
+            state = _rpgState.value,
+            task = updatedTask,
+            assignees = resolveTaskAssigneesForRpg(updatedTask),
+            supervisor = supervisor,
+            reason = cleanReason
+        )
+        persistRpgState(rejRes.state)
+        _bannerMessage.value = "Задание отклонено и возвращено в работу: $cleanReason (${rejRes.bannerNote})"
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
@@ -3658,10 +3835,11 @@ class EzhednevnikViewModel(
             val day = _currentEpochDay.value
             val nextDay = day + 1L
             var movedCount = 0
+            val movedTasksList = mutableListOf<TaskDocument>()
             val updatedList = allTasks.map { t ->
                 if (t.dueDateEpochDay <= day && t.taskStatus.isEligibleForCarryover) {
                     movedCount++
-                    t.copy(
+                    val moved = t.copy(
                         dueDateEpochDay = nextDay,
                         carryoverCount = t.carryoverCount + 1L,
                         historyItems = t.historyItems + StatusHistoryEntry(
@@ -3671,11 +3849,22 @@ class EzhednevnikViewModel(
                             "Перенесено на следующий день (выполнено ${t.completionPercent()}%, перенос №${t.carryoverCount + 1L})"
                         ).encode()
                     )
+                    movedTasksList.add(moved)
+                    moved
                 } else {
                     t
                 }
             }
             persistTasksLocally(updatedList)
+            if (movedTasksList.isNotEmpty()) {
+                val nextRpg = RpgProgressionEngine.processCarryoverPenalties(
+                    state = _rpgState.value,
+                    movedTasks = movedTasksList,
+                    employees = availableEmployees.value,
+                    currentEpochDay = day
+                )
+                persistRpgState(nextRpg)
+            }
             if (isCloudAuthenticated) {
                 repository.runEndOfDayCarryover(actor, allTasks, day)
             }
@@ -3685,6 +3874,116 @@ class EzhednevnikViewModel(
                 "Нет активных невыполненных задач для переноса"
             }
         }
+    }
+
+    fun upgradeRpgSkill(skillId: String) {
+        val actor = activeEmployee.value
+        val res = RpgProgressionEngine.upgradeSkill(_rpgState.value, actor, skillId)
+        if (res.isSuccess) {
+            persistRpgState(res.getOrThrow())
+            val title = RpgProgressionEngine.skillCatalog.firstOrNull { it.id == skillId }?.titleRu ?: skillId
+            _bannerMessage.value = "Навык «$title» улучшен"
+        } else {
+            _bannerMessage.value = res.exceptionOrNull()?.localizedMessage ?: "Не удалось улучшить навык"
+        }
+    }
+
+    fun resetRpgSkillsForSeason() {
+        val actor = activeEmployee.value
+        val res = RpgProgressionEngine.resetSkillsForSeason(_rpgState.value, actor)
+        if (res.isSuccess) {
+            persistRpgState(res.getOrThrow())
+            _bannerMessage.value = "Навыки сброшены в рамках текущего сезона"
+        } else {
+            _bannerMessage.value = res.exceptionOrNull()?.localizedMessage ?: "Сброс навыков недоступен"
+        }
+    }
+
+    fun equipRpgInventoryItem(itemId: String) {
+        val actor = activeEmployee.value
+        persistRpgState(RpgProgressionEngine.equipInventoryItem(_rpgState.value, actor.id, itemId))
+    }
+
+    fun useRpgStreakRecovery() {
+        val actor = activeEmployee.value
+        val res = RpgProgressionEngine.useStreakRecovery(_rpgState.value, actor, _currentEpochDay.value)
+        if (res.isSuccess) {
+            persistRpgState(res.getOrThrow())
+            _bannerMessage.value = "Серия выполнения восстановлена!"
+        } else {
+            _bannerMessage.value = res.exceptionOrNull()?.localizedMessage ?: "Восстановление недоступно"
+        }
+    }
+
+    fun activateRpgPrestige() {
+        val actor = activeEmployee.value
+        val res = RpgProgressionEngine.activatePrestige(_rpgState.value, actor)
+        if (res.isSuccess) {
+            persistRpgState(res.getOrThrow())
+            appendLocalAudit(
+                actor = actor,
+                actionType = "RPG_PRESTIGE",
+                targetType = "EMPLOYEE",
+                targetId = actor.id,
+                details = "${actor.fullName} активировал Престиж"
+            )
+            _bannerMessage.value = "Поздравляем! Активирован новый уровень Престижа"
+        } else {
+            _bannerMessage.value = res.exceptionOrNull()?.localizedMessage ?: "Престиж пока недоступен"
+        }
+    }
+
+    fun setRpgLeaderboardPrivacy(privacy: LeaderboardPrivacy) {
+        val actor = activeEmployee.value
+        persistRpgState(RpgProgressionEngine.setLeaderboardPrivacy(_rpgState.value, actor.id, privacy))
+        _bannerMessage.value = "Приватность рейтинга: ${privacy.titleRu}"
+    }
+
+    fun adjustEmployeeRpgManually(
+        targetEmployee: CorporateEmployee,
+        xpDelta: Int,
+        reputationDelta: Int,
+        reason: String
+    ) {
+        val actor = activeEmployee.value
+        val res = RpgProgressionEngine.adjustManually(
+            state = _rpgState.value,
+            actor = actor,
+            target = targetEmployee,
+            xpDelta = xpDelta,
+            reputationDelta = reputationDelta,
+            reason = reason
+        )
+        if (res.isSuccess) {
+            persistRpgState(res.getOrThrow())
+            appendLocalAudit(
+                actor = actor,
+                actionType = "RPG_MANUAL_ADJUSTMENT",
+                targetType = "EMPLOYEE",
+                targetId = targetEmployee.id,
+                details = "Корректировка RPG для ${targetEmployee.shortName}: ${if (xpDelta >= 0) "+$xpDelta" else "$xpDelta"} XP, ${if (reputationDelta >= 0) "+$reputationDelta" else "$reputationDelta"} реп. Причина: $reason"
+            )
+            _bannerMessage.value = "Прогрессия ${targetEmployee.shortName} обновлена (${if (xpDelta >= 0) "+$xpDelta" else "$xpDelta"} XP)"
+        } else {
+            _bannerMessage.value = res.exceptionOrNull()?.localizedMessage ?: "Ошибка корректировки"
+        }
+    }
+
+    fun updateGamificationConfig(newConfig: GamificationConfig) {
+        val actor = activeEmployee.value
+        if (!RpgProgressionEngine.canAdjustProgression(actor)) {
+            _bannerMessage.value = "Настройки геймификации доступны только Руководителю или Администратору"
+            return
+        }
+        persistRpgState(_rpgState.value.copy(config = newConfig))
+        appendLocalAudit(
+            actor = actor,
+            actionType = "RPG_CONFIG_UPDATE",
+            targetType = "SETTINGS",
+            targetId = "gamification_config",
+            details = "Обновлены правила XP (Аварийный=${newConfig.ruleFor(com.example.data.model.TaskPriority.EMERGENCY).baseXp} XP, макс. ур.=${newConfig.maxLevel})"
+        )
+        _bannerMessage.value = "Правила начисления XP и прогрессии сохранены"
     }
 
     fun previewOrGenerateReport(
@@ -3736,7 +4035,8 @@ class EzhednevnikViewModel(
                         overrideFormat = exportFormat,
                         includePhotos = includePhotos,
                         saveToDownloads = saveToHistory,
-                        allEmployees = availableEmployees.value
+                        allEmployees = availableEmployees.value,
+                        rpgState = _rpgState.value
                     )
                 }
             }

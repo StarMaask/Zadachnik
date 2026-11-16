@@ -25,6 +25,7 @@ import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
 import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
+import com.example.data.model.TaskPriority
 import com.example.data.model.TaskStatus
 import com.example.ui.components.PhotoCaptureUtils
 import java.io.File
@@ -216,8 +217,10 @@ object ReportDocumentGenerator {
         overrideLayout: SheetLayout? = null,
         overrideFormat: ExportFormat? = null,
         includePhotos: Boolean = true,
-        allEmployees: List<CorporateEmployee> = emptyList()
+        allEmployees: List<CorporateEmployee> = emptyList(),
+        rpgState: com.example.domain.rpg.RpgWorkspaceState? = null
     ): GeneratedDocumentResult {
+        val effectiveRpgState = rpgState ?: com.example.domain.rpg.RpgWorkspaceState()
         val reportType = template.parsedReportType
         val layout = overrideLayout ?: template.parsedSheetLayout
         val format = overrideFormat ?: template.parsedExportFormat
@@ -265,6 +268,8 @@ object ReportDocumentGenerator {
                 it.carryoverCount > 0L || it.taskStatus == TaskStatus.OVERDUE || it.taskStatus == TaskStatus.REJECTED || !it.isVolumeCompleted100Percent()
             }
             ReportType.RECURRING_EXECUTION -> roleScopedTasks.filter { it.recurrenceRule != "NONE" }
+            ReportType.PRIORITY_DISTRIBUTION -> roleScopedTasks
+            ReportType.GAMIFICATION_SUMMARY -> roleScopedTasks
             else -> roleScopedTasks.filter { it.dueDateEpochDay <= currentEpochDay }.ifEmpty { roleScopedTasks }
         }
 
@@ -326,12 +331,25 @@ object ReportDocumentGenerator {
             )
         }
 
-        val factRows = mapTasksToRows(
-            tasks = factTasks,
-            includePhotos = includePhotos,
-            sectionKind = ReportSectionKind.DAILY_FACT_REPORT,
-            currentEpochDay = currentEpochDay
-        )
+        val factRows = when (reportType) {
+            ReportType.PRIORITY_DISTRIBUTION -> mapPriorityDistributionRows(
+                tasks = roleScopedTasks,
+                config = effectiveRpgState.config,
+                sectionKind = ReportSectionKind.DAILY_FACT_REPORT
+            )
+            ReportType.GAMIFICATION_SUMMARY -> mapGamificationSummaryRows(
+                actor = actor,
+                employees = allEmployees.ifEmpty { listOf(actor) },
+                rpgState = effectiveRpgState,
+                sectionKind = ReportSectionKind.DAILY_FACT_REPORT
+            )
+            else -> mapTasksToRows(
+                tasks = factTasks,
+                includePhotos = includePhotos,
+                sectionKind = ReportSectionKind.DAILY_FACT_REPORT,
+                currentEpochDay = currentEpochDay
+            )
+        }
         val planRows = mapTasksToRows(
             tasks = planTasks,
             includePhotos = includePhotos,
@@ -506,7 +524,8 @@ object ReportDocumentGenerator {
         overrideFormat: ExportFormat? = null,
         includePhotos: Boolean = true,
         saveToDownloads: Boolean = false,
-        allEmployees: List<CorporateEmployee> = emptyList()
+        allEmployees: List<CorporateEmployee> = emptyList(),
+        rpgState: com.example.domain.rpg.RpgWorkspaceState? = null
     ): GeneratedDocumentResult {
         val preview = buildPreview(
             actor = actor,
@@ -516,7 +535,8 @@ object ReportDocumentGenerator {
             overrideLayout = overrideLayout,
             overrideFormat = overrideFormat,
             includePhotos = includePhotos,
-            allEmployees = allEmployees
+            allEmployees = allEmployees,
+            rpgState = rpgState
         )
         val reportsDir = File(context.filesDir, "reports").apply { mkdirs() }
         val safeName = template.parsedReportType.code.lowercase(Locale.US)
@@ -1001,6 +1021,78 @@ object ReportDocumentGenerator {
                 photoInfo = photoText,
                 carryoverInfo = carryoverText,
                 commentSummary = note
+            )
+        }
+    }
+
+    private fun mapPriorityDistributionRows(
+        tasks: List<TaskDocument>,
+        config: com.example.domain.rpg.GamificationConfig,
+        sectionKind: ReportSectionKind
+    ): List<ReportTableRow> {
+        return TaskPriority.entries.mapIndexed { idx, prio ->
+            val groupTasks = tasks.filter { it.taskPriority == prio }
+            val approved = groupTasks.count { it.taskStatus == TaskStatus.APPROVED }
+            val overdue = groupTasks.count { it.taskStatus == TaskStatus.OVERDUE || it.carryoverCount > 0L }
+            val avgPct = if (groupTasks.isEmpty()) 0 else groupTasks.map { it.completionPercent() }.average().toInt()
+            val rule = config.ruleFor(prio)
+            ReportTableRow(
+                index = idx + 1,
+                sectionKind = sectionKind,
+                rowTypeBadge = "ПРИОРИТЕТ",
+                assigneeFio = prio.titleRu,
+                groupName = "Вес: ${prio.weight}",
+                taskTitle = "Задач: ${groupTasks.size} (принято: $approved, проср.: $overdue)",
+                volumeInfo = "База ${rule.baseXp} XP (+${rule.approvalBonusXp} приёмка)",
+                planVolumeLabel = "База ${rule.baseXp} XP",
+                factVolumeLabel = "$approved из ${groupTasks.size} ($avgPct%)",
+                checklistBreakdown = emptyList(),
+                completionPercent = avgPct,
+                priorityLabel = prio.titleRu,
+                statusLabel = "Закрыто: $approved",
+                deadlineLabel = "Проср.: $overdue",
+                photoInfo = "Фото: ${groupTasks.count { it.photoItems.isNotEmpty() }}",
+                carryoverInfo = "Переносов: ${groupTasks.sumOf { it.carryoverCount.toInt() }}",
+                commentSummary = "Ср. прогресс $avgPct%"
+            )
+        }
+    }
+
+    private fun mapGamificationSummaryRows(
+        actor: CorporateEmployee,
+        employees: List<CorporateEmployee>,
+        rpgState: com.example.domain.rpg.RpgWorkspaceState,
+        sectionKind: ReportSectionKind
+    ): List<ReportTableRow> {
+        val visibleEmployees = employees.filter {
+            com.example.domain.rpg.RpgProgressionEngine.canViewProgression(actor, it)
+        }.distinctBy { it.id }
+        return visibleEmployees.mapIndexed { idx, emp ->
+            val profile = rpgState.profiles[emp.id]
+                ?: com.example.domain.rpg.EmployeeRpgProfile(emp.id)
+            val lvl = com.example.domain.rpg.RpgProgressionEngine.resolveUserLevel(profile.totalXp, rpgState.config)
+            val status = com.example.domain.rpg.RpgProgressionEngine.resolveUserStatus(emp.role, lvl.level)
+            val prestigePart = if (profile.prestige.prestigeLevel > 0) " • Престиж ${profile.prestige.prestigeLevel}" else ""
+            ReportTableRow(
+                index = idx + 1,
+                sectionKind = sectionKind,
+                rowTypeBadge = "RPG УР.${lvl.level}",
+                assigneeFio = emp.fullName,
+                groupName = emp.groupName,
+                taskTitle = "${status.titleRu}$prestigePart • Ур. ${lvl.level}/${rpgState.config.maxLevel}",
+                volumeInfo = "XP: ${profile.totalXp} (Сезон: ${profile.seasonXp})",
+                planVolumeLabel = "Репутация: ${profile.reputation.score}/100",
+                factVolumeLabel = "Серия: ${profile.streak.currentDays} дн. (рекорд ${profile.streak.bestDays})",
+                checklistBreakdown = listOf(
+                    "Достижений: ${profile.achievements.size}, SP доступно: ${profile.skillPointsAvailable}, Навыков: ${profile.skills.sumOf { it.level }}"
+                ),
+                completionPercent = profile.reputation.score,
+                priorityLabel = emp.role.shortTitleRu,
+                statusLabel = "Реп. ${profile.reputation.score}/100",
+                deadlineLabel = "Серия ${profile.streak.currentDays} д.",
+                photoInfo = "Ачивок: ${profile.achievements.size}",
+                carryoverInfo = profile.reputation.tierTitleRu,
+                commentSummary = "Сезон ${rpgState.currentSeason.quarterCode}: ${profile.seasonXp} XP"
             )
         }
     }

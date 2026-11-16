@@ -256,6 +256,20 @@ private fun ReportType.visualSpec(): ReportVisualSpec {
             iconTint = Color(0xFF0369A1),
             iconBgColor = Color(0xFF0EA5E9).copy(alpha = 0.14f)
         )
+        ReportType.PRIORITY_DISTRIBUTION -> ReportVisualSpec(
+            category = ReportCategoryTab.ITR_ANALYTICS,
+            icon = Icons.Default.Timeline,
+            iconTint = Color(0xFFDC2626),
+            iconBgColor = Color(0xFFEF4444).copy(alpha = 0.14f),
+            badgeLabel = "Приоритеты"
+        )
+        ReportType.GAMIFICATION_SUMMARY -> ReportVisualSpec(
+            category = ReportCategoryTab.ITR_ANALYTICS,
+            icon = Icons.Default.Insights,
+            iconTint = Color(0xFFD97706),
+            iconBgColor = Color(0xFFF59E0B).copy(alpha = 0.15f),
+            badgeLabel = "RPG"
+        )
         ReportType.CUSTOM -> ReportVisualSpec(
             category = ReportCategoryTab.CONSTRUCTOR,
             icon = Icons.Default.FolderSpecial,
@@ -364,6 +378,8 @@ fun ReportingCenterScreen(
             ReportType.RECURRING_EXECUTION,
             ReportType.PERIOD_COMPARISON,
             ReportType.INDIVIDUAL_1ON1,
+            ReportType.PRIORITY_DISTRIBUTION,
+            ReportType.GAMIFICATION_SUMMARY,
             ReportType.CUSTOM
         )
         (normalizedTemplates + extraTemplates)

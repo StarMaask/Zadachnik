@@ -40,6 +40,9 @@ enum class CorporateRole(
         badgeDescription = "Полные права администратора системы без ограничений"
     );
 
+    val hierarchyWeight: Int
+        get() = hierarchyLevel
+
     val isAdmin: Boolean
         get() = this == ADMIN
 
@@ -86,7 +89,8 @@ enum class TaskPriority(val code: String, val titleRu: String, val weight: Int) 
     LOW("LOW", "Низкий", 1),
     MEDIUM("MEDIUM", "Средний", 2),
     HIGH("HIGH", "Высокий", 3),
-    CRITICAL("CRITICAL", "Критический", 4);
+    CRITICAL("CRITICAL", "Критический", 4),
+    EMERGENCY("EMERGENCY", "Аварийный", 5);
 
     companion object {
         fun fromCode(code: String): TaskPriority =
@@ -253,6 +257,16 @@ enum class ReportType(
         code = "INDIVIDUAL_1ON1",
         titleRu = "Индивидуальная карточка сотрудника (1:1)",
         subtitleRu = "Персональная выборка выполненных задач, объёмов, возвратов на доработку и комментариев"
+    ),
+    PRIORITY_DISTRIBUTION(
+        code = "PRIORITY_DISTRIBUTION",
+        titleRu = "Распределение задач по приоритетам",
+        subtitleRu = "Разрез по 5 приоритетам (от Низкого до Аварийного), доле закрытия и просрочкам"
+    ),
+    GAMIFICATION_SUMMARY(
+        code = "GAMIFICATION_SUMMARY",
+        titleRu = "Прогрессия персонала (RPG и рейтинги)",
+        subtitleRu = "Уровни, XP за период, ранги, серии, репутация, достижения и квесты с учётом прав доступа"
     ),
     CUSTOM(
         code = "CUSTOM",
@@ -777,8 +791,27 @@ data class TaskDocument(
             it.startsWith("__vol__|") ||
                 it.startsWith("__asgn__|") ||
                 it.startsWith("__rev__|") ||
-                it.startsWith("__rec__|")
+                it.startsWith("__rec__|") ||
+                it.startsWith("__xplock__|")
         }
+
+    @get:com.google.firebase.firestore.Exclude
+    val lockedPriorityAtCompletion: TaskPriority?
+        get() = tags.firstOrNull { it.startsWith("__xplock__|") }
+            ?.substringAfter("__xplock__|", "")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { TaskPriority.fromCode(it) }
+
+    fun withLockedCompletionPriority(priorityAtCompletion: TaskPriority = taskPriority): TaskDocument {
+        if (lockedPriorityAtCompletion != null) return this
+        val otherTags = tags.filterNot { it.startsWith("__xplock__|") }
+        return copy(tags = (otherTags + "__xplock__|${priorityAtCompletion.code}").take(12))
+    }
+
+    fun canBeCancelledBy(actor: CorporateEmployee): Boolean {
+        if (taskStatus.isTerminalOrDone) return false
+        return actor.role.isAdminOrHead || creatorId == actor.id || actor.role == CorporateRole.ITR
+    }
 
     @get:com.google.firebase.firestore.Exclude
     val recurrenceSeriesId: String?

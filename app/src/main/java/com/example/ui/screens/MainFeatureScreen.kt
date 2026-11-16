@@ -131,6 +131,8 @@ import com.example.data.model.TaskStatus
 import com.example.data.repository.EzhednevnikRepository
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.domain.rpg.RpgProgressionEngine
+import com.example.domain.rpg.RpgWorkspaceState
 import com.example.ui.auth.CorporateLoginSession
 import com.example.ui.auth.PendingRoleApprovalScreen
 import com.example.ui.auth.onGoogleSignInClicked
@@ -246,6 +248,7 @@ fun MainFeatureScreen(
     val uploadingPhotoTaskIds by viewModel.uploadingPhotoTaskIds.collectAsStateWithLifecycle()
     val hydratingPhotoTaskIds by viewModel.hydratingPhotoTaskIds.collectAsStateWithLifecycle()
     val failedPhotoSyncTaskIds by viewModel.failedPhotoSyncTaskIds.collectAsStateWithLifecycle()
+    val rpgState by viewModel.rpgState.collectAsStateWithLifecycle()
 
     val triggerCloudGoogleConnect: (SiteMemberDocument?) -> Unit = { targetMember ->
         onGoogleSignInClicked(
@@ -826,7 +829,8 @@ fun MainFeatureScreen(
                                 onApproveTask = { viewModel.approveReport(it, "Принято руководителем") },
                                 onRejectTask = { task, reason -> viewModel.rejectReport(task, reason) },
                                 onDeleteTask = viewModel::deleteTask,
-                                onToggleSubtask = viewModel::toggleSubtask
+                                onToggleSubtask = viewModel::toggleSubtask,
+                                rpgState = rpgState
                             )
                         }
                         MainNavDestination.APPROVALS -> {
@@ -882,6 +886,15 @@ fun MainFeatureScreen(
                                 stats = stats,
                                 allTasks = roleVisibleTasks,
                                 currentEpochDay = currentEpochDay,
+                                availableEmployees = availableEmployees,
+                                rpgState = rpgState,
+                                onUpgradeSkill = viewModel::upgradeRpgSkill,
+                                onResetSkillsForSeason = viewModel::resetRpgSkillsForSeason,
+                                onEquipInventoryItem = viewModel::equipRpgInventoryItem,
+                                onUseStreakRecovery = viewModel::useRpgStreakRecovery,
+                                onActivatePrestige = viewModel::activateRpgPrestige,
+                                onSetLeaderboardPrivacy = viewModel::setRpgLeaderboardPrivacy,
+                                onAdjustEmployeeRpg = viewModel::adjustEmployeeRpgManually,
                                 onTaskClick = { selectedTaskId = it.id },
                                 onExportStats = { fmt ->
                                     val statTpl = ReportTemplateDocument(
@@ -922,7 +935,11 @@ fun MainFeatureScreen(
                                 onSwitchPersona = viewModel::switchPersona,
                                 onSignOut = {
                                     signOut(context, credentialManager, scope, onSignOutComplete)
-                                }
+                                },
+                                rpgState = rpgState,
+                                availableEmployees = availableEmployees,
+                                onUpdateGamificationConfig = viewModel::updateGamificationConfig,
+                                onAdjustEmployeeRpg = viewModel::adjustEmployeeRpgManually
                             )
                         }
                     }
@@ -996,7 +1013,14 @@ fun MainFeatureScreen(
             onRejectReport = { reason -> viewModel.rejectReport(task, reason) },
             onArchiveTask = { viewModel.archiveTask(task) },
             onDeleteTask = { viewModel.deleteTask(task) },
+            onCancelTask = { viewModel.cancelTask(task) },
             onEditTask = { taskBeingEdited = task },
+            expectedXp = RpgProgressionEngine.estimateExpectedTaskXp(
+                task = task,
+                state = rpgState,
+                employeeId = activeEmployee.id,
+                currentEpochDay = currentEpochDay
+            ),
             cloudPhotoCacheVersion = cloudPhotoCacheVersion,
             isUploadingPhotosToCloud = task.id in uploadingPhotoTaskIds,
             isHydratingCloudPhotos = task.id in hydratingPhotoTaskIds,
@@ -1184,7 +1208,8 @@ private fun TodayTasksContent(
     onApproveTask: (TaskDocument) -> Unit,
     onRejectTask: (TaskDocument, String) -> Unit,
     onDeleteTask: (TaskDocument) -> Unit,
-    onToggleSubtask: (TaskDocument, String) -> Unit
+    onToggleSubtask: (TaskDocument, String) -> Unit,
+    rpgState: RpgWorkspaceState = RpgWorkspaceState()
 ) {
     val allowedModes = remember(activeEmployee.role) {
         PersonaUiMode.allowedModesForRole(activeEmployee.role)
@@ -1592,6 +1617,12 @@ private fun TodayTasksContent(
                             canApprove = task.canBeApprovedBy(activeEmployee, availableEmployees),
                             showAssigneeName = isWorkerTabForSupervisor,
                             availableEmployees = availableEmployees,
+                            expectedXp = RpgProgressionEngine.estimateExpectedTaskXp(
+                                task = task,
+                                state = rpgState,
+                                employeeId = activeEmployee.id,
+                                currentEpochDay = currentEpochDay
+                            ),
                             onApproveTask = {
                                 onApproveTask(task)
                                 homeApprovedOutcomeTask = task
@@ -1695,6 +1726,12 @@ private fun TodayTasksContent(
                                     onToggleSubtask = { subId -> onToggleSubtask(task, subId) },
                                     canApprove = task.canBeApprovedBy(activeEmployee, availableEmployees),
                                     availableEmployees = availableEmployees,
+                                    expectedXp = RpgProgressionEngine.estimateExpectedTaskXp(
+                                        task = task,
+                                        state = rpgState,
+                                        employeeId = activeEmployee.id,
+                                        currentEpochDay = currentEpochDay
+                                    ),
                                     onApproveTask = {
                                         onApproveTask(task)
                                         homeApprovedOutcomeTask = task

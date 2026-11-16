@@ -755,6 +755,32 @@ object CorporateSeedData {
             columns = listOf("ФИО исполнителя", "Роль / Бригада", "Назначено", "Подтверждено", "Отклонено", "Рейтинг %"),
             groupByField = "GROUP",
             includeSignatures = true
+        ),
+        ReportTemplateDocument(
+            id = "tpl_rep_priority_dist",
+            userId = userId,
+            name = "Распределение задач по приоритетам",
+            reportType = ReportType.PRIORITY_DISTRIBUTION.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.PDF.code,
+            orgHeader = "$orgName • $siteName",
+            defaultPeriodDays = 30L,
+            columns = listOf("Приоритет", "Всего", "Подтверждено", "Просрочено", "Ожидаемый XP"),
+            groupByField = "PRIORITY",
+            includeSignatures = true
+        ),
+        ReportTemplateDocument(
+            id = "tpl_rep_gamification",
+            userId = userId,
+            name = "Прогрессия персонала (XP, уровни, репутация)",
+            reportType = ReportType.GAMIFICATION_SUMMARY.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.XLSX.code,
+            orgHeader = "$orgName • Система прогрессии персонала",
+            defaultPeriodDays = 90L,
+            columns = listOf("ФИО", "Ранг / Уровень", "XP сезона", "Репутация", "Серия", "Достижения"),
+            groupByField = "GROUP",
+            includeSignatures = true
         )
     )
 

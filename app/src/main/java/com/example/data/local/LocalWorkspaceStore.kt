@@ -416,4 +416,355 @@ object LocalWorkspaceStore {
             }
         }
     }
+
+    private const val KEY_RPG_WORKSPACE_STATE = "rpg_workspace_state_json"
+
+    fun saveRpgState(context: Context, state: com.example.domain.rpg.RpgWorkspaceState) {
+        val root = JSONObject().apply {
+            val cfgObj = JSONObject().apply {
+                put("onTimeBonusRate", state.config.onTimeBonusRate)
+                put("earlyBonusRate", state.config.earlyBonusRate)
+                put("cleanPhotoBonusRate", state.config.cleanPhotoBonusRate)
+                put("overduePenaltyRate", state.config.overduePenaltyRate)
+                put("rejectedPenaltyRate", state.config.rejectedPenaltyRate)
+                put("streakTier1Days", state.config.streakTier1Days)
+                put("streakTier1Multiplier", state.config.streakTier1Multiplier)
+                put("streakTier2Days", state.config.streakTier2Days)
+                put("streakTier2Multiplier", state.config.streakTier2Multiplier)
+                put("streakTier3Days", state.config.streakTier3Days)
+                put("streakTier3Multiplier", state.config.streakTier3Multiplier)
+                put("levelCurveBaseXp", state.config.levelCurveBaseXp)
+                put("maxLevel", state.config.maxLevel)
+                put("seasonalResetSpPenalty", state.config.seasonalResetSpPenalty)
+                val prioObj = JSONObject()
+                state.config.priorityRules.forEach { (prio, rule) ->
+                    prioObj.put(
+                        prio.code,
+                        JSONObject().apply {
+                            put("baseXp", rule.baseXp)
+                            put("approvalBonusXp", rule.approvalBonusXp)
+                        }
+                    )
+                }
+                put("priorityRules", prioObj)
+            }
+            put("config", cfgObj)
+            put("season", JSONObject().apply {
+                put("id", state.currentSeason.id)
+                put("titleRu", state.currentSeason.titleRu)
+                put("quarterCode", state.currentSeason.quarterCode)
+                put("startEpochDay", state.currentSeason.startEpochDay)
+                put("endEpochDay", state.currentSeason.endEpochDay)
+                put("isActive", state.currentSeason.isActive)
+            })
+            val profilesArr = JSONArray()
+            state.profiles.values.forEach { p ->
+                profilesArr.put(JSONObject().apply {
+                    put("employeeId", p.employeeId)
+                    put("totalXp", p.totalXp)
+                    put("seasonXp", p.seasonXp)
+                    put("skillPointsAvailable", p.skillPointsAvailable)
+                    put("skillPointsSpent", p.skillPointsSpent)
+                    put("leaderboardPrivacy", p.leaderboardPrivacy.code)
+                    put("seasonSkillResetDoneForSeasonId", p.seasonSkillResetDoneForSeasonId)
+                    put("lastEvaluatedEpochDay", p.lastEvaluatedEpochDay)
+                    put("skills", JSONArray().apply {
+                        p.skills.forEach { sk ->
+                            put(JSONObject().apply {
+                                put("skillId", sk.skillId)
+                                put("level", sk.level)
+                            })
+                        }
+                    })
+                    put("achievements", JSONArray().apply {
+                        p.achievements.forEach { a ->
+                            put(JSONObject().apply {
+                                put("achievementId", a.achievementId)
+                                put("unlockedAtMillis", a.unlockedAtMillis)
+                                put("progressNote", a.progressNote)
+                            })
+                        }
+                    })
+                    put("questProgress", JSONArray().apply {
+                        p.questProgress.forEach { qp ->
+                            put(JSONObject().apply {
+                                put("questId", qp.questId)
+                                put("periodKey", qp.periodKey)
+                                put("currentCount", qp.currentCount)
+                                put("countedTaskIds", JSONArray(qp.countedTaskIds))
+                                put("completedAtMillis", qp.completedAtMillis ?: -1L)
+                                put("rewarded", qp.rewarded)
+                            })
+                        }
+                    })
+                    put("inventory", JSONObject().apply {
+                        put("ownedItemIds", JSONArray(p.inventory.ownedItemIds))
+                        put("equippedBadgeId", p.inventory.equippedBadgeId ?: "")
+                        put("equippedFrameId", p.inventory.equippedFrameId ?: "")
+                        put("equippedTitleId", p.inventory.equippedTitleId ?: "")
+                        put("streakRecoveryTokens", p.inventory.streakRecoveryTokens)
+                    })
+                    put("reputation", JSONObject().apply {
+                        put("score", p.reputation.score)
+                        put("history", JSONArray().apply {
+                            p.reputation.history.take(20).forEach { h ->
+                                put(JSONObject().apply {
+                                    put("id", h.id)
+                                    put("delta", h.delta)
+                                    put("resultingScore", h.resultingScore)
+                                    put("reason", h.reason)
+                                    put("createdAtMillis", h.createdAtMillis)
+                                })
+                            }
+                        })
+                    })
+                    put("streak", JSONObject().apply {
+                        put("currentDays", p.streak.currentDays)
+                        put("bestDays", p.streak.bestDays)
+                        put("lastActivityEpochDay", p.streak.lastActivityEpochDay)
+                        put("isAtRisk", p.streak.isAtRisk)
+                        put("recoveryUsedCount", p.streak.recoveryUsedCount)
+                    })
+                    put("prestige", JSONObject().apply {
+                        put("prestigeLevel", p.prestige.prestigeLevel)
+                        put("permanentXpMultiplierBonus", p.prestige.permanentXpMultiplierBonus)
+                        put("emblemTitle", p.prestige.emblemTitle)
+                        put("activatedAtMillis", p.prestige.activatedAtMillis ?: -1L)
+                    })
+                })
+            }
+            put("profiles", profilesArr)
+            val txArr = JSONArray()
+            state.transactions.take(300).forEach { tx ->
+                txArr.put(JSONObject().apply {
+                    put("id", tx.id)
+                    put("employeeId", tx.employeeId)
+                    put("employeeName", tx.employeeName)
+                    put("taskId", tx.taskId)
+                    put("taskTitle", tx.taskTitle)
+                    put("type", tx.type.code)
+                    put("xpDelta", tx.xpDelta)
+                    put("reputationDelta", tx.reputationDelta)
+                    put("priorityAtCompletion", tx.priorityAtCompletion?.code ?: "")
+                    put("appliedMultipliersSummary", tx.appliedMultipliersSummary)
+                    put("reason", tx.reason)
+                    put("actorId", tx.actorId)
+                    put("actorName", tx.actorName)
+                    put("idempotencyKey", tx.idempotencyKey)
+                    put("createdAtMillis", tx.createdAtMillis)
+                    put("isRolledBack", tx.isRolledBack)
+                })
+            }
+            put("transactions", txArr)
+        }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_RPG_WORKSPACE_STATE, root.toString())
+            .apply()
+    }
+
+    fun loadRpgState(context: Context): com.example.domain.rpg.RpgWorkspaceState? {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_RPG_WORKSPACE_STATE, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return runCatching {
+            val root = JSONObject(raw)
+            val cfgObj = root.optJSONObject("config")
+            val defaultRules = com.example.domain.rpg.GamificationConfig.defaultPriorityRules().toMutableMap()
+            val prioObj = cfgObj?.optJSONObject("priorityRules")
+            if (prioObj != null) {
+                com.example.data.model.TaskPriority.entries.forEach { p ->
+                    prioObj.optJSONObject(p.code)?.let { r ->
+                        defaultRules[p] = com.example.domain.rpg.PriorityXpRule(
+                            priority = p,
+                            baseXp = r.optInt("baseXp", defaultRules[p]?.baseXp ?: 10),
+                            approvalBonusXp = r.optInt("approvalBonusXp", defaultRules[p]?.approvalBonusXp ?: 5)
+                        )
+                    }
+                }
+            }
+            val config = com.example.domain.rpg.GamificationConfig(
+                priorityRules = defaultRules,
+                onTimeBonusRate = cfgObj?.optDouble("onTimeBonusRate", 0.20) ?: 0.20,
+                earlyBonusRate = cfgObj?.optDouble("earlyBonusRate", 0.35) ?: 0.35,
+                cleanPhotoBonusRate = cfgObj?.optDouble("cleanPhotoBonusRate", 0.10) ?: 0.10,
+                overduePenaltyRate = cfgObj?.optDouble("overduePenaltyRate", 0.50) ?: 0.50,
+                rejectedPenaltyRate = cfgObj?.optDouble("rejectedPenaltyRate", 0.25) ?: 0.25,
+                streakTier1Days = cfgObj?.optInt("streakTier1Days", 5) ?: 5,
+                streakTier1Multiplier = cfgObj?.optDouble("streakTier1Multiplier", 1.10) ?: 1.10,
+                streakTier2Days = cfgObj?.optInt("streakTier2Days", 10) ?: 10,
+                streakTier2Multiplier = cfgObj?.optDouble("streakTier2Multiplier", 1.25) ?: 1.25,
+                streakTier3Days = cfgObj?.optInt("streakTier3Days", 20) ?: 20,
+                streakTier3Multiplier = cfgObj?.optDouble("streakTier3Multiplier", 1.50) ?: 1.50,
+                levelCurveBaseXp = cfgObj?.optDouble("levelCurveBaseXp", 45.0) ?: 45.0,
+                maxLevel = cfgObj?.optInt("maxLevel", 20) ?: 20,
+                seasonalResetSpPenalty = cfgObj?.optInt("seasonalResetSpPenalty", 1) ?: 1
+            )
+            val sObj = root.optJSONObject("season")
+            val season = if (sObj != null) {
+                com.example.domain.rpg.Season(
+                    id = sObj.optString("id", "season_2026_q4"),
+                    titleRu = sObj.optString("titleRu", "Сезон Q4 2026: Ударная смена"),
+                    quarterCode = sObj.optString("quarterCode", "2026-Q4"),
+                    startEpochDay = sObj.optLong("startEpochDay", 20728L),
+                    endEpochDay = sObj.optLong("endEpochDay", 20819L),
+                    isActive = sObj.optBoolean("isActive", true)
+                )
+            } else {
+                com.example.domain.rpg.RpgWorkspaceState().currentSeason
+            }
+            val profilesMap = linkedMapOf<String, com.example.domain.rpg.EmployeeRpgProfile>()
+            val pArr = root.optJSONArray("profiles")
+            if (pArr != null) {
+                for (i in 0 until pArr.length()) {
+                    val po = pArr.optJSONObject(i) ?: continue
+                    val empId = po.optString("employeeId").ifBlank { continue }
+                    val skList = buildList {
+                        val sArr = po.optJSONArray("skills")
+                        if (sArr != null) {
+                            for (j in 0 until sArr.length()) {
+                                val so = sArr.optJSONObject(j) ?: continue
+                                add(com.example.domain.rpg.UserSkill(so.optString("skillId"), so.optInt("level", 0)))
+                            }
+                        }
+                    }
+                    val achList = buildList {
+                        val aArr = po.optJSONArray("achievements")
+                        if (aArr != null) {
+                            for (j in 0 until aArr.length()) {
+                                val ao = aArr.optJSONObject(j) ?: continue
+                                add(
+                                    com.example.domain.rpg.UserAchievement(
+                                        ao.optString("achievementId"),
+                                        ao.optLong("unlockedAtMillis", 0L),
+                                        ao.optString("progressNote", "")
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    val qpList = buildList {
+                        val qArr = po.optJSONArray("questProgress")
+                        if (qArr != null) {
+                            for (j in 0 until qArr.length()) {
+                                val qo = qArr.optJSONObject(j) ?: continue
+                                val compAt = qo.optLong("completedAtMillis", -1L).takeIf { it > 0L }
+                                add(
+                                    com.example.domain.rpg.UserQuestProgress(
+                                        questId = qo.optString("questId"),
+                                        periodKey = qo.optString("periodKey"),
+                                        currentCount = qo.optInt("currentCount", 0),
+                                        countedTaskIds = jsonArrayToList(qo.optJSONArray("countedTaskIds")),
+                                        completedAtMillis = compAt,
+                                        rewarded = qo.optBoolean("rewarded", false)
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    val invObj = po.optJSONObject("inventory")
+                    val inv = com.example.domain.rpg.UserInventory(
+                        ownedItemIds = jsonArrayToList(invObj?.optJSONArray("ownedItemIds")),
+                        equippedBadgeId = invObj?.optString("equippedBadgeId")?.takeIf { it.isNotBlank() },
+                        equippedFrameId = invObj?.optString("equippedFrameId")?.takeIf { it.isNotBlank() },
+                        equippedTitleId = invObj?.optString("equippedTitleId")?.takeIf { it.isNotBlank() },
+                        streakRecoveryTokens = invObj?.optInt("streakRecoveryTokens", 1) ?: 1
+                    )
+                    val repObj = po.optJSONObject("reputation")
+                    val repHist = buildList {
+                        val hArr = repObj?.optJSONArray("history")
+                        if (hArr != null) {
+                            for (j in 0 until hArr.length()) {
+                                val ho = hArr.optJSONObject(j) ?: continue
+                                add(
+                                    com.example.domain.rpg.ReputationEntry(
+                                        id = ho.optString("id"),
+                                        delta = ho.optInt("delta", 0),
+                                        resultingScore = ho.optInt("resultingScore", 50),
+                                        reason = ho.optString("reason"),
+                                        createdAtMillis = ho.optLong("createdAtMillis", 0L)
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    val strObj = po.optJSONObject("streak")
+                    val streak = com.example.domain.rpg.Streak(
+                        currentDays = strObj?.optInt("currentDays", 0) ?: 0,
+                        bestDays = strObj?.optInt("bestDays", 0) ?: 0,
+                        lastActivityEpochDay = strObj?.optLong("lastActivityEpochDay", 0L) ?: 0L,
+                        isAtRisk = strObj?.optBoolean("isAtRisk", false) ?: false,
+                        recoveryUsedCount = strObj?.optInt("recoveryUsedCount", 0) ?: 0
+                    )
+                    val prObj = po.optJSONObject("prestige")
+                    val prestige = com.example.domain.rpg.PrestigeState(
+                        prestigeLevel = prObj?.optInt("prestigeLevel", 0) ?: 0,
+                        permanentXpMultiplierBonus = prObj?.optDouble("permanentXpMultiplierBonus", 0.0) ?: 0.0,
+                        emblemTitle = prObj?.optString("emblemTitle", "Без престижа") ?: "Без престижа",
+                        activatedAtMillis = prObj?.optLong("activatedAtMillis", -1L)?.takeIf { it > 0L }
+                    )
+                    profilesMap[empId] = com.example.domain.rpg.EmployeeRpgProfile(
+                        employeeId = empId,
+                        totalXp = po.optInt("totalXp", 0),
+                        seasonXp = po.optInt("seasonXp", 0),
+                        skillPointsAvailable = po.optInt("skillPointsAvailable", 1),
+                        skillPointsSpent = po.optInt("skillPointsSpent", 0),
+                        skills = skList,
+                        achievements = achList,
+                        questProgress = qpList,
+                        inventory = inv,
+                        reputation = com.example.domain.rpg.Reputation(
+                            score = repObj?.optInt("score", 50) ?: 50,
+                            history = repHist
+                        ),
+                        streak = streak,
+                        prestige = prestige,
+                        leaderboardPrivacy = com.example.domain.rpg.LeaderboardPrivacy.fromCode(
+                            po.optString("leaderboardPrivacy", "SITE")
+                        ),
+                        seasonSkillResetDoneForSeasonId = po.optString("seasonSkillResetDoneForSeasonId", ""),
+                        lastEvaluatedEpochDay = po.optLong("lastEvaluatedEpochDay", 0L)
+                    )
+                }
+            }
+            val txList = buildList {
+                val tArr = root.optJSONArray("transactions")
+                if (tArr != null) {
+                    for (i in 0 until tArr.length()) {
+                        val to = tArr.optJSONObject(i) ?: continue
+                        val prioCode = to.optString("priorityAtCompletion")
+                        add(
+                            com.example.domain.rpg.XpTransaction(
+                                id = to.optString("id"),
+                                employeeId = to.optString("employeeId"),
+                                employeeName = to.optString("employeeName"),
+                                taskId = to.optString("taskId"),
+                                taskTitle = to.optString("taskTitle"),
+                                type = com.example.domain.rpg.XpTransactionType.fromCode(to.optString("type")),
+                                xpDelta = to.optInt("xpDelta", 0),
+                                reputationDelta = to.optInt("reputationDelta", 0),
+                                priorityAtCompletion = prioCode.takeIf { it.isNotBlank() }?.let {
+                                    com.example.data.model.TaskPriority.fromCode(it)
+                                },
+                                appliedMultipliersSummary = to.optString("appliedMultipliersSummary"),
+                                reason = to.optString("reason"),
+                                actorId = to.optString("actorId"),
+                                actorName = to.optString("actorName"),
+                                idempotencyKey = to.optString("idempotencyKey"),
+                                createdAtMillis = to.optLong("createdAtMillis", 0L),
+                                isRolledBack = to.optBoolean("isRolledBack", false)
+                            )
+                        )
+                    }
+                }
+            }
+            com.example.domain.rpg.RpgWorkspaceState(
+                config = config,
+                currentSeason = season,
+                profiles = profilesMap,
+                transactions = txList
+            )
+        }.getOrNull()
+    }
 }

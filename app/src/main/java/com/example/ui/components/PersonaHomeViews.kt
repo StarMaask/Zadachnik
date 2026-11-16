@@ -399,6 +399,7 @@ fun WorkerPersonaTaskCard(
     canApprove: Boolean = false,
     showAssigneeName: Boolean = false,
     availableEmployees: List<CorporateEmployee> = emptyList(),
+    expectedXp: Int? = null,
     onApproveTask: (() -> Unit)? = null,
     onRejectTask: (() -> Unit)? = null
 ) {
@@ -471,6 +472,45 @@ fun WorkerPersonaTaskCard(
                         fontWeight = FontWeight.SemiBold,
                         color = taskStatusColor
                     )
+                }
+            }
+
+            if (task.taskPriority.weight >= TaskPriority.HIGH.weight ||
+                (expectedXp != null && expectedXp > 0 && !task.taskStatus.isTerminalOrDone)
+            ) {
+                val prioColor = priorityColor(task.taskPriority)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (task.taskPriority.weight >= TaskPriority.HIGH.weight) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = prioColor.copy(alpha = 0.13f)
+                        ) {
+                            Text(
+                                text = task.taskPriority.titleRu,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = prioColor,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    if (expectedXp != null && expectedXp > 0 && !task.taskStatus.isTerminalOrDone) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFF7C3AED).copy(alpha = 0.11f)
+                        ) {
+                            Text(
+                                text = "+$expectedXp XP",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF6D28D9),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -1117,6 +1157,7 @@ fun ItrPersonaTaskCard(
     onToggleSubtask: ((String) -> Unit)? = null,
     canApprove: Boolean = false,
     availableEmployees: List<CorporateEmployee> = emptyList(),
+    expectedXp: Int? = null,
     onQuickComplete: (() -> Unit)? = null,
     onApproveTask: (() -> Unit)? = null,
     onRejectTask: (() -> Unit)? = null
@@ -1207,6 +1248,45 @@ fun ItrPersonaTaskCard(
                         fontWeight = FontWeight.SemiBold,
                         color = taskStatusColor
                     )
+                }
+            }
+
+            if (task.taskPriority.weight >= TaskPriority.HIGH.weight ||
+                (expectedXp != null && expectedXp > 0 && !task.taskStatus.isTerminalOrDone)
+            ) {
+                val prioColor = priorityColor(task.taskPriority)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (task.taskPriority.weight >= TaskPriority.HIGH.weight) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = prioColor.copy(alpha = 0.13f)
+                        ) {
+                            Text(
+                                text = task.taskPriority.titleRu,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = prioColor,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    if (expectedXp != null && expectedXp > 0 && !task.taskStatus.isTerminalOrDone) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFF7C3AED).copy(alpha = 0.11f)
+                        ) {
+                            Text(
+                                text = "+$expectedXp XP",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF6D28D9),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
             }
 

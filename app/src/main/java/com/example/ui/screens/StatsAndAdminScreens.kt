@@ -108,6 +108,9 @@ import com.example.data.model.TaskStatus
 import com.example.data.model.WorkGroup
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.domain.rpg.GamificationConfig
+import com.example.domain.rpg.LeaderboardPrivacy
+import com.example.domain.rpg.RpgWorkspaceState
 import com.example.ui.auth.SiteSelectionDialog
 import com.example.ui.components.TaskItemCard
 import com.example.ui.theme.LocalAppThemeTokens
@@ -812,6 +815,15 @@ fun StatisticsDashboardScreen(
     stats: StatisticsSummary,
     allTasks: List<TaskDocument> = emptyList(),
     currentEpochDay: Long = LocalDate.now().toEpochDay(),
+    availableEmployees: List<CorporateEmployee> = listOf(activeEmployee),
+    rpgState: RpgWorkspaceState = RpgWorkspaceState(),
+    onUpgradeSkill: (String) -> Unit = {},
+    onResetSkillsForSeason: () -> Unit = {},
+    onEquipInventoryItem: (String) -> Unit = {},
+    onUseStreakRecovery: () -> Unit = {},
+    onActivatePrestige: () -> Unit = {},
+    onSetLeaderboardPrivacy: (LeaderboardPrivacy) -> Unit = {},
+    onAdjustEmployeeRpg: (CorporateEmployee, Int, Int, String) -> Unit = { _, _, _, _ -> },
     onTaskClick: (TaskDocument) -> Unit = {},
     onExportStats: (ExportFormat) -> Unit
 ) {
@@ -819,7 +831,7 @@ fun StatisticsDashboardScreen(
     val isItrRole = activeEmployee.role == CorporateRole.ITR
     var selectedPeriod by remember { mutableStateOf(StatsPeriodFilter.MONTH) }
     var itrPersonalOnlyScope by remember { mutableStateOf(false) }
-    var selectedStatsViewTab by remember { mutableStateOf(0) } // 0 = Показатели сводки, 1 = Выполненные задачи
+    var selectedStatsViewTab by remember { mutableStateOf(0) } // 0 = Показатели сводки, 1 = Выполненные задачи, 2 = RPG и рейтинг
     val showOnlyPersonalStats = isWorkerRole || (isItrRole && itrPersonalOnlyScope)
 
     val currentLocalDate = remember(currentEpochDay) { LocalDate.ofEpochDay(currentEpochDay) }
@@ -1172,12 +1184,34 @@ fun StatisticsDashboardScreen(
                                     .testTag("stats_tab_completed")
                             ) {
                                 Text(
-                                    text = "Выполненные задачи ($approvedCount)",
+                                    text = "Выполнено ($approvedCount)",
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = if (isCompletedTab) FontWeight.Bold else FontWeight.Medium,
                                     color = if (isCompletedTab) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp)
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp)
+                                )
+                            }
+
+                            val isRpgTab = selectedStatsViewTab == 2
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isRpgTab) MaterialTheme.colorScheme.surface else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { selectedStatsViewTab = 2 }
+                                    .testTag("stats_tab_rpg")
+                            ) {
+                                Text(
+                                    text = "RPG и рейтинг",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (isRpgTab) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isRpgTab) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp)
                                 )
                             }
                         }
@@ -1190,7 +1224,23 @@ fun StatisticsDashboardScreen(
             it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED
         }
 
-        if (selectedStatsViewTab == 1) {
+        if (selectedStatsViewTab == 2) {
+            item(key = "stats_rpg_hub") {
+                RpgProgressionHubContent(
+                    activeEmployee = activeEmployee,
+                    availableEmployees = availableEmployees,
+                    rpgState = rpgState,
+                    currentEpochDay = currentEpochDay,
+                    onUpgradeSkill = onUpgradeSkill,
+                    onResetSkillsForSeason = onResetSkillsForSeason,
+                    onEquipInventoryItem = onEquipInventoryItem,
+                    onUseStreakRecovery = onUseStreakRecovery,
+                    onActivatePrestige = onActivatePrestige,
+                    onSetLeaderboardPrivacy = onSetLeaderboardPrivacy,
+                    onAdjustEmployeeRpg = onAdjustEmployeeRpg
+                )
+            }
+        } else if (selectedStatsViewTab == 1) {
             item {
                 Text(
                     text = "Выполненные и принятые задачи за период ($periodDateRangeLabel): ${acceptedArchiveTasks.size}",
@@ -1676,7 +1726,11 @@ fun AdminAndAuditScreen(
     ) -> Unit,
     onRefreshSiteMembers: (Boolean) -> Unit = {},
     onSwitchPersona: (String) -> Unit,
-    onSignOut: () -> Unit
+    onSignOut: () -> Unit,
+    rpgState: RpgWorkspaceState = RpgWorkspaceState(),
+    availableEmployees: List<CorporateEmployee> = listOf(activeEmployee),
+    onUpdateGamificationConfig: (GamificationConfig) -> Unit = {},
+    onAdjustEmployeeRpg: (CorporateEmployee, Int, Int, String) -> Unit = { _, _, _, _ -> }
 ) {
     val canManageUsers = activeEmployee.role.isAdminOrHead
     // Для Рабочего и ИТР вкладка работает исключительно как личный профиль без административных функций
@@ -2486,6 +2540,18 @@ fun AdminAndAuditScreen(
                             }
                         }
                     }
+                }
+            }
+
+            if (canManageUsers) {
+                item(key = "admin_gamification_config_item") {
+                    AdminGamificationSection(
+                        activeEmployee = activeEmployee,
+                        availableEmployees = availableEmployees,
+                        rpgState = rpgState,
+                        onUpdateGamificationConfig = onUpdateGamificationConfig,
+                        onAdjustEmployeeRpg = onAdjustEmployeeRpg
+                    )
                 }
             }
 

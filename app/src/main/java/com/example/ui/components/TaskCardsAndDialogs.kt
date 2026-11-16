@@ -182,6 +182,7 @@ fun priorityColor(priority: TaskPriority): Color = when (priority) {
     TaskPriority.MEDIUM -> Color(0xFF2563EB)
     TaskPriority.HIGH -> Color(0xFFD97706)
     TaskPriority.CRITICAL -> Color(0xFFDC2626)
+    TaskPriority.EMERGENCY -> Color(0xFF991B1B)
 }
 
 /**
@@ -194,6 +195,7 @@ fun TaskItemCard(
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
     onToggleSubtask: ((String) -> Unit)? = null,
+    expectedXp: Int? = null,
     modifier: Modifier = Modifier
 ) {
     val tokens = LocalAppThemeTokens.current
@@ -249,6 +251,21 @@ fun TaskItemCard(
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
+                    if (expectedXp != null && expectedXp > 0 && !task.taskStatus.isTerminalOrDone) {
+                        Surface(
+                            color = Color(0xFFF59E0B).copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.padding(end = 4.dp)
+                        ) {
+                            Text(
+                                text = "+$expectedXp XP",
+                                color = Color(0xFFB45309),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
                     Surface(
                         color = statusColor(task.taskStatus).copy(alpha = if (tokens.isDark) 0.16f else 0.10f),
                         shape = RoundedCornerShape(8.dp)
@@ -442,8 +459,10 @@ fun TaskDetailDialog(
     onApproveReport: (comment: String) -> Unit,
     onRejectReport: (reason: String) -> Unit,
     onArchiveTask: () -> Unit,
+    onCancelTask: () -> Unit = {},
     onDeleteTask: () -> Unit = {},
     onEditTask: () -> Unit = {},
+    expectedXp: Int? = null,
     cloudPhotoCacheVersion: Int = 0,
     isUploadingPhotosToCloud: Boolean = false,
     isHydratingCloudPhotos: Boolean = false,
@@ -525,6 +544,7 @@ fun TaskDetailDialog(
     var submittedRejectionComment by remember { mutableStateOf("") }
     var showApprovedOutcomeDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showCancelConfirm by remember { mutableStateOf(false) }
     var showExtraSections by remember { mutableStateOf(false) }
 
     // Реальная фотосъёмка (через FileProvider + системная камера) и выбор реальных фото из галереи
@@ -796,6 +816,20 @@ fun TaskDetailDialog(
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            if (expectedXp != null && expectedXp > 0 && task.taskStatus != TaskStatus.CANCELLED) {
+                                Surface(
+                                    color = Color(0xFFF59E0B).copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(50)
+                                ) {
+                                    Text(
+                                        text = "+$expectedXp XP",
+                                        color = Color(0xFFB45309),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
                             }
@@ -2337,6 +2371,14 @@ fun TaskDetailDialog(
                                         }
                                     }
                                 }
+                                if (task.canBeCancelledBy(activeEmployee)) {
+                                    TextButton(
+                                        onClick = { showCancelConfirm = true },
+                                        modifier = Modifier.testTag("dialog_cancel_task_button")
+                                    ) {
+                                        Text("Отменить задачу (с откатом XP)", color = crimsonSecondary)
+                                    }
+                                }
                                 if (task.taskStatus != TaskStatus.ARCHIVED) {
                                     TextButton(
                                         onClick = {
@@ -2531,7 +2573,7 @@ fun TaskDetailDialog(
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Удалить задачу?") },
-            text = { Text("Задача «${task.title}» будет удалена из списка.") },
+            text = { Text("Задача «${task.title}» будет удалена, а начисленный за неё XP — откачен.") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -2547,6 +2589,31 @@ fun TaskDetailDialog(
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) {
                     Text("Отмена")
+                }
+            }
+        )
+    }
+
+    if (showCancelConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCancelConfirm = false },
+            title = { Text("Отменить задачу?") },
+            text = { Text("Статус задачи «${task.title}» сменится на «Отменена», а связанные XP и квестовые зачёты будут откачены.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showCancelConfirm = false
+                        onCancelTask()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Отменить задачу", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelConfirm = false }) {
+                    Text("Назад")
                 }
             }
         )

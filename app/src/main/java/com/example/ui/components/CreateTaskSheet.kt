@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -1933,55 +1934,58 @@ private fun CreateTaskMoreOptionsPanel(
         )
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            val baseXpPreview = when (selectedPriority) {
+                TaskPriority.LOW -> 5
+                TaskPriority.MEDIUM -> 10
+                TaskPriority.HIGH -> 20
+                TaskPriority.CRITICAL -> 35
+                TaskPriority.EMERGENCY -> 50
+            }
             Text(
-                text = "Приоритет",
+                text = "Приоритет (базовая награда: $baseXpPreview XP)",
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.fillMaxWidth()
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    TaskPriority.entries.forEach { prio ->
-                        val isSel = selectedPriority == prio
-                        val pColor = priorityColor(prio)
-                        Surface(
-                            shape = RoundedCornerShape(9.dp),
-                            color = if (isSel) pColor.copy(alpha = 0.14f) else Color.Transparent,
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(9.dp))
-                                .clickable { onSelectPriority(prio) }
+                TaskPriority.entries.forEach { prio ->
+                    val isSel = selectedPriority == prio
+                    val pColor = priorityColor(prio)
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSel) pColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(
+                            width = if (isSel) 1.5.dp else 1.dp,
+                            color = if (isSel) pColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onSelectPriority(prio) }
+                            .testTag("priority_chip_${prio.code}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 8.dp, horizontal = 10.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(pColor)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = prio.titleRu,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSel) pColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(pColor)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = prio.titleRu,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSel) pColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
                         }
                     }
                 }

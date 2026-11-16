@@ -5,14 +5,24 @@ import com.example.data.model.CorporateRole
 import com.example.data.model.ExportFormat
 import com.example.data.model.RecurrenceRule
 import com.example.data.model.ReportTemplateDocument
+import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
 import com.example.data.model.SiteMemberDocument
 import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
+import com.example.data.model.TaskPriority
 import com.example.data.model.TaskStatus
 import com.example.data.repository.EzhednevnikRepository
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.domain.rpg.EmployeeRpgProfile
+import com.example.domain.rpg.GamificationConfig
+import com.example.domain.rpg.LeaderboardPrivacy
+import com.example.domain.rpg.PrestigeState
+import com.example.domain.rpg.RpgProgressionEngine
+import com.example.domain.rpg.RpgWorkspaceState
+import com.example.domain.rpg.Streak
+import com.example.domain.rpg.UserSkill
 import java.time.DayOfWeek
 import java.time.LocalDate
 import org.junit.Assert.assertEquals
@@ -1241,5 +1251,260 @@ class ExampleUnitTest {
         assertFalse(archivedTask.canBeEditedBy(creatorItr))
         assertTrue(archivedTask.canBeDeletedBy(admin))
         assertTrue(archivedTask.canBeDeletedBy(creatorItr))
+    }
+
+    @Test
+    fun `rpg xp calculation covers all 5 priorities including EMERGENCY, multipliers, idempotency and priority lock`() {
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+        val itr = CorporateSeedData.findEmployee("emp_itr_1")
+        val today = CorporateSeedData.BASE_EPOCH_DAY
+        val config = GamificationConfig()
+
+        // 1. All 5 priority base XP scale monotonically up to EMERGENCY (50)
+        assertEquals(5, config.ruleFor(TaskPriority.LOW).baseXp)
+        assertEquals(10, config.ruleFor(TaskPriority.MEDIUM).baseXp)
+        assertEquals(20, config.ruleFor(TaskPriority.HIGH).baseXp)
+        assertEquals(35, config.ruleFor(TaskPriority.CRITICAL).baseXp)
+        assertEquals(50, config.ruleFor(TaskPriority.EMERGENCY).baseXp)
+
+        // 2. Floor at 0 when massive penalty applied
+        val zeroFloorProfile = EmployeeRpgProfile(employeeId = worker.id)
+        val harshConfig = config.copy(overduePenaltyRate = 0.80, rejectedPenaltyRate = 0.50)
+        val (flooredXp, _) = RpgProgressionEngine.calculateTaskXpBreakdown(
+            priority = TaskPriority.LOW,
+            config = harshConfig,
+            profile = zeroFloorProfile,
+            isOnTime = false,
+            isOverdue = true,
+            wasRejectedBefore = true
+        )
+        assertEquals(0, flooredXp)
+
+        // 3. Priority-at-completion lock prevents post-completion tampering
+        val emergencyTask = TaskDocument(
+            id = "task_emerg_lock",
+            title = "Ликвидация прорыва",
+            creatorId = itr.id,
+            creatorName = itr.shortName,
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            priority = TaskPriority.EMERGENCY.code,
+            dueDateEpochDay = today,
+            requiresPhotoReport = true,
+            photoItems = listOf("ph1|/tmp/p.jpg|${worker.id}|Иванов|12:00|Участок|Фото")
+        ).withLockedCompletionPriority()
+
+        assertEquals(TaskPriority.EMERGENCY, emergencyTask.lockedPriorityAtCompletion)
+        assertTrue(emergencyTask.visibleTags.none { it.startsWith("__xplock__|") })
+
+        // Even if someone tries to mutate task.priority to LOW after completion, lockedPriorityAtCompletion preserves EMERGENCY
+        val tamperedTask = emergencyTask.copy(priority = TaskPriority.LOW.code)
+        val approvalRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
+            state = RpgWorkspaceState(config = config),
+            task = tamperedTask,
+            assignees = listOf(worker),
+            supervisor = itr,
+            currentEpochDay = today,
+            isApprovalStep = true
+        )
+        val workerProf = approvalRes.state.profiles.getValue(worker.id)
+        // Expected includes base(50+20)=70 * (1+0.2+0.1)=91 + ach_first_approved(15) + ach_emergency_hero(65) = 171
+        assertTrue(workerProf.totalXp >= 91)
+        assertTrue(approvalRes.unlockedAchievementIds.contains("ach_emergency_hero"))
+
+        // 4. Idempotency: calling again with same task+type+employee must not double-grant XP
+        val repeatRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
+            state = approvalRes.state,
+            task = tamperedTask,
+            assignees = listOf(worker),
+            supervisor = itr,
+            currentEpochDay = today,
+            isApprovalStep = true
+        )
+        assertEquals(workerProf.totalXp, repeatRes.state.profiles.getValue(worker.id).totalXp)
+    }
+
+    @Test
+    fun `rpg cancellation rollback, rejection penalty, carryover streak risk and recovery work end to end`() {
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+        val itr = CorporateSeedData.findEmployee("emp_itr_1")
+        val today = CorporateSeedData.BASE_EPOCH_DAY
+
+        val task = TaskDocument(
+            id = "task_rb_1",
+            title = "Монтаж задвижки",
+            creatorId = itr.id,
+            creatorName = itr.shortName,
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            priority = TaskPriority.HIGH.code,
+            dueDateEpochDay = today
+        )
+
+        // Complete task -> gains XP & quest count
+        val completeRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
+            state = RpgWorkspaceState(),
+            task = task,
+            assignees = listOf(worker),
+            supervisor = null,
+            currentEpochDay = today,
+            isApprovalStep = false
+        )
+        val xpAfterComplete = completeRes.state.profiles.getValue(worker.id).totalXp
+        assertTrue(xpAfterComplete > 0)
+        assertTrue(completeRes.state.profiles.getValue(worker.id).questProgress.any { task.id in it.countedTaskIds })
+
+        // Cancel task -> rolls back completion XP and removes task from unrewarded quest progress
+        val cancelRes = RpgProgressionEngine.rollbackTaskOnCancellationOrDelete(
+            state = completeRes.state,
+            task = task,
+            actor = itr,
+            reason = "Отмена наряда"
+        )
+        val rolledBackTx = cancelRes.state.transactions.first { it.taskId == task.id && it.type.code == "TASK_COMPLETION" }
+        assertTrue(rolledBackTx.isRolledBack)
+        assertFalse(cancelRes.state.profiles.getValue(worker.id).questProgress.any { task.id in it.countedTaskIds })
+
+        // Carryover puts active streak at risk & reduces reputation by 2, recovery token clears risk
+        var stateWithStreak = cancelRes.state.copy(
+            profiles = mapOf(
+                worker.id to cancelRes.state.profiles.getValue(worker.id).copy(
+                    streak = Streak(currentDays = 6, bestDays = 6, lastActivityEpochDay = today - 1L, isAtRisk = false),
+                    reputation = com.example.domain.rpg.Reputation(score = 60)
+                )
+            )
+        )
+        stateWithStreak = RpgProgressionEngine.processCarryoverPenalties(
+            state = stateWithStreak,
+            movedTasks = listOf(task),
+            employees = listOf(worker, itr),
+            currentEpochDay = today
+        )
+        val riskedProf = stateWithStreak.profiles.getValue(worker.id)
+        assertTrue(riskedProf.streak.isAtRisk)
+        assertEquals(58, riskedProf.reputation.score)
+
+        val recoveredState = RpgProgressionEngine.useStreakRecovery(stateWithStreak, worker, today).getOrThrow()
+        val recoveredProf = recoveredState.profiles.getValue(worker.id)
+        assertFalse(recoveredProf.streak.isAtRisk)
+        assertEquals(0, recoveredProf.inventory.streakRecoveryTokens)
+    }
+
+    @Test
+    fun `rpg skill prerequisites, seasonal reset, prestige activation, privacy and manual RBAC enforcement`() {
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+        val itr = CorporateSeedData.findEmployee("emp_itr_1")
+        val head = CorporateSeedData.findEmployee("emp_head_1")
+
+        // 1. Prerequisite & role enforcement in skill tree
+        var state = RpgWorkspaceState(
+            profiles = mapOf(
+                worker.id to EmployeeRpgProfile(employeeId = worker.id, skillPointsAvailable = 5, totalXp = 300)
+            )
+        )
+        // Worker cannot unlock tier-2 skill before tier-1 prerequisite
+        assertTrue(RpgProgressionEngine.upgradeSkill(state, worker, "sk_prof_emergency").isFailure)
+        // Worker cannot unlock ITR-only Leadership skill
+        assertTrue(RpgProgressionEngine.upgradeSkill(state, worker, "sk_lead_review").isFailure)
+        // Unlock tier-1 then tier-2 works
+        state = RpgProgressionEngine.upgradeSkill(state, worker, "sk_prof_speed").getOrThrow()
+        state = RpgProgressionEngine.upgradeSkill(state, worker, "sk_prof_emergency").getOrThrow()
+        assertEquals(3, state.profiles.getValue(worker.id).skillPointsAvailable)
+        assertEquals(2, state.profiles.getValue(worker.id).skillPointsSpent)
+
+        // 2. Seasonal reset refunds (spent - penalty) once per season
+        state = RpgProgressionEngine.resetSkillsForSeason(state, worker).getOrThrow()
+        assertEquals(3 + (2 - state.config.seasonalResetSpPenalty), state.profiles.getValue(worker.id).skillPointsAvailable)
+        assertTrue(RpgProgressionEngine.resetSkillsForSeason(state, worker).isFailure)
+
+        // 3. Manual adjustment RBAC: WORKER & ITR denied; HEAD allowed with non-blank reason
+        assertTrue(RpgProgressionEngine.adjustManually(state, worker, worker, 50, 5, "Самопремия").isFailure)
+        assertTrue(RpgProgressionEngine.adjustManually(state, itr, worker, 50, 5, "Бонус").isFailure)
+        assertTrue(RpgProgressionEngine.adjustManually(state, head, worker, 50, 5, "   ").isFailure)
+        state = RpgProgressionEngine.adjustManually(state, head, worker, 100, 10, "Премия за безаварийность").getOrThrow()
+        assertEquals(400, state.profiles.getValue(worker.id).totalXp)
+
+        // 4. Prestige requires max level; resets XP to 0 and grants permanent bonus
+        val maxXp = state.config.xpRequiredForLevel(state.config.maxLevel)
+        state = state.copy(
+            profiles = state.profiles + (
+                worker.id to state.profiles.getValue(worker.id).copy(totalXp = maxXp)
+            )
+        )
+        state = RpgProgressionEngine.activatePrestige(state, worker).getOrThrow()
+        val prestigeProf = state.profiles.getValue(worker.id)
+        assertEquals(1, prestigeProf.prestige.prestigeLevel)
+        assertEquals(0.05, prestigeProf.prestige.permanentXpMultiplierBonus, 0.001)
+        assertTrue(prestigeProf.achievements.any { it.achievementId == "ach_prestige_1" })
+        assertEquals(150, prestigeProf.totalXp)
+        assertTrue(prestigeProf.totalXp < maxXp)
+
+        // 5. Leaderboard privacy hides HIDDEN worker from peers while HEAD/ADMIN still sees
+        state = RpgProgressionEngine.setLeaderboardPrivacy(state, worker.id, LeaderboardPrivacy.HIDDEN)
+        val boardForItr = RpgProgressionEngine.buildLeaderboard(state, itr, listOf(worker, itr, head))
+        val boardForHead = RpgProgressionEngine.buildLeaderboard(state, head, listOf(worker, itr, head))
+        assertFalse(boardForItr.any { it.employeeId == worker.id })
+        assertTrue(boardForHead.any { it.employeeId == worker.id })
+    }
+
+    @Test
+    fun `priority distribution and gamification summary reports generate accurate previews`() {
+        val today = CorporateSeedData.BASE_EPOCH_DAY
+        val head = CorporateSeedData.findEmployee("emp_head_1")
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+        val emergTask = TaskDocument(
+            id = "t_rep_emerg",
+            title = "Аварийный ремонт АВР",
+            creatorId = head.id,
+            creatorName = head.shortName,
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            priority = TaskPriority.EMERGENCY.code,
+            status = TaskStatus.APPROVED.code,
+            dueDateEpochDay = today
+        )
+
+        val prioTpl = ReportTemplateDocument(
+            id = "tpl_prio_test",
+            name = "Распределение по приоритетам",
+            reportType = ReportType.PRIORITY_DISTRIBUTION.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.PDF.code
+        )
+        val prioPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = prioTpl,
+            allTasks = listOf(emergTask),
+            currentEpochDay = today
+        )
+        val prioRows = prioPreview.sheets.first().rows
+        assertEquals(5, prioRows.size)
+        assertTrue(prioRows.any { it.priorityLabel == "Аварийный" && it.taskTitle.contains("Задач: 1") })
+
+        val rpgState = RpgProgressionEngine.recordTaskCompletionOrApproval(
+            state = RpgWorkspaceState(),
+            task = emergTask,
+            assignees = listOf(worker),
+            supervisor = head,
+            currentEpochDay = today,
+            isApprovalStep = true
+        ).state
+
+        val gamifTpl = ReportTemplateDocument(
+            id = "tpl_gamif_test",
+            name = "Сводка прогрессии и XP",
+            reportType = ReportType.GAMIFICATION_SUMMARY.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.XLSX.code
+        )
+        val gamifPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = gamifTpl,
+            allTasks = listOf(emergTask),
+            currentEpochDay = today,
+            rpgState = rpgState
+        )
+        assertTrue(gamifPreview.sheets.first().rows.isNotEmpty())
+        assertTrue(gamifPreview.summaryText.contains("XP"))
     }
 }

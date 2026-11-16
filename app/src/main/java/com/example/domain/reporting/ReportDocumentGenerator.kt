@@ -113,6 +113,13 @@ data class AspectFitRect(
     val bottom: Float
 )
 
+data class TaskPhotoPdfResult(
+    val file: File,
+    val downloadedToPath: String?,
+    val photoCount: Int,
+    val pageCount: Int
+)
+
 object ReportDocumentGenerator {
 
     fun formatOrgHeader(
@@ -624,6 +631,247 @@ object ReportDocumentGenerator {
         }.onFailure {
             shareGeneratedReport(context, result, "SHARE")
         }
+    }
+
+    fun openPdfFile(
+        context: Context,
+        pdfFile: File,
+        title: String = "Фотоотчёт PDF"
+    ) {
+        runCatching {
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                pdfFile
+            )
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/pdf")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(viewIntent, "Открыть $title").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
+        }.onFailure {
+            sharePdfFile(context, pdfFile, title)
+        }
+    }
+
+    fun sharePdfFile(
+        context: Context,
+        pdfFile: File,
+        title: String = "Фотоотчёт PDF"
+    ) {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            pdfFile
+        )
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(sendIntent, "Поделиться PDF").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(chooser)
+    }
+
+    /**
+     * Выгружает все фотографии указанного фотоотчёта по задаче в отдельный многостраничный PDF-документ
+     * (формат A4 портрет, 2 крупных снимка на страницу с сохранением точных пропорций исходников и метаданными).
+     */
+    fun exportTaskPhotosToPdf(
+        context: Context,
+        task: TaskDocument,
+        photos: List<PhotoReportItem>,
+        preparedByName: String = "",
+        saveToDownloads: Boolean = true
+    ): Result<TaskPhotoPdfResult> = runCatching {
+        require(photos.isNotEmpty()) { "В фотоотчёте нет фотографий для экспорта в PDF" }
+
+        val reportsDir = File(context.filesDir, "reports").apply { mkdirs() }
+        val safeTitle = task.title
+            .replace(Regex("[^a-zA-Zа-яА-ЯёЁ0-9_\\-]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_')
+            .take(32)
+            .ifBlank { "task" }
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val outFile = File(reportsDir, "PhotoReport_${safeTitle}_$stamp.pdf")
+
+        val pdf = PdfDocument()
+        val pageWidth = 595 // A4 Portrait width in points
+        val pageHeight = 842 // A4 Portrait height in points
+
+        val headerBgPaint = Paint().apply {
+            color = Color.rgb(241, 245, 249)
+            style = Paint.Style.FILL
+        }
+        val borderPaint = Paint().apply {
+            color = Color.rgb(203, 213, 225)
+            style = Paint.Style.STROKE
+            strokeWidth = 1f
+        }
+        val frameBgPaint = Paint().apply {
+            color = Color.rgb(15, 23, 42)
+            style = Paint.Style.FILL
+        }
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(15, 23, 42)
+            textSize = 12f
+            isFakeBoldText = true
+        }
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(71, 85, 105)
+            textSize = 8.5f
+        }
+        val cardTitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(15, 23, 42)
+            textSize = 9.5f
+            isFakeBoldText = true
+        }
+        val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+        val chunks = photos.chunked(2)
+        val totalPages = chunks.size
+        val generatedAt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.forLanguageTag("ru")).format(Date())
+
+        chunks.forEachIndexed { pageIdx, chunk ->
+            val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageIdx + 1).create()
+            val page = pdf.startPage(pageInfo)
+            val canvas = page.canvas
+
+            val headerRect = RectF(28f, 24f, pageWidth - 28f, 82f)
+            canvas.drawRoundRect(headerRect, 8f, 8f, headerBgPaint)
+            canvas.drawRoundRect(headerRect, 8f, 8f, borderPaint)
+
+            canvas.drawText(
+                "Фотоотчёт: ${task.title.ifBlank { "Задача" }.take(56)}",
+                38f,
+                44f,
+                titlePaint
+            )
+            val siteOrGroup = task.geoLocation.orEmpty().ifBlank { task.groupName }.ifBlank { "Участок" }
+            val executor = task.assigneeName.ifBlank { "Исполнитель" }
+            canvas.drawText(
+                "Объект: ${siteOrGroup.take(36)}  •  Исполнитель: ${executor.take(28)}  •  Срок: ${formatEpochDay(task.dueDateEpochDay)}",
+                38f,
+                60f,
+                subPaint
+            )
+            val authorSuffix = if (preparedByName.isNotBlank()) "  •  Сформировал: ${preparedByName.take(26)}" else ""
+            canvas.drawText(
+                "Всего фото: ${photos.size} шт.  •  Дата выгрузки: $generatedAt$authorSuffix  •  Стр. ${pageIdx + 1} из $totalPages",
+                38f,
+                74f,
+                subPaint
+            )
+
+            val cardLeft = 28f
+            val cardRight = pageWidth - 28f
+            val cardHeight = 352f
+            val cardGap = 16f
+            var y = 94f
+
+            chunk.forEachIndexed { localIdx, photo ->
+                val globalIndex = pageIdx * 2 + localIdx + 1
+                val cardRect = RectF(cardLeft, y, cardRight, y + cardHeight)
+                canvas.drawRoundRect(cardRect, 8f, 8f, borderPaint)
+
+                val frameLeft = cardLeft + 10f
+                val frameTop = y + 10f
+                val frameRight = cardRight - 10f
+                val frameBottom = y + cardHeight - 58f
+                val frameRect = RectF(frameLeft, frameTop, frameRight, frameBottom)
+                canvas.drawRoundRect(frameRect, 6f, 6f, frameBgPaint)
+
+                val origResult = PhotoCaptureUtils.loadOriginalBitmapFromUriOrPath(
+                    uriOrPath = photo.uriString,
+                    fallbackComment = photo.comment,
+                    fallbackAuthor = photo.authorName.ifBlank { executor },
+                    fallbackTime = photo.capturedAtText,
+                    fallbackGps = photo.gpsCoords,
+                    fallbackTaskTitle = task.title,
+                    context = context,
+                    photoId = photo.id
+                )
+                val bmp = origResult.bitmap
+                if (bmp != null && bmp.width > 0 && bmp.height > 0) {
+                    val fitted = computeAspectFitBounds(
+                        srcWidth = bmp.width,
+                        srcHeight = bmp.height,
+                        frameLeft = frameLeft + 2f,
+                        frameTop = frameTop + 2f,
+                        frameRight = frameRight - 2f,
+                        frameBottom = frameBottom - 2f
+                    )
+                    val dstRect = RectF(fitted.left, fitted.top, fitted.right, fitted.bottom)
+                    canvas.drawBitmap(bmp, null, dstRect, bitmapPaint)
+                } else {
+                    val missingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = Color.rgb(148, 163, 184)
+                        textSize = 11f
+                    }
+                    canvas.drawText("Изображение недоступно для предпросмотра", frameLeft + 20f, (frameTop + frameBottom) / 2f, missingPaint)
+                }
+
+                val resLabel = if (origResult.width > 0 && origResult.height > 0) {
+                    " • ${origResult.width}×${origResult.height} px (${origResult.sourceLabel})"
+                } else {
+                    ""
+                }
+                canvas.drawText(
+                    "Фото #$globalIndex из ${photos.size}  •  ${photo.authorName.ifBlank { executor }}  •  ${photo.capturedAtText}$resLabel",
+                    cardLeft + 12f,
+                    frameBottom + 18f,
+                    cardTitlePaint
+                )
+                val commentLine = photo.comment.ifBlank { "Фотофиксация #$globalIndex" }.take(74)
+                val gpsLine = photo.gpsCoords.ifBlank { siteOrGroup }.take(46)
+                canvas.drawText(
+                    "Комментарий: $commentLine",
+                    cardLeft + 12f,
+                    frameBottom + 33f,
+                    subPaint
+                )
+                canvas.drawText(
+                    "Геометка: $gpsLine",
+                    cardLeft + 12f,
+                    frameBottom + 46f,
+                    subPaint
+                )
+
+                y += cardHeight + cardGap
+            }
+
+            pdf.finishPage(page)
+        }
+
+        FileOutputStream(outFile).use { fos ->
+            pdf.writeTo(fos)
+        }
+        pdf.close()
+
+        val downloadedPath = if (saveToDownloads) {
+            saveFileToPhoneDownloads(
+                context = context,
+                sourceFile = outFile,
+                mimeType = "application/pdf",
+                showToast = true
+            ).getOrNull()
+        } else {
+            null
+        }
+
+        TaskPhotoPdfResult(
+            file = outFile,
+            downloadedToPath = downloadedPath,
+            photoCount = photos.size,
+            pageCount = totalPages
+        )
     }
 
     fun shareGeneratedReport(

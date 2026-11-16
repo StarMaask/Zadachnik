@@ -706,7 +706,17 @@ data class TaskDocument(
     val taskPriority: TaskPriority get() = TaskPriority.fromCode(priority)
 
     @get:com.google.firebase.firestore.Exclude
-    val recurrence: RecurrenceRule get() = RecurrenceRule.fromCode(recurrenceRule)
+    val recurrence: RecurrenceRule
+        get() {
+            val fromField = RecurrenceRule.fromCode(recurrenceRule)
+            if (fromField != RecurrenceRule.NONE) return fromField
+            val tagCode = tags.firstOrNull { it.startsWith("__rec__|") }
+                ?.split("|")
+                ?.getOrNull(2)
+                ?.trim()
+                .orEmpty()
+            return RecurrenceRule.fromCode(tagCode)
+        }
 
     private fun parsedVolumeTag(): Triple<Double, Double, String>? {
         val raw = tags.firstOrNull { it.startsWith("__vol__|") } ?: return null
@@ -781,7 +791,10 @@ data class TaskDocument(
     fun withRecurrenceSeries(seriesId: String, rule: RecurrenceRule): TaskDocument {
         val cleanSeries = seriesId.trim().replace("|", "").take(32)
         if (cleanSeries.isBlank() || rule == RecurrenceRule.NONE) {
-            return copy(tags = tags.filterNot { it.startsWith("__rec__|") })
+            return copy(
+                recurrenceRule = RecurrenceRule.NONE.code,
+                tags = tags.filterNot { it.startsWith("__rec__|") }
+            )
         }
         val nonRecTags = tags.filterNot { it.startsWith("__rec__|") }
         val recTag = "__rec__|$cleanSeries|${rule.code}"
@@ -791,7 +804,10 @@ data class TaskDocument(
         val userTags = nonRecTags.filterNot {
             it.startsWith("__vol__|") || it.startsWith("__asgn__|") || it.startsWith("__rev__|")
         }
-        return copy(tags = (internalTags + listOf(recTag) + userTags).take(10))
+        return copy(
+            recurrenceRule = rule.code,
+            tags = (internalTags + listOf(recTag) + userTags).take(10)
+        )
     }
 
     @get:com.google.firebase.firestore.Exclude
@@ -1321,12 +1337,22 @@ data class TaskDocument(
                 return true
             }
         }
-        if (creatorIdClean.isBlank() && creatorName.isNotBlank()) {
+        if (creatorName.isNotBlank()) {
             val cName = creatorName.trim()
-            return cName.equals(employee.fullName.trim(), ignoreCase = true) ||
-                (employee.shortName.isNotBlank() &&
-                    employee.shortName != "Сотрудник" &&
-                    cName.equals(employee.shortName.trim(), ignoreCase = true))
+            val fullClean = employee.fullName.trim()
+            if (fullClean.isNotBlank() &&
+                !fullClean.equals("Сотрудник", ignoreCase = true) &&
+                cName.equals(fullClean, ignoreCase = true)
+            ) {
+                return true
+            }
+            if (creatorIdClean.isBlank() &&
+                employee.shortName.isNotBlank() &&
+                !employee.shortName.equals("Сотрудник", ignoreCase = true) &&
+                cName.equals(employee.shortName.trim(), ignoreCase = true)
+            ) {
+                return true
+            }
         }
         return false
     }

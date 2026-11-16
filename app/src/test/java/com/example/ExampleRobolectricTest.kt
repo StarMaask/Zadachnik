@@ -294,4 +294,88 @@ class ExampleRobolectricTest {
     assertTrue(generated.preparedByLabel.contains("Участок: УЭСАиТМ"))
     assertTrue(generated.signatureBlock.first().contains("____________________ (подпись), Плиткин Дмитрий Александрович, Инженер по КИПиА, Участок: УЭСАиТМ"))
   }
+
+  @Test
+  fun `original photo loader preserves resolution beyond 1080px and exports all task photos to pdf`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+
+    // 1. Создаём исходный локальный файл 1600x1200 (выше порога миниатюр 1080px)
+    val origDir = File(context.filesDir, "task_photos").apply { mkdirs() }
+    val origFile = File(origDir, "orig_highres_test.jpg")
+    val hiResBitmap = Bitmap.createBitmap(1600, 1200, Bitmap.Config.ARGB_8888).apply {
+      Canvas(this).drawColor(Color.rgb(25, 118, 210))
+    }
+    origFile.outputStream().use { fos ->
+      hiResBitmap.compress(Bitmap.CompressFormat.JPEG, 92, fos)
+    }
+
+    val loadedOriginal = PhotoCaptureUtils.loadOriginalBitmapFromUriOrPath(
+      uriOrPath = origFile.absolutePath,
+      fallbackComment = "Исходник высокого разрешения",
+      context = context,
+      photoId = "ph_orig_1"
+    )
+    assertNotNull(loadedOriginal.bitmap)
+    assertEquals("Исходный файл", loadedOriginal.sourceLabel)
+    assertEquals(1600, loadedOriginal.width)
+    assertEquals(1200, loadedOriginal.height)
+
+    val photo1 = PhotoReportItem(
+      id = "ph_orig_1",
+      uriString = origFile.absolutePath,
+      authorId = "emp_1",
+      authorName = "Плиткин Д.А.",
+      capturedAtText = "16.11.2026 14:10",
+      gpsCoords = "УЭСАиТМ",
+      comment = "Исходник"
+    )
+    val exportedJpg = PhotoCaptureUtils.prepareOriginalPhotoExportFile(
+      context = context,
+      photo = photo1,
+      taskTitle = "Осмотр узла учета",
+      photoIndex = 1
+    )
+    assertNotNull(exportedJpg)
+    assertTrue(exportedJpg!!.exists() && exportedJpg.length() == origFile.length())
+
+    // 2. Выгружаем 5 фотоотчётов в отдельный PDF (по 2 фото на страницу => 3 страницы)
+    val allPhotos = (1..5).map { idx ->
+      val f = File(origDir, "batch_$idx.jpg")
+      val bmp = Bitmap.createBitmap(900, 600, Bitmap.Config.ARGB_8888).apply {
+        Canvas(this).drawColor(Color.rgb(30 * idx, 120, 180))
+      }
+      f.outputStream().use { fos -> bmp.compress(Bitmap.CompressFormat.JPEG, 88, fos) }
+      PhotoReportItem(
+        id = "ph_batch_$idx",
+        uriString = f.absolutePath,
+        authorId = "emp_1",
+        authorName = "Плиткин Д.А.",
+        capturedAtText = "16.11 14:0$idx",
+        gpsCoords = "УЭСАиТМ",
+        comment = "Фотофиксация #$idx"
+      )
+    }
+    val task = com.example.data.model.TaskDocument(
+      id = "task_export_photos",
+      title = "Осмотр узла учёта",
+      assigneeName = "Плиткин Д.А.",
+      geoLocation = "УЭСАиТМ",
+      photoItems = allPhotos.map { it.encode() }
+    )
+
+    val pdfRes = com.example.domain.reporting.ReportDocumentGenerator.exportTaskPhotosToPdf(
+      context = context,
+      task = task,
+      photos = allPhotos,
+      preparedByName = "Старшинов М.Ю.",
+      saveToDownloads = false
+    )
+    assertTrue("Expected exportTaskPhotosToPdf to succeed", pdfRes.isSuccess)
+    val result = pdfRes.getOrThrow()
+    assertTrue(result.file.exists() && result.file.length() > 1000L)
+    assertEquals(5, result.photoCount)
+    assertEquals(3, result.pageCount)
+    assertEquals(3, ShadowFakePdfDocument.finishedPageCount)
+    assertTrue(ShadowFakePdfDocument.isClosed)
+  }
 }

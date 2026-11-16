@@ -1,6 +1,8 @@
 package com.example.ui.components
 
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -13,9 +15,12 @@ import android.graphics.Typeface
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Base64
 import android.util.LruCache
 import androidx.core.content.FileProvider
+import com.example.data.model.PhotoReportItem
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -37,6 +42,14 @@ object PhotoCaptureUtils {
     private const val MAX_CLOUD_IMAGE_DIMENSION = 1080
     private const val MAX_CLOUD_JPEG_BYTES = 200_000
     private const val MAX_LOCAL_IMAGE_DIMENSION = 1080
+    private const val MAX_ORIGINAL_VIEW_DIMENSION = 4096
+
+    data class OriginalPhotoLoadResult(
+        val bitmap: Bitmap?,
+        val sourceLabel: String,
+        val width: Int,
+        val height: Int
+    )
 
     private val bitmapCache = object : LruCache<String, Bitmap>(32) {}
 
@@ -749,6 +762,224 @@ object PhotoCaptureUtils {
         }
 
         return null
+    }
+
+    /**
+     * Декодирует фотографию в исходном (полном) разрешении без уменьшения до 1080px,
+     * ограничиваясь лишь безопасным пределом текстуры (4096px).
+     */
+    fun loadOriginalBitmapFromUriOrPath(
+        uriOrPath: String,
+        fallbackComment: String = "",
+        fallbackAuthor: String = "",
+        fallbackTime: String = "",
+        fallbackGps: String = "",
+        fallbackTaskTitle: String = "",
+        context: Context? = null,
+        photoId: String = ""
+    ): OriginalPhotoLoadResult {
+        if (uriOrPath.isBlank() && fallbackComment.isBlank()) {
+            return OriginalPhotoLoadResult(null, "Нет данных", 0, 0)
+        }
+
+        val effectiveDocId = photoId.ifBlank { extractCloudPhotoDocId(uriOrPath).orEmpty() }
+        val localPart = extractLocalPath(uriOrPath)
+        val b64Part = extractBase64Payload(uriOrPath)
+
+        // 1. Локальный исходный файл на устройстве (максимальное качество без урезания)
+        if (localPart.isNotBlank() && !localPart.startsWith("stamp://") && !localPart.startsWith("data:")) {
+            val file = File(localPart)
+            if (file.exists() && file.length() > 0L) {
+                val origKey = "orig_file_${file.absolutePath}_${file.length()}"
+                bitmapCache.get(origKey)?.takeIf { !it.isRecycled }?.let { cached ->
+                    return OriginalPhotoLoadResult(cached, "Исходный файл", cached.width, cached.height)
+                }
+                val decodedFile = decodeFileSafely(file, MAX_ORIGINAL_VIEW_DIMENSION)
+                if (decodedFile != null) {
+                    bitmapCache.put(origKey, decodedFile)
+                    return OriginalPhotoLoadResult(decodedFile, "Исходный файл", decodedFile.width, decodedFile.height)
+                }
+            }
+        }
+
+        // 2. Полноразмерный кэш облачной коллекции task_photos
+        if (effectiveDocId.isNotBlank() && context != null) {
+            val cachedFile = cloudCacheFile(context, effectiveDocId)
+            if (cachedFile.exists() && cachedFile.length() > 0L) {
+                val origCloudKey = "orig_cloud_${effectiveDocId}_${cachedFile.length()}"
+                bitmapCache.get(origCloudKey)?.takeIf { !it.isRecycled }?.let { cached ->
+                    return OriginalPhotoLoadResult(cached, "Облачный оригинал", cached.width, cached.height)
+                }
+                val decodedCloud = decodeFileSafely(cachedFile, MAX_ORIGINAL_VIEW_DIMENSION)
+                if (decodedCloud != null) {
+                    bitmapCache.put(origCloudKey, decodedCloud)
+                    return OriginalPhotoLoadResult(decodedCloud, "Облачный оригинал", decodedCloud.width, decodedCloud.height)
+                }
+            }
+        }
+
+        // 3. Встроенная Base64-копия
+        if (b64Part.isNotBlank()) {
+            val decodedB64 = runCatching {
+                val bytes = Base64.decode(b64Part, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.getOrNull()
+            if (decodedB64 != null) {
+                return OriginalPhotoLoadResult(decodedB64, "Облачная копия", decodedB64.width, decodedB64.height)
+            }
+        }
+
+        // 4. Legacy stamp://
+        val fallbackBmp = loadBitmapFromUriOrPath(
+            uriOrPath = uriOrPath,
+            fallbackComment = fallbackComment,
+            fallbackAuthor = fallbackAuthor,
+            fallbackTime = fallbackTime,
+            fallbackGps = fallbackGps,
+            fallbackTaskTitle = fallbackTaskTitle,
+            context = context,
+            photoId = photoId
+        )
+        return OriginalPhotoLoadResult(
+            bitmap = fallbackBmp,
+            sourceLabel = if (fallbackBmp != null) "Штамп отчёта" else "Недоступно",
+            width = fallbackBmp?.width ?: 0,
+            height = fallbackBmp?.height ?: 0
+        )
+    }
+
+    fun buildSafePhotoFileName(
+        photo: PhotoReportItem,
+        taskTitle: String = "",
+        photoIndex: Int = 1
+    ): String {
+        val rawBase = taskTitle.ifBlank { photo.comment }.ifBlank { "photo_${photo.id}" }
+        val sanitized = rawBase
+            .replace(Regex("[^a-zA-Zа-яА-ЯёЁ0-9_\\-]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_')
+            .take(32)
+            .ifBlank { "photo" }
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        return "Foto_${photoIndex}_${sanitized}_$stamp.jpg"
+    }
+
+    /**
+     * Подготавливает файл фотографии в исходном формате JPEG (копирует оригинальный файл
+     * или кэш без повторного пережатия, либо сохраняет декодированный Bitmap с качеством 95%).
+     */
+    fun prepareOriginalPhotoExportFile(
+        context: Context,
+        photo: PhotoReportItem,
+        taskTitle: String = "",
+        photoIndex: Int = 1
+    ): File? {
+        val exportDir = File(context.cacheDir, "photo_exports").apply { mkdirs() }
+        val fileName = buildSafePhotoFileName(photo, taskTitle, photoIndex)
+        val outFile = File(exportDir, fileName)
+
+        val localPart = extractLocalPath(photo.uriString)
+        if (localPart.isNotBlank() && !localPart.startsWith("stamp://") && !localPart.startsWith("data:")) {
+            val localFile = File(localPart)
+            if (localFile.exists() && localFile.length() > 0L) {
+                return runCatching {
+                    localFile.copyTo(outFile, overwrite = true)
+                    outFile
+                }.getOrNull()
+            }
+        }
+
+        val effectiveDocId = photo.id.ifBlank { extractCloudPhotoDocId(photo.uriString).orEmpty() }
+        if (effectiveDocId.isNotBlank()) {
+            val cloudFile = cloudCacheFile(context, effectiveDocId)
+            if (cloudFile.exists() && cloudFile.length() > 0L) {
+                return runCatching {
+                    cloudFile.copyTo(outFile, overwrite = true)
+                    outFile
+                }.getOrNull()
+            }
+        }
+
+        val origResult = loadOriginalBitmapFromUriOrPath(
+            uriOrPath = photo.uriString,
+            fallbackComment = photo.comment,
+            fallbackAuthor = photo.authorName,
+            fallbackTime = photo.capturedAtText,
+            fallbackGps = photo.gpsCoords,
+            fallbackTaskTitle = taskTitle,
+            context = context,
+            photoId = photo.id
+        )
+        val bmp = origResult.bitmap ?: return null
+        return runCatching {
+            FileOutputStream(outFile).use { fos ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 95, fos)
+            }
+            outFile
+        }.getOrNull()
+    }
+
+    /**
+     * Сохраняет фотографию в папку «Загрузки» устройства через MediaStore.Downloads (Android 10+).
+     * На Android 9 и ниже возвращает ошибку с подсказкой для сохранения через SAF (CreateDocument).
+     */
+    fun savePhotoToDeviceDownloads(
+        context: Context,
+        photo: PhotoReportItem,
+        taskTitle: String = "",
+        photoIndex: Int = 1
+    ): Result<String> = runCatching {
+        val exportFile = prepareOriginalPhotoExportFile(context, photo, taskTitle, photoIndex)
+            ?: throw IllegalStateException("Фотография ещё не загружена или повреждена")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, exportFile.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Не удалось создать файл в папке «Загрузки»")
+            resolver.openOutputStream(uri)?.use { out ->
+                exportFile.inputStream().use { input ->
+                    input.copyTo(out)
+                }
+            } ?: throw IllegalStateException("Не удалось записать изображение в «Загрузки»")
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            "Загрузки/${exportFile.name}"
+        } else {
+            @Suppress("DEPRECATION")
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                .apply { mkdirs() }
+            val target = File(downloadsDir, exportFile.name)
+            exportFile.copyTo(target, overwrite = true)
+            target.absolutePath
+        }
+    }
+
+    /**
+     * Открывает фотографию в исходном JPEG-формате во внешнем просмотрщике / галерее телефона.
+     */
+    fun openOriginalPhotoInExternalViewer(
+        context: Context,
+        photo: PhotoReportItem,
+        taskTitle: String = "",
+        photoIndex: Int = 1
+    ): Result<Unit> = runCatching {
+        val exportFile = prepareOriginalPhotoExportFile(context, photo, taskTitle, photoIndex)
+            ?: throw IllegalStateException("Не удалось подготовить исходный файл фотографии")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", exportFile)
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "image/jpeg")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val chooser = Intent.createChooser(viewIntent, "Открыть фото в исходном формате").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(chooser)
     }
 
     fun deletePhotoFileIfLocal(uriOrPath: String, context: Context? = null, photoId: String = "") {

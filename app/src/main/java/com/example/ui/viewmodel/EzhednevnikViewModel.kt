@@ -19,6 +19,7 @@ import com.example.data.model.ExportFormat
 import com.example.data.model.GeneratedReportDocument
 import com.example.data.model.MemberApprovalStatus
 import com.example.data.model.PhotoReportItem
+import com.example.data.model.RecurrenceRule
 import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.SheetLayout
 import com.example.data.model.SiteMemberDocument

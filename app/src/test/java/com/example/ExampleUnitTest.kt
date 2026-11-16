@@ -3,6 +3,7 @@ package com.example
 import com.example.data.model.CorporateEmployee
 import com.example.data.model.CorporateRole
 import com.example.data.model.ExportFormat
+import com.example.data.model.RecurrenceRule
 import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.SheetLayout
 import com.example.data.model.SiteMemberDocument
@@ -12,6 +13,8 @@ import com.example.data.model.TaskStatus
 import com.example.data.repository.EzhednevnikRepository
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
+import java.time.DayOfWeek
+import java.time.LocalDate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -1107,5 +1110,136 @@ class ExampleUnitTest {
         assertEquals(listOf("Плиткин Д.А.", "СМЮ"), propagatedTask.allAssigneeNames)
         assertEquals("СМЮ", propagatedTask.creatorName)
         assertTrue(propagatedTask.revisionTimestamp > 0L)
+    }
+
+    @Test
+    fun `recurrence rules generate accurate calendar epoch days and preserve visible tags`() {
+        // 2026-11-16 is a Monday
+        val mondayEpoch = LocalDate.of(2026, 11, 16).toEpochDay()
+        val fridayEpoch = LocalDate.of(2026, 11, 20).toEpochDay()
+        val saturdayEpoch = LocalDate.of(2026, 11, 21).toEpochDay()
+
+        assertEquals(listOf(mondayEpoch), RecurrenceRule.NONE.generateOccurrenceEpochDays(mondayEpoch))
+
+        val dailyDays = RecurrenceRule.DAILY.generateOccurrenceEpochDays(mondayEpoch)
+        assertEquals(30, dailyDays.size)
+        assertEquals(mondayEpoch, dailyDays.first())
+        assertEquals(mondayEpoch + 29L, dailyDays.last())
+
+        val weekdayDays = RecurrenceRule.WEEKDAYS.generateOccurrenceEpochDays(fridayEpoch)
+        assertTrue(weekdayDays.isNotEmpty())
+        assertEquals(fridayEpoch, weekdayDays.first())
+        assertFalse(weekdayDays.any { day ->
+            val dow = LocalDate.ofEpochDay(day).dayOfWeek
+            dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY
+        })
+        assertEquals(mondayEpoch + 7L, RecurrenceRule.WEEKDAYS.nextOccurrenceEpochDay(fridayEpoch))
+        assertEquals(mondayEpoch + 7L, RecurrenceRule.WEEKDAYS.nextOccurrenceEpochDay(saturdayEpoch))
+
+        val fromSaturdayWeekdays = RecurrenceRule.WEEKDAYS.generateOccurrenceEpochDays(saturdayEpoch)
+        assertEquals(mondayEpoch + 7L, fromSaturdayWeekdays.first())
+
+        val weeklyDays = RecurrenceRule.WEEKLY.generateOccurrenceEpochDays(mondayEpoch)
+        assertEquals(12, weeklyDays.size)
+        assertEquals(mondayEpoch + 7L, weeklyDays[1])
+        assertEquals(mondayEpoch + 77L, weeklyDays.last())
+
+        val monthlyDays = RecurrenceRule.MONTHLY.generateOccurrenceEpochDays(mondayEpoch)
+        assertEquals(6, monthlyDays.size)
+        assertEquals(LocalDate.of(2026, 12, 16).toEpochDay(), monthlyDays[1])
+        assertEquals(LocalDate.of(2027, 4, 16).toEpochDay(), monthlyDays.last())
+
+        val taggedTask = TaskDocument(
+            id = "task_series_1",
+            title = "Планёрка в 16:00",
+            tags = listOf("__asgn__|emp_1|Иванов", "Кирпичная кладка")
+        ).withRecurrenceSeries(seriesId = "ser_abc123", rule = RecurrenceRule.WEEKDAYS)
+
+        assertEquals("ser_abc123", taggedTask.recurrenceSeriesId)
+        assertEquals(RecurrenceRule.WEEKDAYS, taggedTask.recurrence)
+        assertEquals(listOf("Кирпичная кладка"), taggedTask.visibleTags)
+        assertTrue(taggedTask.tags.any { it.startsWith("__asgn__|") })
+    }
+
+    @Test
+    fun `task edit and delete permissions allow creator and ADMIN while restricting others and archived`() {
+        val admin = CorporateEmployee(
+            id = "usr_admin",
+            fullName = "Старшинов М.Ю.",
+            shortName = "Старшинов М.Ю.",
+            position = "Администратор",
+            role = CorporateRole.ADMIN,
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС Быково",
+            supervisorId = null,
+            phone = "",
+            email = "admin@company.ru"
+        )
+        val creatorItr = CorporateEmployee(
+            id = "emp_itr_creator",
+            fullName = "Плиткин Д.А.",
+            shortName = "Плиткин Д.А.",
+            position = "Инженер",
+            role = CorporateRole.ITR,
+            groupId = "grp_uesaitm",
+            groupName = "УЭСАиТМ",
+            siteId = "site_bykovo",
+            siteName = "ЛПДС Быково",
+            supervisorId = null,
+            phone = "",
+            email = "plitkin@company.ru"
+        )
+        val creatorItrCanonicalAlias = creatorItr.copy(id = "usr_plitkin_canonical")
+        val otherItr = creatorItr.copy(
+            id = "emp_itr_other",
+            fullName = "Другой ИТР",
+            shortName = "Другой ИТР",
+            email = "other_itr@company.ru"
+        )
+        val otherHead = creatorItr.copy(
+            id = "emp_head_other",
+            fullName = "Руководитель",
+            shortName = "Руководитель",
+            role = CorporateRole.HEAD,
+            email = "head@company.ru"
+        )
+        val assignedWorker = creatorItr.copy(
+            id = "emp_worker",
+            fullName = "Рабочий",
+            shortName = "Рабочий",
+            role = CorporateRole.WORKER,
+            email = "worker@company.ru"
+        )
+
+        val task = TaskDocument(
+            id = "task_edit_perm",
+            title = "Проверка оборудования",
+            creatorId = creatorItr.id,
+            creatorName = creatorItr.fullName,
+            assigneeId = assignedWorker.id,
+            assigneeName = assignedWorker.fullName,
+            status = TaskStatus.IN_PROGRESS.name
+        )
+
+        assertTrue(task.canBeEditedBy(admin))
+        assertTrue(task.canBeDeletedBy(admin))
+        assertTrue(task.canBeEditedBy(creatorItr))
+        assertTrue(task.canBeDeletedBy(creatorItr))
+        assertTrue(task.canBeEditedBy(creatorItrCanonicalAlias))
+
+        assertFalse(task.canBeEditedBy(otherItr))
+        assertFalse(task.canBeDeletedBy(otherItr))
+        assertFalse(task.canBeEditedBy(otherHead))
+        assertFalse(task.canBeDeletedBy(otherHead))
+        assertFalse(task.canBeEditedBy(assignedWorker))
+        assertFalse(task.canBeDeletedBy(assignedWorker))
+
+        val archivedTask = task.copy(status = TaskStatus.ARCHIVED.name)
+        assertFalse(archivedTask.canBeEditedBy(admin))
+        assertFalse(archivedTask.canBeEditedBy(creatorItr))
+        assertTrue(archivedTask.canBeDeletedBy(admin))
+        assertTrue(archivedTask.canBeDeletedBy(creatorItr))
     }
 }

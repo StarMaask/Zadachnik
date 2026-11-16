@@ -1612,6 +1612,14 @@ class EzhednevnikViewModel(
         persistTasksLocally(updated)
     }
 
+    private fun upsertLocalTasks(tasks: List<TaskDocument>) {
+        if (tasks.isEmpty()) return
+        val stamped = tasks.map { it.withUpdatedRevision() }
+        val incomingIds = stamped.map { it.id }.toSet()
+        val updated = stamped + _localTasks.value.filterNot { it.id in incomingIds }
+        persistTasksLocally(updated)
+    }
+
     private fun findTaskById(taskId: String): TaskDocument? {
         val fromLocal = _localTasks.value.firstOrNull { it.id == taskId }
         val fromState = (tasksState.value as? UiState.Success)?.data?.firstOrNull { it.id == taskId }
@@ -2288,12 +2296,19 @@ class EzhednevnikViewModel(
         val allAssigneeFullNames = resolvedAssignees.map { it.fullName }
         val allAssigneeShortNames = resolvedAssignees.joinToString(", ") { it.shortName }
 
-        val cleanTitle = draft.title.trim().ifBlank {
-            draft.description.lines().firstOrNull { it.isNotBlank() }?.trim()
-                ?: "Задание — $allAssigneeShortNames (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)})"
+        val occurrenceDays = draft.recurrenceRule.generateOccurrenceEpochDays(draft.dueDateEpochDay)
+        val firstDay = occurrenceDays.first()
+        val seriesId = if (occurrenceDays.size > 1) {
+            "ser_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+        } else {
+            null
         }
 
-        val taskId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
+        val cleanTitle = draft.title.trim().ifBlank {
+            draft.description.lines().firstOrNull { it.isNotBlank() }?.trim()
+                ?: "Задание — $allAssigneeShortNames (${ReportDocumentGenerator.formatEpochDay(firstDay)})"
+        }
+
         val safeTargetVol = draft.targetVolume.coerceAtLeast(0.0)
         val safeUnit = draft.volumeUnit.trim().ifBlank { "шт" }
 
@@ -2316,7 +2331,7 @@ class EzhednevnikViewModel(
                     index = idx + 1,
                     defaultTargetVolume = if (idx == 0 && safeTargetVol > 0.0 && !s.contains("|")) safeTargetVol else perItemDefaultVol,
                     defaultUnit = safeUnit
-                )
+                ).copy(isDone = false, completedVolume = 0.0)
             }.filterNot { it.id == "sub_vol_main" }
         }
 
@@ -2333,72 +2348,86 @@ class EzhednevnikViewModel(
             decodedInitialSubtasks.firstOrNull()?.effectiveUnit ?: "шт"
         }
 
-        val baseTask = TaskDocument(
-            id = taskId,
-            userId = effectiveUserId,
-            title = cleanTitle,
-            description = draft.description.trim(),
-            creatorId = actor.id,
-            creatorName = actor.fullName,
-            assigneeId = assignee.id,
-            assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
-            groupId = assignee.groupId,
-            groupName = assignee.groupName,
-            siteId = assignee.siteId,
-            priority = draft.priority.code,
-            status = TaskStatus.NEW.code,
-            dueDateEpochDay = draft.dueDateEpochDay,
-            originalDueDateEpochDay = draft.dueDateEpochDay,
-            deadlineTime = draft.deadlineTime.ifBlank { "18:00" },
-            carryoverCount = 0L,
-            requiresPhotoReport = draft.requiresPhotoReport,
-            minPhotoCount = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L,
-            requiresApproval = draft.requiresApproval,
-            recurrenceRule = draft.recurrenceRule.code,
-            targetVolume = resolvedTaskTargetVol,
-            completedVolume = 0.0,
-            volumeUnit = resolvedTaskUnit,
-            tags = draft.tags,
-            subtaskItems = encodedSubtasks,
-            photoItems = emptyList(),
-            commentItems = emptyList(),
-            historyItems = listOf(
-                StatusHistoryEntry(
-                    nowText(),
-                    actor.shortName,
-                    TaskStatus.NEW.code,
-                    "Задача создана (исп.: $allAssigneeShortNames, пунктов: ${decodedInitialSubtasks.size}, план: ${SubtaskItem.formatVolumeNumber(resolvedTaskTargetVol)} $resolvedTaskUnit)"
-                ).encode()
-            ),
-            geoLocation = draft.geoLocation.ifBlank { _siteName.value }
-        )
-            .withUpdatedVolume(resolvedTaskTargetVol, 0.0, resolvedTaskUnit)
-            .withUpdatedAssignees(allAssigneeIds, allAssigneeFullNames)
+        val createdTimeStr = nowText()
+        val resolvedGeo = draft.geoLocation.ifBlank { _siteName.value }
+        val createdTasks = occurrenceDays.mapIndexed { idx, occEpochDay ->
+            val taskId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
+            val historyNote = if (seriesId != null) {
+                "Задача создана (${draft.recurrenceRule.titleRu}, день ${idx + 1} из ${occurrenceDays.size}, исп.: $allAssigneeShortNames)"
+            } else {
+                "Задача создана (исп.: $allAssigneeShortNames, пунктов: ${decodedInitialSubtasks.size}, план: ${SubtaskItem.formatVolumeNumber(resolvedTaskTargetVol)} $resolvedTaskUnit)"
+            }
+            TaskDocument(
+                id = taskId,
+                userId = effectiveUserId,
+                title = cleanTitle,
+                description = draft.description.trim(),
+                creatorId = actor.id,
+                creatorName = actor.fullName,
+                assigneeId = assignee.id,
+                assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
+                groupId = assignee.groupId,
+                groupName = assignee.groupName,
+                siteId = assignee.siteId,
+                priority = draft.priority.code,
+                status = TaskStatus.NEW.code,
+                dueDateEpochDay = occEpochDay,
+                originalDueDateEpochDay = occEpochDay,
+                deadlineTime = draft.deadlineTime.ifBlank { "18:00" },
+                carryoverCount = 0L,
+                requiresPhotoReport = draft.requiresPhotoReport,
+                minPhotoCount = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L,
+                requiresApproval = draft.requiresApproval,
+                recurrenceRule = draft.recurrenceRule.code,
+                targetVolume = resolvedTaskTargetVol,
+                completedVolume = 0.0,
+                volumeUnit = resolvedTaskUnit,
+                tags = draft.tags,
+                subtaskItems = encodedSubtasks,
+                photoItems = emptyList(),
+                commentItems = emptyList(),
+                historyItems = listOf(
+                    StatusHistoryEntry(
+                        createdTimeStr,
+                        actor.shortName,
+                        TaskStatus.NEW.code,
+                        historyNote
+                    ).encode()
+                ),
+                geoLocation = resolvedGeo
+            )
+                .withUpdatedVolume(resolvedTaskTargetVol, 0.0, resolvedTaskUnit)
+                .withUpdatedAssignees(allAssigneeIds, allAssigneeFullNames)
+                .let { if (seriesId != null) it.withRecurrenceSeries(seriesId, draft.recurrenceRule) else it }
+                .withUpdatedRevision()
+        }
 
-        // Мгновенно сохраняем задачу локально и помечаем как собственную, чтобы не пришло само-уведомление
-        markTaskEventKeysSeen(listOf(taskEventKeyNew(baseTask.id)))
-        markTaskPendingCloudSync(taskId)
-        upsertLocalTask(baseTask)
+        val firstTask = createdTasks.first()
+
+        // Мгновенно сохраняем все запланированные экземпляры локально и подавляем само-уведомление
+        markTaskEventKeysSeen(createdTasks.map { taskEventKeyNew(it.id) })
+        createdTasks.forEach { markTaskPendingCloudSync(it.id) }
+        upsertLocalTasks(createdTasks)
         _searchQuery.value = ""
-        _selectedCalendarEpochDay.value = draft.dueDateEpochDay
+        _selectedCalendarEpochDay.value = firstDay
 
         // Автоматически переключаем вкладку фильтра так, чтобы созданная задача сразу была видна в списке
         when {
             _selectedFilter.value == TaskFilterTab.CALENDAR_DATE -> {
-                _selectedCalendarEpochDay.value = draft.dueDateEpochDay
+                _selectedCalendarEpochDay.value = firstDay
             }
-            draft.dueDateEpochDay == _currentEpochDay.value && _selectedFilter.value == TaskFilterTab.TODAY -> {
+            firstDay == _currentEpochDay.value && _selectedFilter.value == TaskFilterTab.TODAY -> {
                 // остаёмся на «Сегодня»
             }
-            draft.dueDateEpochDay == _currentEpochDay.value + 1L && _selectedFilter.value == TaskFilterTab.TOMORROW -> {
+            firstDay == _currentEpochDay.value + 1L && _selectedFilter.value == TaskFilterTab.TOMORROW -> {
                 // остаёмся на «Завтра»
             }
-            draft.dueDateEpochDay == _currentEpochDay.value -> {
+            firstDay == _currentEpochDay.value -> {
                 if (_selectedFilter.value != TaskFilterTab.ALL) {
                     _selectedFilter.value = TaskFilterTab.TODAY
                 }
             }
-            draft.dueDateEpochDay == _currentEpochDay.value + 1L -> {
+            firstDay == _currentEpochDay.value + 1L -> {
                 if (_selectedFilter.value != TaskFilterTab.ALL) {
                     _selectedFilter.value = TaskFilterTab.TOMORROW
                 }
@@ -2408,34 +2437,342 @@ class EzhednevnikViewModel(
             }
         }
 
-        _bannerMessage.value = if (isCloudAuthenticated) {
-            "Задача «$cleanTitle» назначена (${ReportDocumentGenerator.formatEpochDay(draft.dueDateEpochDay)}, исп.: $allAssigneeShortNames)"
+        _bannerMessage.value = if (createdTasks.size > 1) {
+            val rangeStr = "${ReportDocumentGenerator.formatEpochDay(firstDay)} – ${ReportDocumentGenerator.formatEpochDay(occurrenceDays.last())}"
+            if (isCloudAuthenticated) {
+                "Создано ${createdTasks.size} задач (${draft.recurrenceRule.titleRu}: $rangeStr)"
+            } else {
+                "Создано ${createdTasks.size} задач в календаре ($rangeStr) — подключите Google для синхронизации"
+            }
+        } else if (isCloudAuthenticated) {
+            "Задача «$cleanTitle» назначена (${ReportDocumentGenerator.formatEpochDay(firstDay)}, исп.: $allAssigneeShortNames)"
         } else {
             "Задача «$cleanTitle» сохранена на устройстве — подключите Google для отправки команде"
         }
 
         viewModelScope.launch {
             if (isCloudAuthenticated) {
-                val createRes = repository.createTask(
-                    actor = actor,
-                    draft = draft.copy(
-                        title = cleanTitle,
-                        assigneeId = assignee.id,
-                        assigneeIds = allAssigneeIds,
-                        targetVolume = resolvedTaskTargetVol,
-                        volumeUnit = resolvedTaskUnit,
-                        subtasks = encodedSubtasks,
-                        tags = baseTask.tags
-                    ),
-                    resolvedAssignee = assignee,
-                    customTaskId = taskId,
-                    resolvedAssignees = resolvedAssignees
-                )
-                if (createRes.isSuccess) {
-                    clearTaskPendingCloudSync(taskId)
+                if (createdTasks.size == 1) {
+                    val createRes = repository.createTask(
+                        actor = actor,
+                        draft = draft.copy(
+                            title = cleanTitle,
+                            dueDateEpochDay = firstDay,
+                            assigneeId = assignee.id,
+                            assigneeIds = allAssigneeIds,
+                            targetVolume = resolvedTaskTargetVol,
+                            volumeUnit = resolvedTaskUnit,
+                            subtasks = encodedSubtasks,
+                            tags = firstTask.tags
+                        ),
+                        resolvedAssignee = assignee,
+                        customTaskId = firstTask.id,
+                        resolvedAssignees = resolvedAssignees
+                    )
+                    if (createRes.isSuccess) {
+                        clearTaskPendingCloudSync(firstTask.id)
+                    } else {
+                        val err = createRes.exceptionOrNull()?.localizedMessage ?: "проверьте соединение"
+                        _bannerMessage.value = "Задача сохранена на устройстве; повтор отправки в облако... ($err)"
+                    }
                 } else {
-                    val err = createRes.exceptionOrNull()?.localizedMessage ?: "проверьте соединение"
-                    _bannerMessage.value = "Задача сохранена на устройстве; повтор отправки в облако... ($err)"
+                    val batchRes = repository.createTasksBatch(actor, createdTasks)
+                    if (batchRes.isSuccess) {
+                        createdTasks.forEach { clearTaskPendingCloudSync(it.id) }
+                    } else {
+                        val err = batchRes.exceptionOrNull()?.localizedMessage ?: "проверьте соединение"
+                        _bannerMessage.value = "Серия задач сохранена на устройстве; повтор отправки в облако... ($err)"
+                    }
+                }
+            }
+        }
+    }
+
+    fun updateTaskDetails(originalTask: TaskDocument, draft: TaskDraft) {
+        val currentTask = findTaskById(originalTask.id) ?: originalTask
+        val actor = activeEmployee.value
+        if (!currentTask.canBeEditedBy(actor)) {
+            _bannerMessage.value = "Редактировать задачу может только её создатель или администратор"
+            return
+        }
+
+        val resolvedAssignees = if (!actor.role.canAssignToOtherEmployees()) {
+            listOf(actor)
+        } else {
+            val candidateIds = (draft.assigneeIds + listOfNotNull(draft.assigneeId.takeIf { it.isNotBlank() })).distinct()
+            resolveOrCreateEmployees(
+                selectedIds = candidateIds,
+                customNamesRaw = draft.customAssigneeName
+            ).ifEmpty { listOf(actor) }
+        }
+
+        val assignee = resolvedAssignees.first()
+        val allAssigneeIds = resolvedAssignees.map { it.id }
+        val allAssigneeFullNames = resolvedAssignees.map { it.fullName }
+        val allAssigneeShortNames = resolvedAssignees.joinToString(", ") { it.shortName }
+
+        val cleanTitle = draft.title.trim().ifBlank {
+            draft.description.lines().firstOrNull { it.isNotBlank() }?.trim()
+                ?: currentTask.title.ifBlank { "Задание — $allAssigneeShortNames" }
+        }
+
+        val safeTargetVol = draft.targetVolume.coerceAtLeast(0.0)
+        val safeUnit = draft.volumeUnit.trim().ifBlank { currentTask.effectiveVolumeUnit.ifBlank { "шт" } }
+        val existingSubtasksById = currentTask.decodedSubtasks().associateBy { it.id }
+        val rawSubtaskLines = draft.subtasks.map { it.trim() }.filter { it.isNotBlank() }
+
+        val mergedSubtasks: List<SubtaskItem> = if (rawSubtaskLines.isEmpty()) {
+            emptyList()
+        } else {
+            val perItemDefaultVol = if (safeTargetVol > 0.0 && rawSubtaskLines.size == 1) safeTargetVol else 1.0
+            rawSubtaskLines.mapIndexed { idx, s ->
+                val parsed = SubtaskItem.parseFromRawLine(
+                    rawLine = s,
+                    index = idx + 1,
+                    defaultTargetVolume = if (idx == 0 && safeTargetVol > 0.0 && !s.contains("|")) safeTargetVol else perItemDefaultVol,
+                    defaultUnit = safeUnit
+                )
+                val prev = existingSubtasksById[parsed.id]
+                val preservedCompleted = prev?.completedVolume?.coerceAtLeast(0.0) ?: parsed.completedVolume.coerceAtLeast(0.0)
+                val tVol = parsed.effectiveTargetVolume
+                parsed.copy(
+                    targetVolume = tVol,
+                    completedVolume = preservedCompleted,
+                    isDone = preservedCompleted >= tVol
+                )
+            }.filterNot { it.id == "sub_vol_main" }
+        }
+
+        val encodedSubtasks = mergedSubtasks.map { it.encode() }
+        val sumSubTarget = mergedSubtasks.sumOf { it.effectiveTargetVolume }
+        val sumSubCompleted = mergedSubtasks.sumOf { it.effectiveCompletedVolume }
+        val resolvedTaskTargetVol = when {
+            sumSubTarget > 0.0 -> sumSubTarget
+            safeTargetVol > 0.0 -> safeTargetVol
+            else -> 0.0
+        }
+        val resolvedTaskCompletedVol = when {
+            mergedSubtasks.isNotEmpty() -> sumSubCompleted
+            resolvedTaskTargetVol > 0.0 -> currentTask.effectiveCompletedVolume.coerceIn(0.0, resolvedTaskTargetVol)
+            else -> 0.0
+        }
+        val resolvedTaskUnit = if (draft.volumeUnit.isNotBlank()) {
+            draft.volumeUnit.trim()
+        } else {
+            mergedSubtasks.firstOrNull()?.effectiveUnit ?: currentTask.effectiveVolumeUnit.ifBlank { "шт" }
+        }
+
+        val nowStr = nowText()
+        val resolvedGeo = draft.geoLocation.trim().ifBlank { currentTask.geoLocation ?: _siteName.value }
+        val resolvedMinPhotos = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L
+
+        var editedTask = currentTask.copy(
+            title = cleanTitle,
+            description = draft.description.trim(),
+            assigneeId = assignee.id,
+            assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
+            groupId = assignee.groupId,
+            groupName = assignee.groupName,
+            siteId = assignee.siteId,
+            priority = draft.priority.code,
+            dueDateEpochDay = draft.dueDateEpochDay,
+            deadlineTime = draft.deadlineTime.ifBlank { "18:00" },
+            requiresPhotoReport = draft.requiresPhotoReport,
+            minPhotoCount = resolvedMinPhotos,
+            requiresApproval = draft.requiresApproval,
+            recurrenceRule = draft.recurrenceRule.code,
+            geoLocation = resolvedGeo,
+            subtaskItems = encodedSubtasks,
+            historyItems = (currentTask.historyItems + StatusHistoryEntry(
+                nowStr,
+                actor.shortName,
+                currentTask.status,
+                "Задача отредактирована: «$cleanTitle»"
+            ).encode()).takeLast(50)
+        )
+            .withUpdatedVolume(resolvedTaskTargetVol, resolvedTaskCompletedVol, resolvedTaskUnit)
+            .withUpdatedAssignees(allAssigneeIds, allAssigneeFullNames)
+
+        val newlySpawnedTasks = mutableListOf<TaskDocument>()
+        val updatedSeriesTasks = mutableListOf<TaskDocument>()
+
+        val currentSeriesId = currentTask.recurrenceSeriesId
+        if (currentSeriesId == null && draft.recurrenceRule != RecurrenceRule.NONE) {
+            // Преобразование одиночной задачи в повторяющуюся: планируем будущие даты в календаре
+            val newSeriesId = "ser_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+            editedTask = editedTask.withRecurrenceSeries(newSeriesId, draft.recurrenceRule)
+
+            val freshEncodedSubtasks = mergedSubtasks.map {
+                it.copy(isDone = false, completedVolume = 0.0).encode()
+            }
+            val futureDays = draft.recurrenceRule
+                .generateOccurrenceEpochDays(draft.dueDateEpochDay)
+                .filter { it > draft.dueDateEpochDay }
+            futureDays.forEach { futureDay ->
+                val futureId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
+                val futureTask = TaskDocument(
+                    id = futureId,
+                    userId = effectiveUserId,
+                    title = cleanTitle,
+                    description = draft.description.trim(),
+                    creatorId = currentTask.creatorId.ifBlank { actor.id },
+                    creatorName = currentTask.creatorName.ifBlank { actor.fullName },
+                    assigneeId = assignee.id,
+                    assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
+                    groupId = assignee.groupId,
+                    groupName = assignee.groupName,
+                    siteId = assignee.siteId,
+                    priority = draft.priority.code,
+                    status = TaskStatus.NEW.code,
+                    dueDateEpochDay = futureDay,
+                    originalDueDateEpochDay = futureDay,
+                    deadlineTime = draft.deadlineTime.ifBlank { "18:00" },
+                    carryoverCount = 0L,
+                    requiresPhotoReport = draft.requiresPhotoReport,
+                    minPhotoCount = resolvedMinPhotos,
+                    requiresApproval = draft.requiresApproval,
+                    recurrenceRule = draft.recurrenceRule.code,
+                    targetVolume = resolvedTaskTargetVol,
+                    completedVolume = 0.0,
+                    volumeUnit = resolvedTaskUnit,
+                    tags = emptyList(),
+                    subtaskItems = freshEncodedSubtasks,
+                    photoItems = emptyList(),
+                    commentItems = emptyList(),
+                    historyItems = listOf(
+                        StatusHistoryEntry(
+                            nowStr,
+                            actor.shortName,
+                            TaskStatus.NEW.code,
+                            "Добавлено по графику «${draft.recurrenceRule.titleRu}» при редактировании"
+                        ).encode()
+                    ),
+                    geoLocation = resolvedGeo
+                )
+                    .withUpdatedVolume(resolvedTaskTargetVol, 0.0, resolvedTaskUnit)
+                    .withUpdatedAssignees(allAssigneeIds, allAssigneeFullNames)
+                    .withRecurrenceSeries(newSeriesId, draft.recurrenceRule)
+                    .withUpdatedRevision()
+                newlySpawnedTasks.add(futureTask)
+            }
+        } else if (draft.applyToFutureSeries && currentSeriesId != null) {
+            val knownTasksMap = LinkedHashMap<String, TaskDocument>()
+            (tasksState.value as? UiState.Success)?.data.orEmpty().forEach { t ->
+                if (t.id.isNotBlank()) knownTasksMap[t.id] = t
+            }
+            _localTasks.value.forEach { t ->
+                if (t.id.isNotBlank()) knownTasksMap[t.id] = t
+            }
+            knownTasksMap.values.forEach { sibling ->
+                if (sibling.id != currentTask.id &&
+                    sibling.recurrenceSeriesId == currentSeriesId &&
+                    sibling.dueDateEpochDay >= currentTask.dueDateEpochDay &&
+                    sibling.taskStatus != TaskStatus.APPROVED &&
+                    sibling.taskStatus != TaskStatus.ARCHIVED
+                ) {
+                    val siblingPrevSubtasks = sibling.decodedSubtasks().associateBy { it.id }
+                    val siblingSubtasks = mergedSubtasks.map { editedSub ->
+                        val prevSib = siblingPrevSubtasks[editedSub.id]
+                        val comp = prevSib?.completedVolume?.coerceAtLeast(0.0) ?: 0.0
+                        editedSub.copy(
+                            completedVolume = comp,
+                            isDone = comp >= editedSub.effectiveTargetVolume
+                        )
+                    }
+                    val sibTarget = if (siblingSubtasks.isNotEmpty()) {
+                        siblingSubtasks.sumOf { it.effectiveTargetVolume }
+                    } else {
+                        resolvedTaskTargetVol
+                    }
+                    val sibCompleted = if (siblingSubtasks.isNotEmpty()) {
+                        siblingSubtasks.sumOf { it.effectiveCompletedVolume }
+                    } else if (sibTarget > 0.0) {
+                        sibling.effectiveCompletedVolume.coerceIn(0.0, sibTarget)
+                    } else {
+                        0.0
+                    }
+                    val updatedSibling = sibling.copy(
+                        title = cleanTitle,
+                        description = draft.description.trim(),
+                        assigneeId = assignee.id,
+                        assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
+                        groupId = assignee.groupId,
+                        groupName = assignee.groupName,
+                        siteId = assignee.siteId,
+                        priority = draft.priority.code,
+                        deadlineTime = draft.deadlineTime.ifBlank { "18:00" },
+                        requiresPhotoReport = draft.requiresPhotoReport,
+                        minPhotoCount = resolvedMinPhotos,
+                        requiresApproval = draft.requiresApproval,
+                        recurrenceRule = draft.recurrenceRule.code,
+                        geoLocation = resolvedGeo,
+                        subtaskItems = siblingSubtasks.map { it.encode() },
+                        historyItems = (sibling.historyItems + StatusHistoryEntry(
+                            nowStr,
+                            actor.shortName,
+                            sibling.status,
+                            "Обновлено серией (${actor.shortName})"
+                        ).encode()).takeLast(50)
+                    )
+                        .withUpdatedVolume(sibTarget, sibCompleted, resolvedTaskUnit)
+                        .withUpdatedAssignees(allAssigneeIds, allAssigneeFullNames)
+                        .let {
+                            if (draft.recurrenceRule == RecurrenceRule.NONE) {
+                                it.withRecurrenceSeries("", RecurrenceRule.NONE)
+                            } else {
+                                it.withRecurrenceSeries(currentSeriesId, draft.recurrenceRule)
+                            }
+                        }
+                        .withUpdatedRevision()
+                    updatedSeriesTasks.add(updatedSibling)
+                }
+            }
+        }
+
+        val stampedEdited = editedTask.withUpdatedRevision()
+        val allModified = listOf(stampedEdited) + updatedSeriesTasks
+        val allToPersist = allModified + newlySpawnedTasks
+
+        if (newlySpawnedTasks.isNotEmpty()) {
+            markTaskEventKeysSeen(newlySpawnedTasks.map { taskEventKeyNew(it.id) })
+        }
+        allToPersist.forEach { markTaskPendingCloudSync(it.id) }
+        upsertLocalTasks(allToPersist)
+
+        if (_selectedFilter.value == TaskFilterTab.CALENDAR_DATE) {
+            _selectedCalendarEpochDay.value = stampedEdited.dueDateEpochDay
+        }
+
+        appendLocalAudit(
+            actor = actor,
+            actionType = "EDIT_TASK",
+            targetType = "TASK",
+            targetId = stampedEdited.id,
+            details = "Отредактирована задача «$cleanTitle» (исп.: $allAssigneeShortNames)"
+        )
+
+        _bannerMessage.value = when {
+            newlySpawnedTasks.isNotEmpty() ->
+                "Задача «$cleanTitle» обновлена (+${newlySpawnedTasks.size} дат по графику «${draft.recurrenceRule.titleRu}»)"
+            updatedSeriesTasks.isNotEmpty() ->
+                "Обновлено задач в серии: ${allModified.size}"
+            else ->
+                "Задача «$cleanTitle» обновлена"
+        }
+
+        viewModelScope.launch {
+            if (isCloudAuthenticated) {
+                allModified.forEach { modTask ->
+                    val res = repository.upsertTaskInFirestore(modTask)
+                    if (res.isSuccess) {
+                        clearTaskPendingCloudSync(modTask.id)
+                    }
+                }
+                if (newlySpawnedTasks.isNotEmpty()) {
+                    val batchRes = repository.createTasksBatch(actor, newlySpawnedTasks)
+                    if (batchRes.isSuccess) {
+                        newlySpawnedTasks.forEach { clearTaskPendingCloudSync(it.id) }
+                    }
                 }
             }
         }

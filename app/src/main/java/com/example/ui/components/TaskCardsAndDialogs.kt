@@ -440,6 +440,7 @@ fun TaskDetailDialog(
     onRejectReport: (reason: String) -> Unit,
     onArchiveTask: () -> Unit,
     onDeleteTask: () -> Unit = {},
+    onEditTask: () -> Unit = {},
     cloudPhotoCacheVersion: Int = 0,
     isUploadingPhotosToCloud: Boolean = false,
     isHydratingCloudPhotos: Boolean = false,
@@ -455,8 +456,11 @@ fun TaskDetailDialog(
     var photoComment by remember { mutableStateOf("") }
     val photoGps = remember(task.geoLocation) { task.geoLocation ?: "Участок №1" }
     val canReassignTask = activeEmployee.role.canAssignToOtherEmployees()
+    val canEditThisTask = remember(task, activeEmployee) {
+        task.canBeEditedBy(activeEmployee)
+    }
     val canDeleteThisTask = activeEmployee.role != com.example.data.model.CorporateRole.WORKER ||
-        task.creatorId == activeEmployee.id
+        task.canBeDeletedBy(activeEmployee)
     var detailItrAssigneeFilterBySubdivision by remember {
         mutableStateOf(activeEmployee.role == com.example.data.model.CorporateRole.ITR)
     }
@@ -797,11 +801,26 @@ fun TaskDetailDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
+                            if (canEditThisTask) {
+                                IconButton(
+                                    onClick = onEditTask,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .testTag("dialog_edit_task_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Редактировать задачу",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                             if (canDeleteThisTask) {
                                 IconButton(
                                     onClick = { showDeleteConfirm = true },
                                     modifier = Modifier
-                                        .size(40.dp)
+                                        .size(44.dp)
                                         .testTag("dialog_delete_task_button")
                                 ) {
                                     Icon(
@@ -814,7 +833,7 @@ fun TaskDetailDialog(
                             }
                             IconButton(
                                 onClick = onDismiss,
-                                modifier = Modifier.size(40.dp)
+                                modifier = Modifier.size(44.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
@@ -1226,6 +1245,28 @@ fun TaskDetailDialog(
                                         text = task.geoLocation,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            if (task.recurrence != RecurrenceRule.NONE) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Repeat,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        text = "Повтор: ${task.recurrence.titleRu}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.primary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -2880,14 +2921,16 @@ fun CreateTaskDialog(
     existingTasks: List<TaskDocument> = emptyList(),
     currentEpochDay: Long,
     initialDueDateEpochDay: Long = currentEpochDay,
+    editingTask: TaskDocument? = null,
     onDismiss: () -> Unit,
     onCreate: (TaskDraft) -> Unit
 ) {
     val tokens = LocalAppThemeTokens.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val isEditMode = editingTask != null
 
-    var itrAssigneeFilterBySubdivision by remember {
-        mutableStateOf(activeEmployee.role == com.example.data.model.CorporateRole.ITR)
+    var itrAssigneeFilterBySubdivision by remember(editingTask?.id) {
+        mutableStateOf(activeEmployee.role == com.example.data.model.CorporateRole.ITR && editingTask == null)
     }
     val assignees = remember(availableEmployees, activeEmployee, itrAssigneeFilterBySubdivision) {
         if (!activeEmployee.role.canAssignToOtherEmployees()) {
@@ -2915,48 +2958,134 @@ fun CreateTaskDialog(
         }
     }
 
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
+    var title by remember(editingTask?.id) { mutableStateOf(editingTask?.title.orEmpty()) }
+    var description by remember(editingTask?.id) { mutableStateOf(editingTask?.description.orEmpty()) }
 
-    val selectedAssigneeIds = remember(assignees) {
-        mutableStateListOf(assignees.first().id)
+    val initialMatchedAssigneeIds = remember(editingTask?.id, assignees) {
+        if (editingTask == null) {
+            listOf(assignees.first().id)
+        } else {
+            assignees.filter { editingTask.isAssignedToEmployee(it) }.map { it.id }
+        }
+    }
+    val selectedAssigneeIds = remember(editingTask?.id, assignees) {
+        mutableStateListOf<String>().apply {
+            addAll(initialMatchedAssigneeIds.ifEmpty { listOf(assignees.first().id) }.distinct())
+        }
     }
     val selectedAssignees = remember(assignees, selectedAssigneeIds.toList()) {
         assignees.filter { it.id in selectedAssigneeIds }.ifEmpty { listOf(assignees.first()) }
     }
     val selectedAssignee = selectedAssignees.first()
-    var useCustomAssigneeName by remember { mutableStateOf(false) }
-    var customAssigneeName by remember { mutableStateOf("") }
-    var assigneeSearchQuery by remember { mutableStateOf("") }
+    var useCustomAssigneeName by remember(editingTask?.id) {
+        mutableStateOf(
+            editingTask != null &&
+                initialMatchedAssigneeIds.isEmpty() &&
+                editingTask.assigneeName.isNotBlank()
+        )
+    }
+    var customAssigneeName by remember(editingTask?.id) {
+        mutableStateOf(
+            if (editingTask != null && initialMatchedAssigneeIds.isEmpty()) {
+                editingTask.assigneeName
+            } else {
+                ""
+            }
+        )
+    }
+    var assigneeSearchQuery by remember(editingTask?.id) { mutableStateOf("") }
 
-    var selectedPriority by remember { mutableStateOf(TaskPriority.MEDIUM) }
-    var selectedDueEpochDay by remember(initialDueDateEpochDay) { mutableStateOf(initialDueDateEpochDay) }
-    var calendarExpanded by remember { mutableStateOf(false) }
-    var displayedMonthOffset by remember { mutableIntStateOf(0) }
-    var deadlineTime by remember { mutableStateOf("18:00") }
+    val resolvedInitialDueDay = editingTask?.dueDateEpochDay ?: initialDueDateEpochDay
+    val initialMonthOffset = remember(currentEpochDay, resolvedInitialDueDay) {
+        val baseYm = java.time.YearMonth.from(java.time.LocalDate.ofEpochDay(currentEpochDay))
+        val targetYm = java.time.YearMonth.from(java.time.LocalDate.ofEpochDay(resolvedInitialDueDay))
+        java.time.temporal.ChronoUnit.MONTHS.between(baseYm, targetYm).toInt()
+    }
 
-    var requiresPhoto by remember { mutableStateOf(true) }
-    var minPhotoCountText by remember { mutableStateOf("1") }
+    var selectedPriority by remember(editingTask?.id) {
+        mutableStateOf(editingTask?.taskPriority ?: TaskPriority.MEDIUM)
+    }
+    var selectedDueEpochDay by remember(editingTask?.id, initialDueDateEpochDay) {
+        mutableStateOf(resolvedInitialDueDay)
+    }
+    var calendarExpanded by remember(editingTask?.id) { mutableStateOf(false) }
+    var displayedMonthOffset by remember(editingTask?.id, initialMonthOffset) {
+        mutableIntStateOf(initialMonthOffset)
+    }
+    var deadlineTime by remember(editingTask?.id) {
+        mutableStateOf(editingTask?.deadlineTime?.ifBlank { "18:00" } ?: "18:00")
+    }
+
+    var requiresPhoto by remember(editingTask?.id) {
+        mutableStateOf(editingTask?.requiresPhotoReport ?: true)
+    }
+    var minPhotoCountText by remember(editingTask?.id) {
+        mutableStateOf((editingTask?.minPhotoCount?.toInt()?.coerceAtLeast(1) ?: 1).toString())
+    }
 
     // Единый блок: либо этапы чек-листа, либо общий плановый объём
-    val draftChecklistItems = remember { mutableStateListOf<SubtaskItem>() }
-    var draftItemTitle by remember { mutableStateOf("") }
-    var draftItemVolText by remember { mutableStateOf("10") }
-    var draftItemUnit by remember { mutableStateOf("шт") }
-    var draftUnitMenuExpanded by remember { mutableStateOf(false) }
+    val initialEditSubtasks = remember(editingTask?.id) {
+        editingTask?.decodedSubtasks().orEmpty()
+    }
+    val initialEditHasSingleVolume = remember(editingTask?.id, initialEditSubtasks) {
+        editingTask != null && initialEditSubtasks.isEmpty() && editingTask.effectiveTargetVolume > 0.0
+    }
+    val initialEditUnit = remember(editingTask?.id) {
+        editingTask?.effectiveVolumeUnit?.ifBlank { "шт" } ?: "шт"
+    }
+    val draftChecklistItems = remember(editingTask?.id) {
+        mutableStateListOf<SubtaskItem>().apply { addAll(initialEditSubtasks) }
+    }
+    var draftItemTitle by remember(editingTask?.id) { mutableStateOf("") }
+    var draftItemVolText by remember(editingTask?.id) { mutableStateOf("10") }
+    var draftItemUnit by remember(editingTask?.id) { mutableStateOf("шт") }
+    var draftUnitMenuExpanded by remember(editingTask?.id) { mutableStateOf(false) }
 
-    var hasVolumeRequirement by remember { mutableStateOf(false) }
-    var targetVolumeText by remember { mutableStateOf("") }
-    var selectedUnit by remember { mutableStateOf("шт") }
-    var isCustomUnitSelected by remember { mutableStateOf(false) }
-    var customUnitText by remember { mutableStateOf("") }
+    var hasVolumeRequirement by remember(editingTask?.id) {
+        mutableStateOf(initialEditHasSingleVolume)
+    }
+    var targetVolumeText by remember(editingTask?.id) {
+        mutableStateOf(
+            if (initialEditHasSingleVolume && editingTask != null) {
+                SubtaskItem.formatVolumeNumber(editingTask.effectiveTargetVolume)
+            } else {
+                ""
+            }
+        )
+    }
+    var selectedUnit by remember(editingTask?.id) {
+        mutableStateOf(if (initialEditUnit in STANDARD_VOLUME_UNITS) initialEditUnit else "шт")
+    }
+    var isCustomUnitSelected by remember(editingTask?.id) {
+        mutableStateOf(initialEditUnit !in STANDARD_VOLUME_UNITS)
+    }
+    var customUnitText by remember(editingTask?.id) {
+        mutableStateOf(if (initialEditUnit !in STANDARD_VOLUME_UNITS) initialEditUnit else "")
+    }
 
     // Layer 1 active quick-chip section & Layer 2 progressive disclosure
-    var activeSection by remember { mutableStateOf<CreateSheetSection?>(null) }
-    var showMoreOptions by remember { mutableStateOf(false) }
-    var requiresApproval by remember { mutableStateOf(true) }
-    var selectedRecurrence by remember { mutableStateOf(RecurrenceRule.NONE) }
-    var geoLocation by remember { mutableStateOf(activeEmployee.siteName) }
+    var activeSection by remember(editingTask?.id) { mutableStateOf<CreateSheetSection?>(null) }
+    var requiresApproval by remember(editingTask?.id) {
+        mutableStateOf(editingTask?.requiresApproval ?: true)
+    }
+    var selectedRecurrence by remember(editingTask?.id) {
+        mutableStateOf(editingTask?.recurrence ?: RecurrenceRule.NONE)
+    }
+    var applyToFutureSeries by remember(editingTask?.id) { mutableStateOf(false) }
+    var geoLocation by remember(editingTask?.id) {
+        mutableStateOf(editingTask?.geoLocation ?: activeEmployee.siteName)
+    }
+    var showMoreOptions by remember(editingTask?.id) {
+        mutableStateOf(
+            editingTask != null && (
+                editingTask.description.isNotBlank() ||
+                    editingTask.taskPriority != TaskPriority.MEDIUM ||
+                    editingTask.recurrence != RecurrenceRule.NONE ||
+                    !editingTask.requiresApproval ||
+                    editingTask.recurrenceSeriesId != null
+                )
+        )
+    }
 
     val formScrollState = rememberScrollState()
 
@@ -3027,7 +3156,8 @@ fun CreateTaskDialog(
                 volumeUnit = resolvedUnitFromTask,
                 tags = emptyList(),
                 subtasks = encodedSubtasks,
-                geoLocation = geoLocation.trim()
+                geoLocation = geoLocation.trim(),
+                applyToFutureSeries = applyToFutureSeries
             )
         )
         onDismiss()
@@ -3040,14 +3170,15 @@ fun CreateTaskDialog(
         alpha = if (tokens.isDark) 0.24f else 0.34f
     )
 
-    val dueChipLabel = remember(selectedDueEpochDay, currentEpochDay, deadlineTime) {
+    val dueChipLabel = remember(selectedDueEpochDay, currentEpochDay, deadlineTime, selectedRecurrence) {
         val dayPart = when (selectedDueEpochDay) {
             currentEpochDay -> "Сегодня"
             currentEpochDay + 1L -> "Завтра"
             currentEpochDay - 1L -> "Вчера"
             else -> ReportDocumentGenerator.formatEpochDay(selectedDueEpochDay).take(5)
         }
-        "$dayPart, ${deadlineTime.ifBlank { "18:00" }}"
+        val base = "$dayPart, ${deadlineTime.ifBlank { "18:00" }}"
+        if (selectedRecurrence != RecurrenceRule.NONE) "$base · ${selectedRecurrence.titleRu}" else base
     }
 
     val assigneeChipLabel = remember(
@@ -3116,7 +3247,7 @@ fun CreateTaskDialog(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Новая задача",
+                        text = if (isEditMode) "Редактировать задачу" else "Новая задача",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -3714,7 +3845,11 @@ fun CreateTaskDialog(
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.size(16.dp)
                                         )
-                                        listOf("12:00", "16:00", "18:00", "20:00").forEach { tPreset ->
+                                        val timePresets = remember(deadlineTime) {
+                                            (listOf("09:00", "12:00", "16:00", "18:00", "20:00") +
+                                                listOfNotNull(deadlineTime.takeIf { it.isNotBlank() })).distinct()
+                                        }
+                                        timePresets.forEach { tPreset ->
                                             val selTime = deadlineTime == tPreset
                                             Surface(
                                                 shape = RoundedCornerShape(50),
@@ -4426,12 +4561,50 @@ fun CreateTaskDialog(
                                     RecurrenceRule.NONE,
                                     RecurrenceRule.DAILY,
                                     RecurrenceRule.WEEKDAYS,
-                                    RecurrenceRule.WEEKLY
+                                    RecurrenceRule.WEEKLY,
+                                    RecurrenceRule.MONTHLY
                                 ).forEach { rule ->
                                     FilterChip(
                                         selected = selectedRecurrence == rule,
                                         onClick = { selectedRecurrence = rule },
-                                        label = { Text(rule.titleRu, style = MaterialTheme.typography.labelSmall) }
+                                        label = { Text(rule.titleRu, style = MaterialTheme.typography.labelSmall) },
+                                        modifier = Modifier.testTag("recurrence_chip_${rule.code}")
+                                    )
+                                }
+                            }
+                            if (selectedRecurrence != RecurrenceRule.NONE) {
+                                val scheduledDays = remember(selectedRecurrence, selectedDueEpochDay) {
+                                    selectedRecurrence.generateOccurrenceEpochDays(selectedDueEpochDay)
+                                }
+                                Text(
+                                    text = "Будет добавлено в календарь: ${scheduledDays.size} дн. (${ReportDocumentGenerator.formatEpochDay(scheduledDays.first())} – ${ReportDocumentGenerator.formatEpochDay(scheduledDays.last())})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            if (isEditMode && editingTask?.recurrenceSeriesId != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Применить к будущим задачам серии",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Text(
+                                            text = "Обновит все неутверждённые задачи серии от выбранной даты",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = applyToFutureSeries,
+                                        onCheckedChange = { applyToFutureSeries = it },
+                                        modifier = Modifier.testTag("edit_apply_future_series_switch")
                                     )
                                 }
                             }
@@ -4509,7 +4682,7 @@ fun CreateTaskDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Поставить задачу",
+                        text = if (isEditMode) "Сохранить изменения" else "Поставить задачу",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold
                     )

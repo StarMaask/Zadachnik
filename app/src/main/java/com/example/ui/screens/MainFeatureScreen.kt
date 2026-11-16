@@ -288,6 +288,7 @@ fun MainFeatureScreen(
     var showCreateTaskDialog by remember { mutableStateOf(false) }
     var createDialogTargetEpochDay by remember(currentEpochDay) { mutableLongStateOf(currentEpochDay) }
     var selectedTaskId by remember { mutableStateOf<String?>(null) }
+    var taskBeingEdited by remember { mutableStateOf<TaskDocument?>(null) }
     LaunchedEffect(initialTaskId, tasksState) {
         val targetId = initialTaskId?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
         val list = (tasksState as? UiState.Success)?.data ?: emptyList()
@@ -995,12 +996,29 @@ fun MainFeatureScreen(
             onRejectReport = { reason -> viewModel.rejectReport(task, reason) },
             onArchiveTask = { viewModel.archiveTask(task) },
             onDeleteTask = { viewModel.deleteTask(task) },
+            onEditTask = { taskBeingEdited = task },
             cloudPhotoCacheVersion = cloudPhotoCacheVersion,
             isUploadingPhotosToCloud = task.id in uploadingPhotoTaskIds,
             isHydratingCloudPhotos = task.id in hydratingPhotoTaskIds,
             hasCloudPhotoSyncError = task.id in failedPhotoSyncTaskIds,
             onRetryCloudSync = { viewModel.retryOrHydrateTaskPhotos(task.id) },
             onRequestCloudPhotosHydration = { viewModel.hydrateTaskPhotosFromCloud(task) }
+        )
+    }
+
+    taskBeingEdited?.let { editing ->
+        CreateTaskDialog(
+            activeEmployee = activeEmployee,
+            availableEmployees = availableEmployees,
+            existingTasks = roleVisibleTasks,
+            currentEpochDay = currentEpochDay,
+            initialDueDateEpochDay = editing.dueDateEpochDay,
+            editingTask = editing,
+            onDismiss = { taskBeingEdited = null },
+            onCreate = { draft ->
+                viewModel.updateTaskDetails(editing, draft)
+                taskBeingEdited = null
+            }
         )
     }
 

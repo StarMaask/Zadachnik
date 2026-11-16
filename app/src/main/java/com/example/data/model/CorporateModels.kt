@@ -5,6 +5,8 @@ import com.google.firebase.firestore.DocumentId
 import com.google.firebase.firestore.IgnoreExtraProperties
 import com.google.firebase.firestore.ServerTimestamp
 import java.security.MessageDigest
+import java.time.DayOfWeek
+import java.time.LocalDate
 import java.util.Locale
 
 enum class CorporateRole(
@@ -121,6 +123,60 @@ enum class RecurrenceRule(val code: String, val titleRu: String) {
     WEEKLY("WEEKLY", "Еженедельно"),
     MONTHLY("MONTHLY", "Ежемесячно"),
     CUSTOM("CUSTOM", "По спец. графику СМР");
+
+    /**
+     * Возвращает следующую календарную дату (epochDay) после [fromEpochDay] согласно правилу повторения.
+     */
+    fun nextOccurrenceEpochDay(fromEpochDay: Long): Long {
+        return when (this) {
+            NONE -> fromEpochDay
+            DAILY -> fromEpochDay + 1L
+            WEEKDAYS -> {
+                var candidate = fromEpochDay + 1L
+                while (true) {
+                    val dow = LocalDate.ofEpochDay(candidate).dayOfWeek
+                    if (dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY) {
+                        return candidate
+                    }
+                    candidate += 1L
+                }
+                @Suppress("UNREACHABLE_CODE")
+                candidate
+            }
+            WEEKLY -> fromEpochDay + 7L
+            MONTHLY -> LocalDate.ofEpochDay(fromEpochDay).plusMonths(1L).toEpochDay()
+            CUSTOM -> fromEpochDay + 3L
+        }
+    }
+
+    /**
+     * Генерирует список календарных дней (epochDay) от [startEpochDay] на горизонт планирования
+     * для размещения повторяющейся задачи в календаре.
+     */
+    fun generateOccurrenceEpochDays(startEpochDay: Long): List<Long> {
+        return when (this) {
+            NONE -> listOf(startEpochDay)
+            DAILY -> (0L until 30L).map { startEpochDay + it }
+            WEEKDAYS -> {
+                val result = mutableListOf<Long>()
+                for (offset in 0L..44L) {
+                    val candidate = startEpochDay + offset
+                    val dow = LocalDate.ofEpochDay(candidate).dayOfWeek
+                    if (dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY) {
+                        result.add(candidate)
+                        if (result.size >= 30) break
+                    }
+                }
+                result.ifEmpty { listOf(startEpochDay) }
+            }
+            WEEKLY -> (0L until 12L).map { startEpochDay + it * 7L }
+            MONTHLY -> {
+                val startDate = LocalDate.ofEpochDay(startEpochDay)
+                (0L until 6L).map { startDate.plusMonths(it).toEpochDay() }
+            }
+            CUSTOM -> (0L until 10L).map { startEpochDay + it * 3L }
+        }
+    }
 
     companion object {
         fun fromCode(code: String): RecurrenceRule =
@@ -708,8 +764,35 @@ data class TaskDocument(
     @get:com.google.firebase.firestore.Exclude
     val visibleTags: List<String>
         get() = tags.filterNot {
+            it.startsWith("__vol__|") ||
+                it.startsWith("__asgn__|") ||
+                it.startsWith("__rev__|") ||
+                it.startsWith("__rec__|")
+        }
+
+    @get:com.google.firebase.firestore.Exclude
+    val recurrenceSeriesId: String?
+        get() = tags.firstOrNull { it.startsWith("__rec__|") }
+            ?.split("|")
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+
+    fun withRecurrenceSeries(seriesId: String, rule: RecurrenceRule): TaskDocument {
+        val cleanSeries = seriesId.trim().replace("|", "").take(32)
+        if (cleanSeries.isBlank() || rule == RecurrenceRule.NONE) {
+            return copy(tags = tags.filterNot { it.startsWith("__rec__|") })
+        }
+        val nonRecTags = tags.filterNot { it.startsWith("__rec__|") }
+        val recTag = "__rec__|$cleanSeries|${rule.code}"
+        val internalTags = nonRecTags.filter {
             it.startsWith("__vol__|") || it.startsWith("__asgn__|") || it.startsWith("__rev__|")
         }
+        val userTags = nonRecTags.filterNot {
+            it.startsWith("__vol__|") || it.startsWith("__asgn__|") || it.startsWith("__rev__|")
+        }
+        return copy(tags = (internalTags + listOf(recTag) + userTags).take(10))
+    }
 
     @get:com.google.firebase.firestore.Exclude
     val revisionTimestamp: Long
@@ -1214,6 +1297,54 @@ data class TaskDocument(
         }
         return false
     }
+
+    /**
+     * Проверяет, является ли [employee] автором (создателем) задачи с учётом канонического ID.
+     */
+    fun isCreatedBy(employee: CorporateEmployee): Boolean {
+        val empIdClean = employee.id.trim()
+        val empCanonicalId = SiteMemberDocument.canonicalMemberId(employee.id, employee.email).trim()
+        val creatorIdClean = creatorId.trim()
+        val creatorCanonical = if (creatorIdClean.isNotBlank()) {
+            SiteMemberDocument.canonicalMemberId(creatorIdClean, "").trim()
+        } else {
+            ""
+        }
+        if (creatorIdClean.isNotBlank()) {
+            if (empIdClean.isNotBlank() && creatorIdClean.equals(empIdClean, ignoreCase = true)) {
+                return true
+            }
+            if (empCanonicalId.isNotBlank() &&
+                (creatorIdClean.equals(empCanonicalId, ignoreCase = true) ||
+                    creatorCanonical.equals(empCanonicalId, ignoreCase = true))
+            ) {
+                return true
+            }
+        }
+        if (creatorIdClean.isBlank() && creatorName.isNotBlank()) {
+            val cName = creatorName.trim()
+            return cName.equals(employee.fullName.trim(), ignoreCase = true) ||
+                (employee.shortName.isNotBlank() &&
+                    employee.shortName != "Сотрудник" &&
+                    cName.equals(employee.shortName.trim(), ignoreCase = true))
+        }
+        return false
+    }
+
+    /**
+     * Редактировать задачу имеет право её создатель или Администратор (все права).
+     */
+    fun canBeEditedBy(employee: CorporateEmployee): Boolean {
+        if (taskStatus == TaskStatus.ARCHIVED) return false
+        return employee.role == CorporateRole.ADMIN || isCreatedBy(employee)
+    }
+
+    /**
+     * Удалить задачу имеет право её создатель или Администратор (все права).
+     */
+    fun canBeDeletedBy(employee: CorporateEmployee): Boolean {
+        return employee.role == CorporateRole.ADMIN || isCreatedBy(employee)
+    }
 }
 
 @IgnoreExtraProperties
@@ -1288,7 +1419,8 @@ data class TaskDraft(
     val volumeUnit: String = "",
     val tags: List<String>,
     val subtasks: List<String>,
-    val geoLocation: String
+    val geoLocation: String,
+    val applyToFutureSeries: Boolean = false
 )
 
 data class EmployeeDisciplineStat(

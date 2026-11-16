@@ -1212,6 +1212,44 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         docRef.id
     }
 
+    suspend fun createTasksBatch(
+        actor: CorporateEmployee,
+        tasks: List<TaskDocument>
+    ): Result<Int> = runCatching {
+        val uid = requireUserId()
+        if (tasks.isEmpty()) return@runCatching 0
+
+        tasks.chunked(400).forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { task ->
+                val docId = task.id.replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+                    .take(64)
+                    .ifBlank { "task_${UUID.randomUUID().toString().replace("-", "").take(16)}" }
+                val docRef = db.collection("tasks").document(docId)
+                batch.set(docRef, taskToCreatePayload(uid, task))
+            }
+            try {
+                batch.commit().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.CREATE, "tasks/batch")
+                throw e
+            }
+        }
+
+        val firstTask = tasks.first()
+        appendAuditLog(
+            uid = uid,
+            actor = actor,
+            actionType = "CREATE_RECURRING_SERIES",
+            targetType = "TASK",
+            targetId = firstTask.id.ifBlank { "series" },
+            details = "Поставлена повторяющаяся задача «${firstTask.title}» (${firstTask.recurrence.titleRu}, ${tasks.size} дат)"
+        )
+        tasks.size
+    }
+
     suspend fun deleteTask(
         actor: CorporateEmployee,
         task: TaskDocument
@@ -1837,26 +1875,22 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
             }
         }
 
-        // Spawn next instance if recurring task
-        if (task.recurrence != RecurrenceRule.NONE) {
-            val deltaDays = when (task.recurrence) {
-                RecurrenceRule.DAILY, RecurrenceRule.WEEKDAYS -> 1L
-                RecurrenceRule.WEEKLY -> 7L
-                RecurrenceRule.MONTHLY -> 30L
-                RecurrenceRule.CUSTOM -> 3L
-                RecurrenceRule.NONE -> 0L
-            }
-            if (deltaDays > 0L) {
-                val nextEpochDay = task.dueDateEpochDay + deltaDays
+        // Spawn next instance only for legacy recurring tasks without a pre-scheduled calendar series
+        if (task.recurrence != RecurrenceRule.NONE && task.recurrenceSeriesId == null) {
+            val nextEpochDay = task.recurrence.nextOccurrenceEpochDay(task.dueDateEpochDay)
+            if (nextEpochDay > task.dueDateEpochDay) {
                 val nextDocRef = db.collection("tasks")
                     .document("rec_${UUID.randomUUID().toString().replace("-", "").take(14)}")
-                val resetSubtasks = task.decodedSubtasks().map { it.copy(isDone = false).encode() }
+                val resetSubtasks = task.decodedSubtasks().map {
+                    it.copy(isDone = false, completedVolume = 0.0).encode()
+                }
                 val nextTask = task.copy(
                     id = "",
                     status = TaskStatus.NEW.code,
                     dueDateEpochDay = nextEpochDay,
                     originalDueDateEpochDay = nextEpochDay,
                     carryoverCount = 0L,
+                    completedVolume = 0.0,
                     subtaskItems = resetSubtasks,
                     photoItems = emptyList(),
                     commentItems = emptyList(),

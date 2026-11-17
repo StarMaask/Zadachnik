@@ -18,88 +18,98 @@ data class RpgOperationResult(
 object RpgProgressionEngine {
 
     val skillCatalog: List<SkillDefinition> = listOf(
-        // 1. Профессионализм
+        // 1. Физический труд и монтаж (КИПиА, кабели, шкафы)
         SkillDefinition(
-            id = "sk_prof_speed",
+            id = "sk_phys_montage",
             branch = SkillBranch.PROFESSIONAL,
-            titleRu = "Оперативный расчёт",
-            descriptionRu = "+2% к XP за закрытые наряды любой сложности за каждый уровень",
+            titleRu = "Монтаж без мата и кувалды",
+            descriptionRu = "+2% к XP за безупречный силовой и кабельный монтаж в щитах АСУТП",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
             prerequisiteSkillId = null
         ),
         SkillDefinition(
-            id = "sk_prof_emergency",
+            id = "sk_phys_cable",
             branch = SkillBranch.PROFESSIONAL,
-            titleRu = "Кризис-инженер",
-            descriptionRu = "+3% к XP при выполнении критических и аварийных задач",
+            titleRu = "Кабельный ниндзя (прозвонка)",
+            descriptionRu = "+3% к XP за быструю расшивку и отсутствие КЗ в кабельных линиях",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_prof_speed"
+            prerequisiteSkillId = "sk_phys_montage"
         ),
-        // 2. Качество и фотоотчёт
+        // 2. Умственный труд: электрика, электроника и ПЛК
         SkillDefinition(
-            id = "sk_qual_photo",
+            id = "sk_mind_plc",
             branch = SkillBranch.QUALITY,
-            titleRu = "Образцовый фотоотчёт",
-            descriptionRu = "+2% к XP за задачи с подтверждённым фотоотчётом",
+            titleRu = "Заклинатель ПЛК и SCADA",
+            descriptionRu = "+2% к XP за пусконаладку контроллеров и безглючный софт",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
             prerequisiteSkillId = null
         ),
         SkillDefinition(
-            id = "sk_qual_firstpass",
+            id = "sk_mind_logic",
             branch = SkillBranch.QUALITY,
-            titleRu = "С первого предъявления",
-            descriptionRu = "+3% к XP за приёмку с 1-го раза без возвратов",
+            titleRu = "Осциллограф головного мозга",
+            descriptionRu = "+3% к XP за точный поиск плавающих сбоев в аналоговых цепях 4-20мА",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_qual_photo"
+            prerequisiteSkillId = "sk_mind_plc"
         ),
-        // 3. Командная работа
+        // 3. Документация и исполнительные схемы
         SkillDefinition(
-            id = "sk_team_brigade",
+            id = "sk_doc_bureau",
             branch = SkillBranch.TEAM,
-            titleRu = "Синергия бригады",
-            descriptionRu = "+2% к XP в групповых задачах нескольких исполнителей",
+            titleRu = "Властелин ГОСТов и ПУЭ",
+            descriptionRu = "+2% к XP за исполнительную документацию, сданную с 1-го раза",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
             prerequisiteSkillId = null
         ),
         SkillDefinition(
-            id = "sk_team_support",
+            id = "sk_doc_act",
             branch = SkillBranch.TEAM,
-            titleRu = "Надежное плечо",
-            descriptionRu = "+2% к XP и защита репутации при сложных сменах",
+            titleRu = "Печать одобрения бюрократа",
+            descriptionRu = "+3% к XP за акты ТУ и допуски Ростехнадзора без замечаний",
             maxLevel = 5,
-            xpBonusPercentPerLevel = 2,
-            prerequisiteSkillId = "sk_team_brigade"
+            xpBonusPercentPerLevel = 3,
+            prerequisiteSkillId = "sk_doc_bureau"
         ),
-        // 4. ТБ и дисциплина
+        // 4. ТБ, дисциплина и тонкий юмор за косяки
         SkillDefinition(
-            id = "sk_safe_deadline",
+            id = "sk_safe_pue",
             branch = SkillBranch.SAFETY,
-            titleRu = "Точность дедлайнов",
-            descriptionRu = "+2% к XP за выполнение строго в срок",
+            titleRu = "Выжил после 380В",
+            descriptionRu = "+2% к XP за соблюдение ПУЭ и ТБ (инстинкт самосохранения 80 lvl)",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
             prerequisiteSkillId = null
         ),
         SkillDefinition(
-            id = "sk_safe_streak",
+            id = "sk_safe_humor",
             branch = SkillBranch.SAFETY,
-            titleRu = "Железный регламент",
-            descriptionRu = "+3% к XP при активной серии смен без просрочек",
+            titleRu = "Иммунитет к изоленте",
+            descriptionRu = "+3% к XP за отказ от синей изоленты в пользу пайки и клемм WAGO",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_safe_deadline"
+            prerequisiteSkillId = "sk_safe_pue"
         ),
-        // 5. Лидерство и приёмка
+        // 5. Специализации будущих служб (ОГЭ, ОГМ, ОЭН) и Лидерство
         SkillDefinition(
-            id = "sk_lead_review",
+            id = "sk_spec_oge",
             branch = SkillBranch.LEADERSHIP,
-            titleRu = "Технический надзор",
-            descriptionRu = "+2% к XP за оперативную проверку отчётов команды",
+            titleRu = "Энергия трансформаторов (ОГЭ)",
+            descriptionRu = "+2% к XP за режим работы электроустановок и КУ",
+            maxLevel = 5,
+            xpBonusPercentPerLevel = 2,
+            prerequisiteSkillId = null,
+            minRoleWeight = CorporateRole.ITR.hierarchyWeight
+        ),
+        SkillDefinition(
+            id = "sk_spec_ogm",
+            branch = SkillBranch.LEADERSHIP,
+            titleRu = "Механика гидравлики (ОГМ)",
+            descriptionRu = "+2% к XP за ревизию задвижек, насосов и приводов",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
             prerequisiteSkillId = null,
@@ -108,11 +118,11 @@ object RpgProgressionEngine {
         SkillDefinition(
             id = "sk_lead_mentor",
             branch = SkillBranch.LEADERSHIP,
-            titleRu = "Наставник смены",
-            descriptionRu = "+3% к XP за развитие подразделения и наставничество",
+            titleRu = "Дедлайн-терапевт смены",
+            descriptionRu = "+3% к XP за успешный разгон спящих бригад и наставничество",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_lead_review",
+            prerequisiteSkillId = "sk_spec_oge",
             minRoleWeight = CorporateRole.ITR.hierarchyWeight
         )
     )
@@ -395,14 +405,10 @@ object RpgProgressionEngine {
             if (us.level <= 0) return@forEach
             val def = skillCatalog.firstOrNull { it.id == us.skillId } ?: return@forEach
             val applies = when (def.id) {
-                "sk_prof_speed" -> true
-                "sk_prof_emergency" -> priority == TaskPriority.CRITICAL || priority == TaskPriority.EMERGENCY
-                "sk_qual_photo" -> hasPhoto
-                "sk_qual_firstpass" -> firstTry
-                "sk_team_brigade" -> isMultiAssignee
-                "sk_team_support" -> true
-                "sk_safe_deadline" -> true
-                "sk_safe_streak" -> profile.streak.currentDays > 0
+                "sk_phys_montage", "sk_phys_cable", "sk_mind_plc", "sk_mind_logic" -> true
+                "sk_doc_bureau", "sk_doc_act" -> firstTry
+                "sk_safe_pue", "sk_safe_humor" -> true
+                "sk_spec_oge", "sk_spec_ogm", "sk_lead_mentor" -> true
                 else -> false
             }
             if (applies) {

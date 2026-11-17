@@ -1408,8 +1408,8 @@ class ExampleUnitTest {
         // Worker cannot unlock ITR-only Leadership skill
         assertTrue(RpgProgressionEngine.upgradeSkill(state, worker, "sk_lead_review").isFailure)
         // Unlock tier-1 then tier-2 works
-        state = RpgProgressionEngine.upgradeSkill(state, worker, "sk_prof_speed").getOrThrow()
-        state = RpgProgressionEngine.upgradeSkill(state, worker, "sk_prof_emergency").getOrThrow()
+        state = RpgProgressionEngine.upgradeSkill(state, worker, "sk_phys_montage").getOrThrow()
+        state = RpgProgressionEngine.upgradeSkill(state, worker, "sk_phys_cable").getOrThrow()
         assertEquals(3, state.profiles.getValue(worker.id).skillPointsAvailable)
         assertEquals(2, state.profiles.getValue(worker.id).skillPointsSpent)
 

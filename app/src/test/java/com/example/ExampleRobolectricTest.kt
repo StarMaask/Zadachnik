@@ -234,12 +234,13 @@ class ExampleRobolectricTest {
         comment = "Фото #$idx"
       )
       val photoId = "ph_pdf_$idx"
+      val todayDdMm = com.example.domain.reporting.ReportDocumentGenerator.formatEpochDay(today).take(5)
       PhotoReportItem(
         id = photoId,
         uriString = PhotoCaptureUtils.attachCloudDocId(uri, photoId),
         authorId = actor.id,
         authorName = actor.shortName,
-        capturedAtText = "14.11 19:0$idx",
+        capturedAtText = "$todayDdMm 19:0$idx",
         gpsCoords = "УЭСАиТМ",
         comment = "Фотофиксация #$idx"
       ).encode()
@@ -291,6 +292,7 @@ class ExampleRobolectricTest {
     assertEquals("ООО «Транснефть-Балтика», ЛПДС \"Быково\", УЭСАиТМ", generated.orgHeader)
     assertTrue(generated.preparedByLabel.contains("Плиткин Дмитрий Александрович"))
     assertTrue(generated.preparedByLabel.contains("Инженер по КИПиА"))
+    assertTrue(generated.preparedByLabel.contains("ЛПДС \"Быково\""))
     assertTrue(generated.preparedByLabel.contains("Участок: УЭСАиТМ"))
     assertTrue(generated.signatureBlock.first().contains("____________________ (подпись), Плиткин Дмитрий Александрович, Инженер по КИПиА, Участок: УЭСАиТМ"))
   }

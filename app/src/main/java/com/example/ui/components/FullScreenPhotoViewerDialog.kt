@@ -176,7 +176,15 @@ fun FullScreenPhotoDialog(
         mutableStateOf(true)
     }
 
-    LaunchedEffect(activePhoto.id, activePhoto.uriString, taskTitle, cloudPhotoCacheVersion) {
+    val sanitizedActiveGps = remember(activePhoto.gpsCoords, task?.geoLocation, task?.groupName) {
+        com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+            raw = activePhoto.gpsCoords,
+            fallbackSite = task?.geoLocation.orEmpty(),
+            fallbackSubdivision = task?.groupName.orEmpty()
+        )
+    }
+
+    LaunchedEffect(activePhoto.id, activePhoto.uriString, taskTitle, sanitizedActiveGps, cloudPhotoCacheVersion) {
         isDecodingOriginal = true
         val decoded = withContext(Dispatchers.IO) {
             PhotoCaptureUtils.loadOriginalBitmapFromUriOrPath(
@@ -184,7 +192,7 @@ fun FullScreenPhotoDialog(
                 fallbackComment = activePhoto.comment,
                 fallbackAuthor = activePhoto.authorName,
                 fallbackTime = activePhoto.capturedAtText,
-                fallbackGps = activePhoto.gpsCoords,
+                fallbackGps = sanitizedActiveGps,
                 fallbackTaskTitle = taskTitle,
                 context = context,
                 photoId = activePhoto.id
@@ -194,12 +202,12 @@ fun FullScreenPhotoDialog(
         isDecodingOriginal = false
     }
 
-    val effectiveTaskForPdf = remember(task, taskTitle, activePhoto) {
+    val effectiveTaskForPdf = remember(task, taskTitle, activePhoto, sanitizedActiveGps) {
         task ?: TaskDocument(
             id = "photo_report_${activePhoto.id}",
             title = taskTitle.ifBlank { activePhoto.comment.ifBlank { "Фотоотчёт" } },
             assigneeName = activePhoto.authorName,
-            geoLocation = activePhoto.gpsCoords
+            geoLocation = sanitizedActiveGps
         )
     }
 
@@ -609,13 +617,18 @@ fun FullScreenPhotoDialog(
                         ) {
                             effectivePhotos.forEachIndexed { idx, thumbItem ->
                                 val isSelected = idx == currentIndex
-                                val thumbBmp = remember(thumbItem.id, thumbItem.uriString, cloudPhotoCacheVersion) {
+                                val thumbSanitizedGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                                    raw = thumbItem.gpsCoords,
+                                    fallbackSite = task?.geoLocation.orEmpty(),
+                                    fallbackSubdivision = task?.groupName.orEmpty()
+                                )
+                                val thumbBmp = remember(thumbItem.id, thumbItem.uriString, thumbSanitizedGps, cloudPhotoCacheVersion) {
                                     PhotoCaptureUtils.loadBitmapFromUriOrPath(
                                         uriOrPath = thumbItem.uriString,
                                         fallbackComment = thumbItem.comment,
                                         fallbackAuthor = thumbItem.authorName,
                                         fallbackTime = thumbItem.capturedAtText,
-                                        fallbackGps = thumbItem.gpsCoords,
+                                        fallbackGps = thumbSanitizedGps,
                                         fallbackTaskTitle = taskTitle,
                                         context = context,
                                         photoId = thumbItem.id
@@ -664,7 +677,7 @@ fun FullScreenPhotoDialog(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Геометка: ${activePhoto.gpsCoords.ifBlank { "Не указана" }} • Двойной тап или сведение пальцев для масштаба",
+                            text = "Участок / Подразделение: ${sanitizedActiveGps.ifBlank { "Не указано" }} • Двойной тап или сведение пальцев для масштаба",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFF94A3B8),
                             maxLines = 1,

@@ -532,6 +532,24 @@ class EzhednevnikViewModel(
             emit(emptyList())
         }
 
+    private fun sanitizeTaskLocationAndSubdivision(task: TaskDocument): TaskDocument {
+        val fallbackSite = _siteName.value
+        val cleanGroup = CorporateSeedData.sanitizeSubdivisionName(task.groupName)
+        val cleanGeo = CorporateSeedData.sanitizeSiteOrLocation(
+            raw = task.geoLocation,
+            fallbackSite = fallbackSite,
+            fallbackSubdivision = cleanGroup
+        )
+        return if (cleanGroup != task.groupName || cleanGeo != task.geoLocation) {
+            task.copy(
+                groupName = cleanGroup,
+                geoLocation = cleanGeo
+            )
+        } else {
+            task
+        }
+    }
+
     // Локальные задачи и изменения объединяются поверх Firestore и фильтруют удалённые/демо задачи
     val tasksState: StateFlow<UiState<List<TaskDocument>>> = combine(
         firestoreTasksFlow,
@@ -539,7 +557,8 @@ class EzhednevnikViewModel(
         _deletedTaskIds
     ) { remoteTasks, localTasks, deletedIds ->
         val mergedMap = LinkedHashMap<String, TaskDocument>()
-        remoteTasks.forEach { task ->
+        remoteTasks.forEach { rawTask ->
+            val task = sanitizeTaskLocationAndSubdivision(rawTask)
             if (task.id.isNotBlank() &&
                 !CorporateSeedData.isLegacyFakeSeedTaskId(task.id) &&
                 task.id !in deletedIds
@@ -548,7 +567,8 @@ class EzhednevnikViewModel(
             }
         }
         // Объединяем локальные и облачные задачи, выбирая более свежую ревизию по истории/фото/комментариям
-        localTasks.forEach { localTask ->
+        localTasks.forEach { rawLocal ->
+            val localTask = sanitizeTaskLocationAndSubdivision(rawLocal)
             if (localTask.id.isNotBlank() &&
                 !CorporateSeedData.isLegacyFakeSeedTaskId(localTask.id) &&
                 localTask.id !in deletedIds
@@ -557,7 +577,9 @@ class EzhednevnikViewModel(
                 if (remoteTask == null) {
                     mergedMap[localTask.id] = localTask
                 } else {
-                    mergedMap[localTask.id] = mergeTaskRevisions(remoteTask, localTask)
+                    mergedMap[localTask.id] = sanitizeTaskLocationAndSubdivision(
+                        mergeTaskRevisions(remoteTask, localTask)
+                    )
                 }
             }
         }
@@ -2410,7 +2432,11 @@ class EzhednevnikViewModel(
         }
 
         val createdTimeStr = nowText()
-        val resolvedGeo = draft.geoLocation.ifBlank { _siteName.value }
+        val resolvedGeo = CorporateSeedData.sanitizeSiteOrLocation(
+            raw = draft.geoLocation,
+            fallbackSite = assignee.siteName.ifBlank { actor.siteName.ifBlank { _siteName.value } },
+            fallbackSubdivision = assignee.groupName.ifBlank { actor.groupName }
+        )
         val createdTasks = occurrenceDays.mapIndexed { idx, occEpochDay ->
             val taskId = "task_${UUID.randomUUID().toString().replace("-", "").take(14)}"
             val historyNote = if (seriesId != null) {
@@ -2428,7 +2454,7 @@ class EzhednevnikViewModel(
                 assigneeId = assignee.id,
                 assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
                 groupId = assignee.groupId,
-                groupName = assignee.groupName,
+                groupName = CorporateSeedData.sanitizeSubdivisionName(assignee.groupName, actor.groupName),
                 siteId = assignee.siteId,
                 priority = draft.priority.code,
                 status = TaskStatus.NEW.code,
@@ -2465,10 +2491,19 @@ class EzhednevnikViewModel(
 
         val firstTask = createdTasks.first()
 
-        // Мгновенно сохраняем все запланированные экземпляры локально и подавляем само-уведомление
+        // Сохраняем запланированные экземпляры и отправляем системное оповещение о назначении задачи
         markTaskEventKeysSeen(createdTasks.map { taskEventKeyNew(it.id) })
         createdTasks.forEach { markTaskPendingCloudSync(it.id) }
         upsertLocalTasks(createdTasks)
+        postSystemNotificationForTaskEvent(
+            TaskNotificationEvent(
+                eventKey = "local_assign_${firstTask.id}",
+                taskId = firstTask.id,
+                type = TaskNotificationType.TASK_ASSIGNED,
+                title = "Назначена задача",
+                body = "«$cleanTitle» • Исполнитель: $allAssigneeShortNames • Срок: ${ReportDocumentGenerator.formatEpochDay(firstDay)} до ${firstTask.deadlineTime}"
+            )
+        )
         _searchQuery.value = ""
         _selectedCalendarEpochDay.value = firstDay
 
@@ -2624,7 +2659,11 @@ class EzhednevnikViewModel(
         }
 
         val nowStr = nowText()
-        val resolvedGeo = draft.geoLocation.trim().ifBlank { currentTask.geoLocation ?: _siteName.value }
+        val resolvedGeo = CorporateSeedData.sanitizeSiteOrLocation(
+            raw = draft.geoLocation.trim().ifBlank { currentTask.geoLocation ?: _siteName.value },
+            fallbackSite = assignee.siteName.ifBlank { actor.siteName.ifBlank { _siteName.value } },
+            fallbackSubdivision = assignee.groupName.ifBlank { actor.groupName }
+        )
         val resolvedMinPhotos = if (draft.requiresPhotoReport) draft.minPhotoCount.coerceAtLeast(1).toLong() else 0L
 
         var editedTask = currentTask.copy(
@@ -2633,7 +2672,7 @@ class EzhednevnikViewModel(
             assigneeId = assignee.id,
             assigneeName = allAssigneeFullNames.joinToString(", ").take(120),
             groupId = assignee.groupId,
-            groupName = assignee.groupName,
+            groupName = CorporateSeedData.sanitizeSubdivisionName(assignee.groupName, actor.groupName),
             siteId = assignee.siteId,
             priority = draft.priority.code,
             dueDateEpochDay = draft.dueDateEpochDay,
@@ -2989,6 +3028,11 @@ class EzhednevnikViewModel(
         val actor = activeEmployee.value
         val nowStr = nowText()
         val baseMillis = System.currentTimeMillis()
+        val cleanPhotoGps = CorporateSeedData.sanitizeSiteOrLocation(
+            raw = gpsCoords,
+            fallbackSite = actor.siteName.ifBlank { _siteName.value },
+            fallbackSubdivision = actor.groupName
+        )
         val newPhotoItems = items.mapIndexed { idx, (uriString, comment) ->
             val photoId = "ph_${baseMillis + idx}_${(100..999).random()}"
             val cloudSyncedUri = PhotoCaptureUtils.attachCloudDocId(
@@ -3001,13 +3045,20 @@ class EzhednevnikViewModel(
                 authorId = actor.id,
                 authorName = actor.shortName,
                 capturedAtText = nowStr,
-                gpsCoords = gpsCoords.ifBlank { "Участок №1" },
+                gpsCoords = cleanPhotoGps,
                 comment = comment.ifBlank { "Фотофиксация выполнения" }
             )
         }
         val existingUpgraded = currentTask.decodedPhotos().map { ph ->
             val synced = PhotoCaptureUtils.ensureCloudSyncedUriString(ph.uriString, ph.id)
-            ph.copy(uriString = PhotoCaptureUtils.attachCloudDocId(synced, ph.id))
+            ph.copy(
+                uriString = PhotoCaptureUtils.attachCloudDocId(synced, ph.id),
+                gpsCoords = CorporateSeedData.sanitizeSiteOrLocation(
+                    raw = ph.gpsCoords,
+                    fallbackSite = cleanPhotoGps,
+                    fallbackSubdivision = actor.groupName
+                )
+            )
         }
         val allDecodedPhotos = (existingUpgraded + newPhotoItems)
             .sortedWith(
@@ -3031,12 +3082,6 @@ class EzhednevnikViewModel(
                 nextStatus,
                 "Добавлено фото в отчёт (+${newPhotoItems.size} шт., всего: ${updatedPhotos.size} шт.)"
             ).encode()
-        )
-        markTaskEventKeysSeen(
-            listOf(
-                taskEventKeyReportSubmitted(updatedTask),
-                taskEventKeyApproved(updatedTask)
-            )
         )
         upsertLocalTask(updatedTask)
         _failedPhotoSyncTaskIds.value = _failedPhotoSyncTaskIds.value - updatedTask.id
@@ -3551,6 +3596,15 @@ class EzhednevnikViewModel(
         )
         markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
+        postSystemNotificationForTaskEvent(
+            TaskNotificationEvent(
+                eventKey = "local_complete_${updatedTask.id}_${updatedTask.historyItems.size}",
+                taskId = updatedTask.id,
+                type = TaskNotificationType.REPORT_SUBMITTED,
+                title = if (nextStatus == TaskStatus.ON_REVIEW) "Отчёт отправлен на проверку" else "Задача выполнена",
+                body = "«${updatedTask.title}» • ${actor.shortName} ($pct%)${if (updatedTask.photoItems.isNotEmpty()) " • Фото: ${updatedTask.photoItems.size} шт." else ""}"
+            )
+        )
         if (nextStatus == TaskStatus.APPROVED) {
             val rpgRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
                 state = _rpgState.value,
@@ -3654,6 +3708,15 @@ class EzhednevnikViewModel(
         )
         markTaskPendingCloudSync(updatedTask.id)
         upsertLocalTask(updatedTask)
+        postSystemNotificationForTaskEvent(
+            TaskNotificationEvent(
+                eventKey = "local_quick_complete_${updatedTask.id}_${updatedTask.historyItems.size}",
+                taskId = updatedTask.id,
+                type = TaskNotificationType.REPORT_SUBMITTED,
+                title = if (nextStatus == TaskStatus.ON_REVIEW) "Отчёт отправлен на проверку" else "Задача выполнена",
+                body = "«${updatedTask.title}» • ${actor.shortName} (100%)"
+            )
+        )
         if (nextStatus == TaskStatus.APPROVED) {
             val rpgRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
                 state = _rpgState.value,
@@ -3993,7 +4056,10 @@ class EzhednevnikViewModel(
         exportFormat: ExportFormat,
         saveToHistory: Boolean,
         includePhotos: Boolean = true,
-        targetEpochDay: Long? = null
+        targetEpochDay: Long? = null,
+        startEpochDay: Long? = null,
+        endEpochDay: Long? = null,
+        contentScope: com.example.domain.reporting.ReportContentScope? = null
     ) {
         viewModelScope.launch {
             val todayReal = CorporateSeedData.currentDeviceEpochDay()
@@ -4008,8 +4074,15 @@ class EzhednevnikViewModel(
                 subdivisionName = actor.groupName,
                 siteName = actor.siteName.ifBlank { _siteName.value }
             )
+            val resolvedName = ReportDocumentGenerator.resolveTemplateDisplayName(
+                template = template,
+                currentEpochDay = day,
+                startEpochDay = startEpochDay,
+                endEpochDay = endEpochDay,
+                contentScope = contentScope
+            )
             val normalizedTemplate = template.copy(
-                name = ReportDocumentGenerator.resolveTemplateDisplayName(template, day),
+                name = resolvedName,
                 orgHeader = orgHeader
             )
             val result = runCatching {
@@ -4036,7 +4109,10 @@ class EzhednevnikViewModel(
                         includePhotos = includePhotos,
                         saveToDownloads = saveToHistory,
                         allEmployees = availableEmployees.value,
-                        rpgState = _rpgState.value
+                        rpgState = _rpgState.value,
+                        startEpochDay = startEpochDay,
+                        endEpochDay = endEpochDay,
+                        contentScope = contentScope
                     )
                 }
             }
@@ -4049,11 +4125,11 @@ class EzhednevnikViewModel(
                         id = "rep_${System.currentTimeMillis()}",
                         userId = effectiveUserId,
                         templateId = template.id.ifBlank { "tpl_custom" },
-                        templateName = "${normalizedTemplate.name} (${sheetLayout.shortRu}, ${if (includePhotos) "с фото" else "без фото"})",
+                        templateName = "${normalizedTemplate.name} (${if (generated.includePhotos) "с фото" else "без фото"})",
                         reportType = template.reportType,
                         authorName = actor.fullName,
                         periodLabel = generated.periodLabel,
-                        sheetLayout = sheetLayout.code,
+                        sheetLayout = generated.sheetLayout.code,
                         exportFormat = exportFormat.code,
                         filePath = generated.file.absolutePath,
                         summaryText = generated.summaryText,
@@ -4169,7 +4245,7 @@ class EzhednevnikViewModel(
                     (lastActor == shortLower || lastActor == fullLower)
                 val status = task.taskStatus
                 val isAssignedToMe = task.isAssignedToEmployee(currentEmployee)
-                val isCreator = task.creatorId == currentEmployee.id
+                val isCreator = task.isCreatedBy(currentEmployee)
 
                 // 1. Отчёт о выполнении задачи (ON_REVIEW или завершение без обязательной приёмки)
                 val isCompletedReport = status == TaskStatus.ON_REVIEW ||
@@ -4209,8 +4285,7 @@ class EzhednevnikViewModel(
                     val appKey = taskEventKeyApproved(task)
                     if (appKey !in seenEventKeys) {
                         keysToMarkSeen.add(appKey)
-                        // На самом первом запуске подавляем уведомления по старым уже принятым задачам
-                        if (isBaselineReady && !isLastActorMe) {
+                        if (!isLastActorMe) {
                             val approver = task.approvedByName?.takeIf { it.isNotBlank() } ?: "руководитель"
                             eventsToNotify.add(
                                 TaskNotificationEvent(
@@ -4247,11 +4322,11 @@ class EzhednevnikViewModel(
                 }
 
                 // 4. Назначено новое задание от другого сотрудника
-                if (status == TaskStatus.NEW && isAssignedToMe && !isCreator) {
+                if ((status == TaskStatus.NEW || status == TaskStatus.IN_PROGRESS) && isAssignedToMe && !isCreator) {
                     val newKey = taskEventKeyNew(task.id)
                     if (newKey !in seenEventKeys) {
                         keysToMarkSeen.add(newKey)
-                        if (isBaselineReady && !isLastActorMe) {
+                        if (!isLastActorMe) {
                             val fromName = task.creatorName.ifBlank { "руководитель" }
                             eventsToNotify.add(
                                 TaskNotificationEvent(

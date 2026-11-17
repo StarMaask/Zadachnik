@@ -476,7 +476,29 @@ fun TaskDetailDialog(
         onRequestCloudPhotosHydration()
     }
     var photoComment by remember { mutableStateOf("") }
-    val photoGps = remember(task.geoLocation) { task.geoLocation ?: "Участок №1" }
+    val photoGps = remember(task.geoLocation, activeEmployee.siteName, activeEmployee.groupName) {
+        val cleanSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+            raw = task.geoLocation,
+            fallbackSite = activeEmployee.siteName,
+            fallbackSubdivision = activeEmployee.groupName
+        )
+        val cleanSub = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(
+            raw = activeEmployee.groupName.ifBlank { task.groupName },
+            fallbackSubdivision = activeEmployee.groupName
+        )
+        if (cleanSub.isNotBlank() && !cleanSite.contains(cleanSub, ignoreCase = true)) {
+            "$cleanSite • $cleanSub"
+        } else {
+            cleanSite
+        }
+    }
+    val photoAuthorLabel = remember(activeEmployee.shortName, activeEmployee.position, activeEmployee.role) {
+        val cleanPos = com.example.data.seed.CorporateSeedData.sanitizePositionName(
+            raw = activeEmployee.position,
+            role = activeEmployee.role
+        )
+        if (cleanPos.isNotBlank()) "${activeEmployee.shortName} ($cleanPos)" else activeEmployee.shortName
+    }
     val canReassignTask = activeEmployee.role.canAssignToOtherEmployees()
     val canEditThisTask = remember(task, activeEmployee) {
         task.canBeEditedBy(activeEmployee)
@@ -570,7 +592,7 @@ fun TaskDetailDialog(
                             context = context,
                             sourceBitmap = bitmap,
                             taskTitle = task.title,
-                            authorName = activeEmployee.shortName,
+                            authorName = photoAuthorLabel,
                             gpsCoords = photoGps,
                             comment = commentStr
                         )
@@ -606,7 +628,7 @@ fun TaskDetailDialog(
                             context = context,
                             capturedFile = file,
                             taskTitle = task.title,
-                            authorName = activeEmployee.shortName,
+                            authorName = photoAuthorLabel,
                             gpsCoords = photoGps,
                             comment = effectiveComment
                         )
@@ -676,7 +698,7 @@ fun TaskDetailDialog(
                                 context = context,
                                 contentUri = uri,
                                 taskTitle = task.title,
-                                authorName = activeEmployee.shortName,
+                                authorName = photoAuthorLabel,
                                 gpsCoords = photoGps,
                                 comment = itemComment
                             )
@@ -1268,7 +1290,12 @@ fun TaskDetailDialog(
                                 }
                             }
 
-                            if (!task.geoLocation.isNullOrBlank()) {
+                            val displayGeoLocation = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                                raw = task.geoLocation,
+                                fallbackSite = activeEmployee.siteName,
+                                fallbackSubdivision = activeEmployee.groupName.ifBlank { task.groupName }
+                            )
+                            if (displayGeoLocation.isNotBlank()) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1280,7 +1307,7 @@ fun TaskDetailDialog(
                                         modifier = Modifier.size(15.dp)
                                     )
                                     Text(
-                                        text = task.geoLocation,
+                                        text = displayGeoLocation,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,

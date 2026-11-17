@@ -197,17 +197,22 @@ enum class ReportType(
     NEXT_DAY_PLAN(
         code = "NEXT_DAY_PLAN",
         titleRu = "План работ на следующий день",
-        subtitleRu = "Список запланированных работ с ФИО исполнителей, объёмом, сроками и требованием фотоотчёта"
+        subtitleRu = "Выгрузка плана работ на следующий день, на указанную дату или на указанный период"
     ),
     DAILY_REPORT(
         code = "DAILY_REPORT",
         titleRu = "Отчет за текущий день",
-        subtitleRu = "Выполненные и незавершённые задачи с фактическим объёмом работ, ФИО и фотофиксацией"
+        subtitleRu = "Выгрузка только отчёта о выполненных работах за текущий день, на указанную дату или за период"
+    ),
+    COMBINED_DAILY_AND_PLAN(
+        code = "COMBINED_DAILY_AND_PLAN",
+        titleRu = "Отчет за текущий день и план работ на следующий день (на 1 странице)",
+        subtitleRu = "Совмещённая выгрузка на одной странице: Блок 1 — Отчёт за текущий день + Блок 2 — План работ на следующий день"
     ),
     PERIOD_REPORT(
         code = "PERIOD_REPORT",
         titleRu = "Отчёт за произвольный период",
-        subtitleRu = "Агрегация работ по дням, исполнителям и бригадам с совмещением плана и факта"
+        subtitleRu = "Сводная выгрузка выполненных работ по дням, исполнителям и подразделениям за выбранный период"
     ),
     PHOTO_QUALITY(
         code = "PHOTO_QUALITY",
@@ -275,10 +280,10 @@ enum class ReportType(
     );
 
     fun formatTitleWithDate(dateText: String): String {
-        return if (this == DAILY_REPORT) {
-            "Отчет за текущий день ($dateText)"
-        } else {
-            titleRu
+        return when (this) {
+            DAILY_REPORT -> "Отчет за текущий день ($dateText)"
+            COMBINED_DAILY_AND_PLAN -> "Отчет за текущий день ($dateText) и план работ на следующий день (на 1 странице)"
+            else -> titleRu
         }
     }
 
@@ -532,13 +537,19 @@ data class PhotoReportItem(
         fun decode(raw: String): PhotoReportItem {
             val parts = raw.split("|", limit = 7)
             return if (parts.size == 7) {
+                val rawGps = parts[5].trim()
+                val cleanGps = if (com.example.data.seed.CorporateSeedData.isLegacyFakeSiteName(rawGps)) {
+                    com.example.data.seed.CorporateSeedData.DEFAULT_SITE_NAME
+                } else {
+                    rawGps
+                }
                 PhotoReportItem(
                     id = parts[0],
                     uriString = parts[1],
                     authorId = parts[2],
                     authorName = parts[3],
                     capturedAtText = parts[4],
-                    gpsCoords = parts[5],
+                    gpsCoords = cleanGps,
                     comment = parts[6].replace("Фотофиксация СМР", "Фотофиксация", ignoreCase = true)
                 )
             } else {
@@ -548,7 +559,7 @@ data class PhotoReportItem(
                     authorId = "emp_worker_1",
                     authorName = "Сотрудник",
                     capturedAtText = "Сегодня",
-                    gpsCoords = "Участок №1",
+                    gpsCoords = com.example.data.seed.CorporateSeedData.DEFAULT_SITE_NAME,
                     comment = raw.replace("Фотофиксация СМР", "Фотофиксация", ignoreCase = true)
                 )
             }
@@ -647,7 +658,7 @@ data class UserProfile(
     @DocumentId val id: String = "",
     val userId: String = "",
     val displayName: String = "",
-    val siteName: String = "Участок №1 — СМР и Инженерия",
+    val siteName: String = "УЭСАиТМ",
     val activePersonaId: String = "emp_head_1",
     val biometricEnabled: Boolean = true,
     val notificationsEnabled: Boolean = true,
@@ -1414,9 +1425,9 @@ data class ReportTemplateDocument(
     val reportType: String = "DAILY_REPORT",
     val sheetLayout: String = "SPLIT_SHEETS",
     val exportFormat: String = "PDF",
-    val orgHeader: String = "ООО «ГлавСтройИнжиниринг» • Участок №1 (СМР)",
+    val orgHeader: String = "ООО «Транснефть-Балтика», ЛПДС \"Быково\", УЭСАиТМ",
     val defaultPeriodDays: Long = 1L,
-    val columns: List<String> = listOf("ФИО исполнителя", "Бригада", "Задача", "Объём выполнения", "Статус", "Срок", "Фотоотчёт", "Переносы"),
+    val columns: List<String> = listOf("ФИО исполнителя", "Подразделение", "Задача", "Объём выполнения", "Статус", "Срок", "Фотоотчёт", "Переносы"),
     val groupByField: String? = "ASSIGNEE",
     val includeSignatures: Boolean? = true,
     @ServerTimestamp val createdAt: Timestamp? = null,
@@ -1649,15 +1660,27 @@ data class SiteMemberDocument(
             parts.size == 1 -> parts[0]
             else -> "Сотрудник"
         }
-        val resolvedSite = effectiveSiteName.ifBlank { defaultSiteName }
+        val resolvedSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+            raw = effectiveSiteName.ifBlank { defaultSiteName },
+            fallbackSite = defaultSiteName,
+            fallbackSubdivision = groupName
+        )
+        val resolvedGroup = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(
+            raw = groupName,
+            fallbackSubdivision = resolvedSite
+        )
+        val resolvedPos = com.example.data.seed.CorporateSeedData.sanitizePositionName(
+            raw = position,
+            role = resolvedRole
+        )
         return CorporateEmployee(
             id = memberId.ifBlank { id },
             fullName = fullName.ifBlank { "Сотрудник участка" },
             shortName = shortName,
-            position = position.ifBlank { resolvedRole.titleRu },
+            position = resolvedPos,
             role = resolvedRole,
             groupId = groupId.ifBlank { "grp_monolith" },
-            groupName = groupName,
+            groupName = resolvedGroup,
             siteId = "site_1",
             siteName = resolvedSite,
             supervisorId = if (resolvedRole.isAdminOrHead) null else "emp_head_1",

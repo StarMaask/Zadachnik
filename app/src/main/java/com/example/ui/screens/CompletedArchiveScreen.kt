@@ -124,10 +124,19 @@ fun CompletedArchiveScreen(
         archivedTasksAll.count { it.dueDateEpochDay == currentEpochDay }
     }
 
+    val cleanSubdivision = remember(activeEmployee.groupName) {
+        com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(activeEmployee.groupName)
+    }
+    val cleanSite = remember(activeEmployee.siteName) {
+        com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+            raw = activeEmployee.siteName,
+            fallbackSubdivision = cleanSubdivision
+        )
+    }
     val scopeSubtitle = when (activeEmployee.role) {
-        CorporateRole.WORKER -> "Мои выполненные и подтверждённые работы"
-        CorporateRole.ITR -> "Подтверждённые работы по подразделению (${activeEmployee.groupName})"
-        CorporateRole.HEAD, CorporateRole.ADMIN -> "Принятые и архивные задания по участку (${activeEmployee.siteName})"
+        CorporateRole.WORKER -> "Мои принятые отчёты и выполненные работы"
+        CorporateRole.ITR -> "Принятые отчёты по подразделению ($cleanSubdivision)"
+        CorporateRole.HEAD, CorporateRole.ADMIN -> "Принятые отчёты и архивные задания ($cleanSite, $cleanSubdivision)"
     }
 
     LazyColumn(
@@ -149,7 +158,7 @@ fun CompletedArchiveScreen(
                         verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Text(
-                            text = "Архив",
+                            text = "Архив отчетов",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.onBackground

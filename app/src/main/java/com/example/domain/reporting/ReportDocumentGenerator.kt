@@ -44,6 +44,24 @@ enum class ReportSectionKind(
     NEXT_DAY_PLAN("NEXT_DAY_PLAN", "ПЛАН НА СЛЕДУЮЩИЙ ДЕНЬ")
 }
 
+enum class ReportContentScope(
+    val code: String,
+    val titleRu: String
+) {
+    REPORT_ONLY("REPORT_ONLY", "Только отчёт о выполненных работах"),
+    PLAN_ONLY("PLAN_ONLY", "Только план работ"),
+    COMBINED_REPORT_AND_PLAN("COMBINED_REPORT_AND_PLAN", "Отчёт за текущий день и план работ на следующий день (на 1 странице)")
+}
+
+enum class ReportPeriodMode(
+    val code: String,
+    val titleRu: String
+) {
+    CURRENT_OR_NEXT_DAY("CURRENT_OR_NEXT_DAY", "За текущий / следующий день"),
+    SINGLE_DATE("SINGLE_DATE", "На указанную дату"),
+    DATE_RANGE("DATE_RANGE", "За указанный период")
+}
+
 data class ReportTableRow(
     val index: Int,
     val sectionKind: ReportSectionKind = ReportSectionKind.DAILY_FACT_REPORT,
@@ -123,13 +141,44 @@ data class TaskPhotoPdfResult(
 
 object ReportDocumentGenerator {
 
+    private val RUSSIAN_PHOTO_DATE_REGEX = Regex("""^(\d{2})\.(\d{2})(?:\.(\d{4}))?(?:\s+.*)?$""")
+
+    fun parseRussianPhotoEpochDay(capturedAtText: String, referenceYear: Int): Long? {
+        val clean = capturedAtText.trim()
+        if (clean.isBlank()) return null
+        val match = RUSSIAN_PHOTO_DATE_REGEX.find(clean) ?: return null
+        val day = match.groupValues[1].toIntOrNull() ?: return null
+        val month = match.groupValues[2].toIntOrNull() ?: return null
+        val year = match.groupValues.getOrNull(3)?.takeIf { it.isNotBlank() }?.toIntOrNull() ?: referenceYear
+        return runCatching {
+            LocalDate.of(year, month, day).toEpochDay()
+        }.getOrNull()
+    }
+
+    fun photoMatchesEpochDayRange(
+        photo: PhotoReportItem,
+        taskDueDateEpochDay: Long,
+        startEpochDay: Long,
+        endEpochDay: Long
+    ): Boolean {
+        val refYear = runCatching { LocalDate.ofEpochDay(endEpochDay).year }.getOrDefault(2026)
+        val parsedPhotoDay = parseRussianPhotoEpochDay(photo.capturedAtText, refYear)
+        return if (parsedPhotoDay != null) {
+            parsedPhotoDay in startEpochDay..endEpochDay
+        } else {
+            taskDueDateEpochDay in startEpochDay..endEpochDay
+        }
+    }
+
     fun formatOrgHeader(
         organizationName: String,
         subdivisionName: String = "",
         siteName: String = ""
     ): String {
+        val cleanSub = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(subdivisionName)
+        val cleanSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(siteName, fallbackSubdivision = cleanSub)
         val parts = mutableListOf<String>()
-        listOf(organizationName, subdivisionName, siteName).forEach { raw ->
+        listOf(organizationName, cleanSub, cleanSite).forEach { raw ->
             val clean = raw.trim()
             if (clean.isNotBlank() && parts.none { it.equals(clean, ignoreCase = true) }) {
                 parts.add(clean)
@@ -142,10 +191,17 @@ object ReportDocumentGenerator {
         actor: CorporateEmployee,
         defaultSiteName: String = ""
     ): String {
-        val positionText = actor.position.trim().ifBlank { actor.role.titleRu }
-        val siteText = actor.siteName.trim().ifBlank { defaultSiteName.trim() }
-        val sitePart = if (siteText.isNotBlank()) ", Участок: $siteText" else ""
-        return "____________________ (подпись), ${actor.fullName}, $positionText$sitePart"
+        val positionText = com.example.data.seed.CorporateSeedData.sanitizePositionName(
+            raw = actor.position,
+            role = actor.role
+        )
+        val siteText = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+            raw = actor.siteName.ifBlank { defaultSiteName },
+            fallbackSite = defaultSiteName,
+            fallbackSubdivision = actor.groupName
+        )
+        val siteSuffix = if (siteText.isNotBlank()) ", Участок: $siteText" else ""
+        return "____________________ (подпись), ${actor.fullName}, $positionText$siteSuffix"
     }
 
     fun computeAspectFitBounds(
@@ -193,19 +249,58 @@ object ReportDocumentGenerator {
         )
     }
 
-    fun resolveTemplateDisplayName(template: ReportTemplateDocument, currentEpochDay: Long): String {
-        val dateStr = formatEpochDay(currentEpochDay)
+    fun formatEpochDayRangeLabel(startEpochDay: Long, endEpochDay: Long): String {
+        return if (startEpochDay == endEpochDay) {
+            formatEpochDay(startEpochDay)
+        } else {
+            "${formatEpochDay(startEpochDay)} — ${formatEpochDay(endEpochDay)}"
+        }
+    }
+
+    fun resolveTemplateDisplayName(
+        template: ReportTemplateDocument,
+        currentEpochDay: Long,
+        startEpochDay: Long? = null,
+        endEpochDay: Long? = null,
+        contentScope: ReportContentScope? = null
+    ): String {
+        val sDay = startEpochDay ?: currentEpochDay
+        val eDay = endEpochDay ?: sDay
+        val rangeStr = formatEpochDayRangeLabel(minOf(sDay, eDay), maxOf(sDay, eDay))
+        val tomorrowStr = formatEpochDay(currentEpochDay + 1L)
         val rType = template.parsedReportType
         val rawName = template.name.trim()
-        return if (
+        return when {
+            contentScope == ReportContentScope.COMBINED_REPORT_AND_PLAN ||
+                rType == ReportType.COMBINED_DAILY_AND_PLAN ->
+                "Отчет за ${formatEpochDay(currentEpochDay)} и план работ на $tomorrowStr"
+            contentScope == ReportContentScope.PLAN_ONLY || rType == ReportType.NEXT_DAY_PLAN -> {
+                val pStart = startEpochDay ?: (currentEpochDay + 1L)
+                val pEnd = endEpochDay ?: pStart
+                val pRange = formatEpochDayRangeLabel(minOf(pStart, pEnd), maxOf(pStart, pEnd))
+                if (pStart == pEnd && pStart == currentEpochDay + 1L) {
+                    "План работ на следующий день ($pRange)"
+                } else if (pStart == pEnd) {
+                    "План работ на дату ($pRange)"
+                } else {
+                    "План работ за период ($pRange)"
+                }
+            }
             rType == ReportType.DAILY_REPORT ||
-            rawName.contains("Суточный рапорт", ignoreCase = true) ||
-            rawName.contains("Отчёт за текущий", ignoreCase = true) ||
-            rawName.contains("Отчет за текущий", ignoreCase = true)
-        ) {
-            "Отчет за текущий день ($dateStr)"
-        } else {
-            rawName
+                rawName.contains("Суточный рапорт", ignoreCase = true) ||
+                rawName.contains("Отчёт за текущий", ignoreCase = true) ||
+                rawName.contains("Отчет за текущий", ignoreCase = true) -> {
+                if (sDay == eDay && sDay == currentEpochDay) {
+                    "Отчет за текущий день ($rangeStr)"
+                } else if (sDay == eDay) {
+                    "Отчет за дату ($rangeStr)"
+                } else {
+                    "Отчет о выполненных работах за период ($rangeStr)"
+                }
+            }
+            startEpochDay != null && endEpochDay != null && sDay != eDay ->
+                "$rawName ($rangeStr)"
+            else -> rawName
         }
     }
 
@@ -218,15 +313,50 @@ object ReportDocumentGenerator {
         overrideFormat: ExportFormat? = null,
         includePhotos: Boolean = true,
         allEmployees: List<CorporateEmployee> = emptyList(),
-        rpgState: com.example.domain.rpg.RpgWorkspaceState? = null
+        rpgState: com.example.domain.rpg.RpgWorkspaceState? = null,
+        startEpochDay: Long? = null,
+        endEpochDay: Long? = null,
+        contentScope: ReportContentScope? = null
     ): GeneratedDocumentResult {
         val effectiveRpgState = rpgState ?: com.example.domain.rpg.RpgWorkspaceState()
         val reportType = template.parsedReportType
-        val layout = overrideLayout ?: template.parsedSheetLayout
+        val effectiveScope = contentScope ?: when (reportType) {
+            ReportType.COMBINED_DAILY_AND_PLAN -> ReportContentScope.COMBINED_REPORT_AND_PLAN
+            else -> ReportContentScope.COMBINED_REPORT_AND_PLAN
+        }
+        val layout = when (effectiveScope) {
+            ReportContentScope.REPORT_ONLY,
+            ReportContentScope.PLAN_ONLY -> SheetLayout.SINGLE_SHEET
+            ReportContentScope.COMBINED_REPORT_AND_PLAN -> overrideLayout ?: template.parsedSheetLayout
+        }
         val format = overrideFormat ?: template.parsedExportFormat
-        val resolvedReportTitle = resolveTemplateDisplayName(template, currentEpochDay)
-        val todayStr = formatEpochDay(currentEpochDay)
-        val tomorrowStr = formatEpochDay(currentEpochDay + 1L)
+
+        // Вычисляем точный диапазон дат для отчёта и для плана работ
+        val rawReportStart = startEpochDay ?: currentEpochDay
+        val rawReportEnd = endEpochDay ?: rawReportStart
+        val reportStartDay = minOf(rawReportStart, rawReportEnd)
+        val reportEndDay = maxOf(rawReportStart, rawReportEnd)
+
+        val rawPlanStart = when (effectiveScope) {
+            ReportContentScope.PLAN_ONLY -> startEpochDay ?: (currentEpochDay + 1L)
+            else -> currentEpochDay + 1L
+        }
+        val rawPlanEnd = when (effectiveScope) {
+            ReportContentScope.PLAN_ONLY -> endEpochDay ?: rawPlanStart
+            else -> rawPlanStart
+        }
+        val planStartDay = minOf(rawPlanStart, rawPlanEnd)
+        val planEndDay = maxOf(rawPlanStart, rawPlanEnd)
+
+        val resolvedReportTitle = resolveTemplateDisplayName(
+            template = template,
+            currentEpochDay = currentEpochDay,
+            startEpochDay = startEpochDay,
+            endEpochDay = endEpochDay,
+            contentScope = contentScope
+        )
+        val reportRangeLabel = formatEpochDayRangeLabel(reportStartDay, reportEndDay)
+        val planRangeLabel = formatEpochDayRangeLabel(planStartDay, planEndDay)
 
         // Enforce RBAC for consolidated reports
         if (reportType.isConsolidatedOnly && !actor.role.canExportConsolidatedPersonnelReport()) {
@@ -244,51 +374,69 @@ object ReportDocumentGenerator {
             CorporateRole.WORKER -> allTasks.filter { it.isAssignedToEmployee(actor) }
         }
 
+        val cleanActorSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+            raw = actor.siteName,
+            fallbackSubdivision = actor.groupName
+        )
+        val cleanActorSubdivision = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(actor.groupName)
+        val cleanActorPosition = com.example.data.seed.CorporateSeedData.sanitizePositionName(
+            raw = actor.position,
+            role = actor.role
+        )
+
         val roleScopeLabel = when (actor.role) {
-            CorporateRole.ADMIN -> "Полный доступ администратора (${actor.siteName})"
-            CorporateRole.HEAD -> "Сводный по всему персоналу участка (${actor.siteName})"
-            CorporateRole.ITR -> "Сводный по подчинённому персоналу (${actor.groupName})"
-            CorporateRole.WORKER -> "Личная отчётность исполнителя (${actor.fullName})"
+            CorporateRole.ADMIN -> "Полный доступ администратора ($cleanActorSite, $cleanActorSubdivision)"
+            CorporateRole.HEAD -> "Сводный по персоналу ($cleanActorSite, $cleanActorSubdivision)"
+            CorporateRole.ITR -> "Сводный по подразделению ($cleanActorSubdivision, $cleanActorSite)"
+            CorporateRole.WORKER -> "Личная отчётность исполнителя (${actor.fullName}, $cleanActorPosition)"
         }
 
-        // 1. Задачи для ПЛАНА РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ:
-        // - Для ежедневного отчёта / плана на завтра: строго задачи на следующую смену (currentEpochDay + 1)
-        //   и незавершённые переходящие задачи именно выбранной текущей смены (currentEpochDay).
-        // - Для многодневных / сводных отчётов за период: все будущие и переходящие незавершённые задачи.
-        val planTasks = when (reportType) {
-            ReportType.DAILY_REPORT, ReportType.NEXT_DAY_PLAN -> roleScopedTasks.filter {
-                it.dueDateEpochDay == currentEpochDay + 1L ||
-                    (it.dueDateEpochDay == currentEpochDay &&
-                        !it.taskStatus.isTerminalOrDone &&
-                        (it.taskStatus.isEligibleForCarryover || !it.isVolumeCompleted100Percent()))
-            }
-            else -> roleScopedTasks.filter {
-                it.dueDateEpochDay >= currentEpochDay + 1L ||
-                    (it.dueDateEpochDay == currentEpochDay &&
-                        !it.taskStatus.isTerminalOrDone &&
-                        (it.taskStatus.isEligibleForCarryover || !it.isVolumeCompleted100Percent()))
-            }
+        // 1. Задачи для ПЛАНА РАБОТ:
+        // Включаются задачи, назначенные на выбранную дату/период плана (planStartDay..planEndDay),
+        // а если план формируется на следующий день после базового (planStartDay == currentEpochDay + 1L) —
+        // также незавершённые переходящие задачи за currentEpochDay.
+        val planTasks = roleScopedTasks.filter { task ->
+            val inPlanRange = task.dueDateEpochDay in planStartDay..planEndDay
+            val isCarryoverFromBaseDay = (planStartDay == currentEpochDay + 1L) &&
+                task.dueDateEpochDay == currentEpochDay &&
+                !task.taskStatus.isTerminalOrDone &&
+                (task.taskStatus.isEligibleForCarryover || !task.isVolumeCompleted100Percent())
+            inPlanRange || isCarryoverFromBaseDay
         }
 
-        // 2. Задачи для ОТЧЁТА ЗА ТЕКУЩИЙ ДЕНЬ (ФАКТ):
-        // Для ежедневного отчёта и плана на завтра берём строго задачи за выбранный день (currentEpochDay),
-        // чтобы в суточный отчёт и фотоприложение не попадали выполненные и старые задания за весь прошлый период.
+        // 2. Задачи для ОТЧЁТА (ФАКТ):
+        // Строго фильтруются по выбранному дню или периоду (reportStartDay..reportEndDay),
+        // чтобы в отчёт за 17.11.2026 никогда не попадали старые задачи за 13.11, 14.11, 15.11, 16.11.
+        val tasksInReportPeriod = roleScopedTasks.filter {
+            it.dueDateEpochDay in reportStartDay..reportEndDay
+        }
+        val hasExplicitDateFilter = startEpochDay != null || endEpochDay != null || contentScope != null
         val factTasks = when (reportType) {
             ReportType.NEXT_DAY_PLAN,
-            ReportType.DAILY_REPORT -> roleScopedTasks.filter { it.dueDateEpochDay == currentEpochDay }
+            ReportType.DAILY_REPORT,
+            ReportType.COMBINED_DAILY_AND_PLAN -> tasksInReportPeriod
             ReportType.PERIOD_REPORT,
-            ReportType.PERIOD_COMPARISON -> roleScopedTasks
-            ReportType.PHOTO_QUALITY -> roleScopedTasks.filter { it.requiresPhotoReport || it.photoItems.isNotEmpty() }
-            ReportType.OVERDUE_CARRYOVER -> roleScopedTasks.filter {
-                it.carryoverCount > 0L ||
-                    it.taskStatus == TaskStatus.OVERDUE ||
-                    it.taskStatus == TaskStatus.REJECTED ||
-                    (!it.taskStatus.isTerminalOrDone && !it.isVolumeCompleted100Percent())
+            ReportType.PERIOD_COMPARISON -> if (hasExplicitDateFilter) tasksInReportPeriod else roleScopedTasks
+            ReportType.PHOTO_QUALITY -> {
+                val base = if (hasExplicitDateFilter) tasksInReportPeriod else roleScopedTasks
+                base.filter { it.requiresPhotoReport || it.photoItems.isNotEmpty() }
             }
-            ReportType.RECURRING_EXECUTION -> roleScopedTasks.filter { it.recurrenceRule != "NONE" }
-            ReportType.PRIORITY_DISTRIBUTION -> roleScopedTasks
-            ReportType.GAMIFICATION_SUMMARY -> roleScopedTasks
-            else -> roleScopedTasks.filter { it.dueDateEpochDay <= currentEpochDay }.ifEmpty { roleScopedTasks }
+            ReportType.OVERDUE_CARRYOVER -> {
+                val base = if (hasExplicitDateFilter) tasksInReportPeriod else roleScopedTasks
+                base.filter {
+                    it.carryoverCount > 0L ||
+                        it.taskStatus == TaskStatus.OVERDUE ||
+                        it.taskStatus == TaskStatus.REJECTED ||
+                        (!it.taskStatus.isTerminalOrDone && !it.isVolumeCompleted100Percent())
+                }
+            }
+            ReportType.RECURRING_EXECUTION -> {
+                val base = if (hasExplicitDateFilter) tasksInReportPeriod else roleScopedTasks
+                base.filter { it.recurrenceRule != "NONE" }
+            }
+            ReportType.PRIORITY_DISTRIBUTION,
+            ReportType.GAMIFICATION_SUMMARY -> if (hasExplicitDateFilter) tasksInReportPeriod else roleScopedTasks
+            else -> if (hasExplicitDateFilter) tasksInReportPeriod else roleScopedTasks
         }
 
         val reportHeaders = if (includePhotos) {
@@ -351,7 +499,7 @@ object ReportDocumentGenerator {
 
         val factRows = when (reportType) {
             ReportType.PRIORITY_DISTRIBUTION -> mapPriorityDistributionRows(
-                tasks = roleScopedTasks,
+                tasks = factTasks,
                 config = effectiveRpgState.config,
                 sectionKind = ReportSectionKind.DAILY_FACT_REPORT
             )
@@ -365,154 +513,248 @@ object ReportDocumentGenerator {
                 tasks = factTasks,
                 includePhotos = includePhotos,
                 sectionKind = ReportSectionKind.DAILY_FACT_REPORT,
-                currentEpochDay = currentEpochDay
+                currentEpochDay = currentEpochDay,
+                reportStartDay = reportStartDay,
+                reportEndDay = reportEndDay,
+                actor = actor,
+                allEmployees = allEmployees
             )
         }
         val planRows = mapTasksToRows(
             tasks = planTasks,
             includePhotos = includePhotos,
             sectionKind = ReportSectionKind.NEXT_DAY_PLAN,
-            currentEpochDay = currentEpochDay
+            currentEpochDay = currentEpochDay,
+            reportStartDay = planStartDay,
+            reportEndDay = planEndDay,
+            actor = actor,
+            allEmployees = allEmployees
         )
+
+        val factTitleLabel = if (reportStartDay == reportEndDay && reportStartDay == currentEpochDay) {
+            "ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($reportRangeLabel) — ФАКТИЧЕСКОЕ ВЫПОЛНЕНИЕ РАБОТ"
+        } else if (reportStartDay == reportEndDay) {
+            "ОТЧЁТ ЗА ДАТУ ($reportRangeLabel) — ФАКТИЧЕСКОЕ ВЫПОЛНЕНИЕ РАБОТ"
+        } else {
+            "ОТЧЁТ ЗА ПЕРИОД ($reportRangeLabel) — ФАКТИЧЕСКОЕ ВЫПОЛНЕНИЕ РАБОТ"
+        }
+
+        val planTitleLabel = if (planStartDay == planEndDay && planStartDay == currentEpochDay + 1L) {
+            "ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($planRangeLabel) — ПЛАНОВОЕ ЗАДАНИЕ НА СМЕНУ"
+        } else if (planStartDay == planEndDay) {
+            "ПЛАН РАБОТ НА ДАТУ ($planRangeLabel) — ПЛАНОВОЕ ЗАДАНИЕ"
+        } else {
+            "ПЛАН РАБОТ ЗА ПЕРИОД ($planRangeLabel) — ПЛАНОВЫЕ ЗАДАНИЯ"
+        }
 
         val factSection = ReportSectionBlock(
             kind = ReportSectionKind.DAILY_FACT_REPORT,
-            bannerTitle = "ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayStr) — ФАКТИЧЕСКОЕ ВЫПОЛНЕНИЕ РАБОТ",
-            bannerSubtitle = "Выполненные и выполняемые за смену ($todayStr) работы, фактический объём по чек-листам и статус приёмки",
-            dateLabel = todayStr,
-            emptyStateMessage = "За текущий день ($todayStr) задач в отчёте не числится.",
+            bannerTitle = factTitleLabel,
+            bannerSubtitle = "Выполненные и выполняемые за период ($reportRangeLabel) работы, фактический объём по чек-листам и статус приёмки",
+            dateLabel = reportRangeLabel,
+            emptyStateMessage = "За выбранный период ($reportRangeLabel) задач в отчёте не числится.",
             headers = reportHeaders,
             rows = factRows
         )
 
         val planSection = ReportSectionBlock(
             kind = ReportSectionKind.NEXT_DAY_PLAN,
-            bannerTitle = "ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowStr) — ПЛАНОВОЕ ЗАДАНИЕ НА СМЕНУ",
-            bannerSubtitle = "Новые задачи, назначенные на $tomorrowStr, и переходящие невыполненные объёмы с текущей смены ($todayStr)",
-            dateLabel = tomorrowStr,
-            emptyStateMessage = "На следующий день ($tomorrowStr) плановых или переходящих задач пока не назначено.",
+            bannerTitle = planTitleLabel,
+            bannerSubtitle = if (planStartDay == currentEpochDay + 1L && planStartDay == planEndDay) {
+                "Новые задачи, назначенные на $planRangeLabel, и переходящие невыполненные объёмы с текущей смены ($reportRangeLabel)"
+            } else {
+                "Плановые задания, назначенные на период ($planRangeLabel)"
+            },
+            dateLabel = planRangeLabel,
+            emptyStateMessage = "На выбранный период ($planRangeLabel) плановых или переходящих задач не назначено.",
             headers = planHeaders,
             rows = planRows
         )
 
-        val sheets = if (layout == SheetLayout.SPLIT_SHEETS) {
-            listOf(
+        val sheets = when (effectiveScope) {
+            ReportContentScope.REPORT_ONLY -> listOf(
                 ReportSheetPreview(
                     sheetIndex = 1,
-                    sheetTitle = "ЛИСТ 1 ИЗ 2 • ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowStr)",
-                    subtitle = "Отдельный лист плана работ на $tomorrowStr (плановые задания и переходящие остатки объёмов)",
-                    headers = planHeaders,
-                    rows = planRows,
-                    sections = listOf(
-                        planSection.copy(
-                            bannerTitle = "ЛИСТ 1 (ОТДЕЛЬНЫЙ ЛИСТ ПЛАНА) • ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowStr)"
-                        )
-                    )
-                ),
-                ReportSheetPreview(
-                    sheetIndex = 2,
-                    sheetTitle = "ЛИСТ 2 ИЗ 2 • ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayStr)",
-                    subtitle = "Отдельный лист отчёта за $todayStr (фактически выполненные объёмы работ, чек-листы и фотофиксация)",
+                    sheetTitle = factTitleLabel,
+                    subtitle = "Отчётный документ за период ($reportRangeLabel): фактически выполненные работы, чек-листы и фотофиксация",
                     headers = reportHeaders,
                     rows = factRows,
-                    sections = listOf(
-                        factSection.copy(
-                            bannerTitle = "ЛИСТ 2 (ОТДЕЛЬНЫЙ ЛИСТ ОТЧЁТА) • ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayStr)"
-                        )
-                    )
+                    sections = listOf(factSection)
                 )
             )
-        } else {
-            val allSingleSheetRows = factRows + planRows.mapIndexed { idx, r ->
-                r.copy(index = idx + 1)
-            }
-            listOf(
+            ReportContentScope.PLAN_ONLY -> listOf(
                 ReportSheetPreview(
                     sheetIndex = 1,
-                    sheetTitle = "ЕДИНЫЙ ЛИСТ: 1) ОТЧЁТ ЗА ДЕНЬ ($todayStr) + 2) ПЛАН НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowStr)",
-                    subtitle = "Совмещённый документ на одном листе с двумя раздельными таблицами: Блок 1 — Отчёт за $todayStr, Блок 2 — План на $tomorrowStr",
-                    headers = reportHeaders,
-                    rows = allSingleSheetRows,
-                    sections = listOf(
-                        factSection.copy(
-                            bannerTitle = "БЛОК 1 (ВЕРХНЯЯ ТАБЛИЦА) • ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayStr) — ФАКТ ВЫПОЛНЕНИЯ"
-                        ),
-                        planSection.copy(
-                            bannerTitle = "БЛОК 2 (НИЖНЯЯ ТАБЛИЦА) • ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowStr) — ПЛАНОВОЕ ЗАДАНИЕ"
+                    sheetTitle = planTitleLabel,
+                    subtitle = "Плановый документ на период ($planRangeLabel): запланированные работы и переходящие остатки объёмов",
+                    headers = planHeaders,
+                    rows = planRows,
+                    sections = listOf(planSection)
+                )
+            )
+            ReportContentScope.COMBINED_REPORT_AND_PLAN -> if (layout == SheetLayout.SPLIT_SHEETS) {
+                listOf(
+                    ReportSheetPreview(
+                        sheetIndex = 1,
+                        sheetTitle = "ЛИСТ 1 ИЗ 2 • ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($planRangeLabel)",
+                        subtitle = "Отдельный лист плана работ на $planRangeLabel (плановые задания и переходящие остатки объёмов)",
+                        headers = planHeaders,
+                        rows = planRows,
+                        sections = listOf(
+                            planSection.copy(
+                                bannerTitle = "ЛИСТ 1 (ОТДЕЛЬНЫЙ ЛИСТ ПЛАНА) • ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($planRangeLabel)"
+                            )
+                        )
+                    ),
+                    ReportSheetPreview(
+                        sheetIndex = 2,
+                        sheetTitle = "ЛИСТ 2 ИЗ 2 • ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($reportRangeLabel)",
+                        subtitle = "Отдельный лист отчёта за $reportRangeLabel (фактически выполненные объёмы работ, чек-листы и фотофиксация)",
+                        headers = reportHeaders,
+                        rows = factRows,
+                        sections = listOf(
+                            factSection.copy(
+                                bannerTitle = "ЛИСТ 2 (ОТДЕЛЬНЫЙ ЛИСТ ОТЧЁТА) • ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($reportRangeLabel)"
+                            )
                         )
                     )
                 )
-            )
+            } else {
+                val allSingleSheetRows = factRows + planRows.mapIndexed { idx, r ->
+                    r.copy(index = idx + 1)
+                }
+                listOf(
+                    ReportSheetPreview(
+                        sheetIndex = 1,
+                        sheetTitle = "ЕДИНЫЙ ЛИСТ: 1) ОТЧЁТ ЗА ДЕНЬ ($reportRangeLabel) + 2) ПЛАН НА СЛЕДУЮЩИЙ ДЕНЬ ($planRangeLabel)",
+                        subtitle = "Совмещённый документ на одной странице с двумя раздельными таблицами: Блок 1 — Отчёт за $reportRangeLabel, Блок 2 — План на $planRangeLabel",
+                        headers = reportHeaders,
+                        rows = allSingleSheetRows,
+                        sections = listOf(
+                            factSection.copy(
+                                bannerTitle = "БЛОК 1 (ВЕРХНЯЯ ТАБЛИЦА) • ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($reportRangeLabel) — ФАКТ ВЫПОЛНЕНИЯ"
+                            ),
+                            planSection.copy(
+                                bannerTitle = "БЛОК 2 (НИЖНЯЯ ТАБЛИЦА) • ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($planRangeLabel) — ПЛАНОВОЕ ЗАДАНИЕ"
+                            )
+                        )
+                    )
+                )
+            }
         }
 
-        val photoSourceTasks = when (reportType) {
-            ReportType.DAILY_REPORT,
-            ReportType.NEXT_DAY_PLAN -> factTasks.distinctBy { it.id }
-            else -> (factTasks + planTasks).distinctBy { it.id }
-        }
-        val attachedPhotos = if (includePhotos) {
-            photoSourceTasks.flatMap { t ->
-                t.decodedPhotos().map { ph ->
-                    ReportAttachedPhoto(
-                        taskTitle = t.title,
-                        assigneeFio = t.assigneeName,
-                        photo = ph
-                    )
-                }
+        // Для планов работ фотоприложение не выгружает старые снимки;
+        // для отчётов и совмещённого режима выгружаются строго фотографии, снятые за период reportStartDay..reportEndDay.
+        val isStrictPhotoPeriodFilter = hasExplicitDateFilter ||
+            reportType == ReportType.DAILY_REPORT ||
+            reportType == ReportType.NEXT_DAY_PLAN ||
+            reportType == ReportType.COMBINED_DAILY_AND_PLAN
+        val attachedPhotos = if (includePhotos && effectiveScope != ReportContentScope.PLAN_ONLY) {
+            factTasks.distinctBy { it.id }.flatMap { t ->
+                val matchedEmp = allEmployees.firstOrNull { t.isAssignedToEmployee(it) }
+                val cleanSub = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(
+                    raw = matchedEmp?.groupName?.ifBlank { t.groupName } ?: t.groupName,
+                    fallbackSubdivision = cleanActorSubdivision
+                )
+                val cleanTaskSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                    raw = t.geoLocation,
+                    fallbackSite = matchedEmp?.siteName?.ifBlank { cleanActorSite } ?: cleanActorSite,
+                    fallbackSubdivision = cleanSub
+                )
+                t.decodedPhotos()
+                    .filter { ph ->
+                        !isStrictPhotoPeriodFilter ||
+                            photoMatchesEpochDayRange(ph, t.dueDateEpochDay, reportStartDay, reportEndDay)
+                    }
+                    .map { ph ->
+                        val sanitizedPhoto = ph.copy(
+                            gpsCoords = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                                raw = ph.gpsCoords,
+                                fallbackSite = cleanTaskSite,
+                                fallbackSubdivision = cleanSub
+                            )
+                        )
+                        ReportAttachedPhoto(
+                            taskTitle = t.title,
+                            assigneeFio = t.assigneeName,
+                            photo = sanitizedPhoto
+                        )
+                    }
             }
         } else {
             emptyList()
         }
 
-        val nowLabel = SimpleDateFormat("dd.MM.2026 HH:mm", Locale.forLanguageTag("ru")).format(Date())
-        val periodLabel = "Отчёт за $todayStr / План на $tomorrowStr"
+        val nowLabel = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.forLanguageTag("ru")).format(Date())
+        val periodLabel = when (effectiveScope) {
+            ReportContentScope.REPORT_ONLY -> "Отчёт за $reportRangeLabel"
+            ReportContentScope.PLAN_ONLY -> "План работ на $planRangeLabel"
+            ReportContentScope.COMBINED_REPORT_AND_PLAN -> "Отчёт за $reportRangeLabel / План на $planRangeLabel"
+        }
+
+        val sanitizedOrgHeader = formatOrgHeader(
+            organizationName = com.example.data.seed.CorporateSeedData.DEFAULT_ORG_NAME,
+            subdivisionName = cleanActorSubdivision,
+            siteName = cleanActorSite
+        ).ifBlank { template.orgHeader }
 
         val signatures = listOf(
-            "Подготовил документ: ${formatPreparedBySignature(actor)}",
+            "Подготовил документ: ${formatPreparedBySignature(actor, cleanActorSite)}",
             "Проверил / Принял: ____________________ (подпись), ФИО, должность"
         )
-        val actorPositionText = actor.position.trim().ifBlank { actor.role.titleRu }
-        val actorSiteText = actor.siteName.trim()
         val preparedByLabel = listOfNotNull(
             actor.fullName.takeIf { it.isNotBlank() },
-            actorPositionText.takeIf { it.isNotBlank() },
-            actorSiteText.takeIf { it.isNotBlank() }?.let { "Участок: $it" }
+            cleanActorPosition.takeIf { it.isNotBlank() },
+            cleanActorSubdivision.takeIf { it.isNotBlank() },
+            cleanActorSite.takeIf { it.isNotBlank() }?.let { "Участок: $it" }
         ).joinToString(", ")
 
-        val photoModeLabel = if (includePhotos) "С фотоотчётом (${attachedPhotos.size} фото)" else "Без фотографий (только таблица)"
-        val layoutModeLabel = if (layout == SheetLayout.SPLIT_SHEETS) {
-            "НА РАЗДЕЛЬНЫХ ЛИСТАХ (2 листа: Отчёт и План отдельно)"
+        val photoModeLabel = if (includePhotos && effectiveScope != ReportContentScope.PLAN_ONLY) {
+            "С фотоотчётом (${attachedPhotos.size} фото за $reportRangeLabel)"
         } else {
-            "НА ОДНОМ ЛИСТЕ (Блок 1: Отчёт за $todayStr + Блок 2: План на $tomorrowStr)"
+            "Без фотографий (только таблица)"
+        }
+        val layoutModeLabel = when (effectiveScope) {
+            ReportContentScope.REPORT_ONLY -> "ТОЛЬКО ОТЧЁТ О ВЫПОЛНЕННЫХ РАБОТАХ ($reportRangeLabel)"
+            ReportContentScope.PLAN_ONLY -> "ТОЛЬКО ПЛАН РАБОТ ($planRangeLabel)"
+            ReportContentScope.COMBINED_REPORT_AND_PLAN -> if (layout == SheetLayout.SPLIT_SHEETS) {
+                "НА РАЗДЕЛЬНЫХ ЛИСТАХ (2 листа: Отчёт и План отдельно)"
+            } else {
+                "НА ОДНОМ ЛИСТЕ (Блок 1: Отчёт за $reportRangeLabel + Блок 2: План на $planRangeLabel)"
+            }
         }
 
         val summaryText = buildString {
-            appendLine(template.orgHeader)
+            appendLine(sanitizedOrgHeader)
             appendLine("Документ: $resolvedReportTitle (${format.code})")
             appendLine("Компоновка: $layoutModeLabel • Режим фото: $photoModeLabel")
             appendLine("Период: $periodLabel • Охват: $roleScopeLabel")
             appendLine()
-            appendLine("================ 1. ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ ($todayStr) — ФАКТ (${factRows.size} зад.) ================")
-            if (factRows.isEmpty()) {
-                appendLine("   (По отчёту за $todayStr записей нет)")
-            } else {
-                factRows.forEach { r ->
-                    val phPart = if (includePhotos) ", фото: ${r.photoInfo}" else ""
-                    appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel}$phPart")
-                    r.checklistBreakdown.forEach { subLine ->
-                        appendLine("   • Чек-лист: $subLine")
+            if (effectiveScope != ReportContentScope.PLAN_ONLY) {
+                appendLine("================ ОТЧЁТ ЗА ПЕРИОД ($reportRangeLabel) — ФАКТ (${factRows.size} зад.) ================")
+                if (factRows.isEmpty()) {
+                    appendLine("   (По отчёту за $reportRangeLabel записей нет)")
+                } else {
+                    factRows.forEach { r ->
+                        val phPart = if (includePhotos) ", фото: ${r.photoInfo}" else ""
+                        appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} (${r.groupName}) — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel}$phPart")
+                        r.checklistBreakdown.forEach { subLine ->
+                            appendLine("   • Чек-лист: $subLine")
+                        }
                     }
                 }
+                appendLine()
             }
-            appendLine()
-            appendLine("================ 2. ПЛАН РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ ($tomorrowStr) — ПЛАН (${planRows.size} зад.) ================")
-            if (planRows.isEmpty()) {
-                appendLine("   (На следующий день $tomorrowStr плановых или переходящих задач нет)")
-            } else {
-                planRows.forEach { r ->
-                    appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} — ${r.taskTitle} | Плановый объём: ${r.planVolumeLabel} | Срок: ${r.deadlineLabel}")
-                    r.checklistBreakdown.forEach { subLine ->
-                        appendLine("   • Чек-лист: $subLine")
+            if (effectiveScope != ReportContentScope.REPORT_ONLY) {
+                appendLine("================ ПЛАН РАБОТ ($planRangeLabel) — ПЛАН (${planRows.size} зад.) ================")
+                if (planRows.isEmpty()) {
+                    appendLine("   (На период $planRangeLabel плановых или переходящих задач нет)")
+                } else {
+                    planRows.forEach { r ->
+                        appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} (${r.groupName}) — ${r.taskTitle} | Плановый объём: ${r.planVolumeLabel} | Срок: ${r.deadlineLabel}")
+                        r.checklistBreakdown.forEach { subLine ->
+                            appendLine("   • Чек-лист: $subLine")
+                        }
                     }
                 }
             }
@@ -521,7 +763,7 @@ object ReportDocumentGenerator {
         val dummyFile = File("preview_${template.id}.${format.extension}")
         return GeneratedDocumentResult(
             file = dummyFile,
-            orgHeader = template.orgHeader,
+            orgHeader = sanitizedOrgHeader,
             reportTitle = resolvedReportTitle,
             periodLabel = periodLabel,
             generatedAtLabel = nowLabel,
@@ -529,7 +771,7 @@ object ReportDocumentGenerator {
             roleScopeLabel = roleScopeLabel,
             sheetLayout = layout,
             exportFormat = format,
-            includePhotos = includePhotos,
+            includePhotos = includePhotos && effectiveScope != ReportContentScope.PLAN_ONLY,
             attachedPhotos = attachedPhotos,
             sheets = sheets,
             signatureBlock = signatures,
@@ -548,7 +790,10 @@ object ReportDocumentGenerator {
         includePhotos: Boolean = true,
         saveToDownloads: Boolean = false,
         allEmployees: List<CorporateEmployee> = emptyList(),
-        rpgState: com.example.domain.rpg.RpgWorkspaceState? = null
+        rpgState: com.example.domain.rpg.RpgWorkspaceState? = null,
+        startEpochDay: Long? = null,
+        endEpochDay: Long? = null,
+        contentScope: ReportContentScope? = null
     ): GeneratedDocumentResult {
         val preview = buildPreview(
             actor = actor,
@@ -559,11 +804,14 @@ object ReportDocumentGenerator {
             overrideFormat = overrideFormat,
             includePhotos = includePhotos,
             allEmployees = allEmployees,
-            rpgState = rpgState
+            rpgState = rpgState,
+            startEpochDay = startEpochDay,
+            endEpochDay = endEpochDay,
+            contentScope = contentScope
         )
         val reportsDir = File(context.filesDir, "reports").apply { mkdirs() }
         val safeName = template.parsedReportType.code.lowercase(Locale.US)
-        val photoSuffix = if (includePhotos) "with_photos" else "no_photos"
+        val photoSuffix = if (preview.includePhotos) "with_photos" else "no_photos"
         val layoutSuffix = if (preview.sheetLayout == SheetLayout.SPLIT_SHEETS) "2sheets" else "1sheet"
         val fileName = "ezhednevnik_${safeName}_${layoutSuffix}_${photoSuffix}_${System.currentTimeMillis()}.${preview.exportFormat.extension}"
         val outFile = File(reportsDir, fileName)
@@ -797,10 +1045,13 @@ object ReportDocumentGenerator {
                 44f,
                 titlePaint
             )
-            val siteOrGroup = task.geoLocation.orEmpty().ifBlank { task.groupName }.ifBlank { "Участок" }
+            val siteOrGroup = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                raw = task.geoLocation,
+                fallbackSubdivision = task.groupName
+            )
             val executor = task.assigneeName.ifBlank { "Исполнитель" }
             canvas.drawText(
-                "Объект: ${siteOrGroup.take(36)}  •  Исполнитель: ${executor.take(28)}  •  Срок: ${formatEpochDay(task.dueDateEpochDay)}",
+                "Объект: ${siteOrGroup.take(44)}  •  Исполнитель: ${executor.take(28)}  •  Срок: ${formatEpochDay(task.dueDateEpochDay)}",
                 38f,
                 60f,
                 subPaint
@@ -831,12 +1082,17 @@ object ReportDocumentGenerator {
                 val frameRect = RectF(frameLeft, frameTop, frameRight, frameBottom)
                 canvas.drawRoundRect(frameRect, 6f, 6f, frameBgPaint)
 
+                val cleanPhotoGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                    raw = photo.gpsCoords,
+                    fallbackSite = siteOrGroup,
+                    fallbackSubdivision = task.groupName
+                )
                 val origResult = PhotoCaptureUtils.loadOriginalBitmapFromUriOrPath(
                     uriOrPath = photo.uriString,
                     fallbackComment = photo.comment,
                     fallbackAuthor = photo.authorName.ifBlank { executor },
                     fallbackTime = photo.capturedAtText,
-                    fallbackGps = photo.gpsCoords,
+                    fallbackGps = cleanPhotoGps,
                     fallbackTaskTitle = task.title,
                     context = context,
                     photoId = photo.id
@@ -873,7 +1129,7 @@ object ReportDocumentGenerator {
                     cardTitlePaint
                 )
                 val commentLine = photo.comment.ifBlank { "Фотофиксация #$globalIndex" }.take(74)
-                val gpsLine = photo.gpsCoords.ifBlank { siteOrGroup }.take(46)
+                val gpsLine = cleanPhotoGps.take(54)
                 canvas.drawText(
                     "Комментарий: $commentLine",
                     cardLeft + 12f,
@@ -881,7 +1137,7 @@ object ReportDocumentGenerator {
                     subPaint
                 )
                 canvas.drawText(
-                    "Геометка: $gpsLine",
+                    "Участок / Подразделение: $gpsLine",
                     cardLeft + 12f,
                     frameBottom + 46f,
                     subPaint
@@ -959,19 +1215,43 @@ object ReportDocumentGenerator {
         tasks: List<TaskDocument>,
         includePhotos: Boolean,
         sectionKind: ReportSectionKind,
-        currentEpochDay: Long
+        currentEpochDay: Long,
+        reportStartDay: Long = currentEpochDay,
+        reportEndDay: Long = currentEpochDay,
+        actor: CorporateEmployee? = null,
+        allEmployees: List<CorporateEmployee> = emptyList()
     ): List<ReportTableRow> {
         val sorted = tasks.sortedWith(
             compareBy<TaskDocument> { it.assigneeName }
                 .thenBy { it.dueDateEpochDay }
         )
         return sorted.mapIndexed { idx, task ->
+            val matchedEmployee = allEmployees.firstOrNull { task.isAssignedToEmployee(it) }
+            val resolvedSubdivision = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(
+                raw = matchedEmployee?.groupName?.ifBlank { task.groupName } ?: task.groupName,
+                fallbackSubdivision = actor?.groupName ?: com.example.data.seed.CorporateSeedData.DEFAULT_SUBDIVISION_NAME
+            )
+            val resolvedSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                raw = task.geoLocation,
+                fallbackSite = matchedEmployee?.siteName?.ifBlank { actor?.siteName.orEmpty() }
+                    ?: actor?.siteName.orEmpty(),
+                fallbackSubdivision = resolvedSubdivision
+            )
+
+            val relevantPhotoCount = if (sectionKind == ReportSectionKind.DAILY_FACT_REPORT) {
+                task.decodedPhotos().count { ph ->
+                    photoMatchesEpochDayRange(ph, task.dueDateEpochDay, reportStartDay, reportEndDay)
+                }
+            } else {
+                task.photoItems.size
+            }
+
             val photoText = if (!includePhotos) {
                 "Скрыто (без фото)"
             } else if (task.requiresPhotoReport) {
-                "${task.photoItems.size}/${task.minPhotoCount} фото"
+                "$relevantPhotoCount/${task.minPhotoCount} фото"
             } else {
-                "${task.photoItems.size} (не обяз.)"
+                "$relevantPhotoCount (не обяз.)"
             }
 
             val isCarryoverFromToday = sectionKind == ReportSectionKind.NEXT_DAY_PLAN && task.dueDateEpochDay <= currentEpochDay
@@ -1023,7 +1303,8 @@ object ReportDocumentGenerator {
                 !task.rejectionReason.isNullOrBlank() -> "Возврат: ${task.rejectionReason}"
                 !task.approvedByName.isNullOrBlank() -> "Принял: ${task.approvedByName}"
                 task.decodedComments().isNotEmpty() -> task.decodedComments().last().text
-                else -> task.geoLocation ?: "Без замечаний"
+                resolvedSite.isNotBlank() -> resolvedSite
+                else -> "Без замечаний"
             }
 
             ReportTableRow(
@@ -1031,7 +1312,7 @@ object ReportDocumentGenerator {
                 sectionKind = sectionKind,
                 rowTypeBadge = rowBadge,
                 assigneeFio = task.assigneeName,
-                groupName = task.groupName,
+                groupName = resolvedSubdivision,
                 taskTitle = task.title,
                 volumeInfo = volumeSummary,
                 planVolumeLabel = planVolString,
@@ -1277,10 +1558,12 @@ object ReportDocumentGenerator {
             val contSuffix = if (isContinuation) " (продолжение)" else ""
             canvas.drawText("${doc.orgHeader}$contSuffix", 34f, 33f, orgTitlePaint)
 
-            val layoutDescription = if (doc.sheetLayout == SheetLayout.SPLIT_SHEETS) {
+            val layoutDescription = if (doc.sheetLayout == SheetLayout.SPLIT_SHEETS && doc.sheets.size > 1) {
                 "РЕЖИМ ВЫГРУЗКИ: НА РАЗДЕЛЬНЫХ ЛИСТАХ (2 ЛИСТА)  —  $sheetTitleText"
+            } else if (doc.sheets.firstOrNull()?.sections?.size == 1) {
+                "ДОКУМЕНТ: $sheetTitleText"
             } else {
-                "РЕЖИМ ВЫГРУЗКИ: НА ОДНОМ ЛИСТЕ (БЛОК 1: ОТЧЁТ ЗА ДЕНЬ  +  БЛОК 2: ПЛАН НА СЛЕДУЮЩИЙ ДЕНЬ)"
+                "РЕЖИМ ВЫГРУЗКИ: НА ОДНОЙ СТРАНИЦЕ (БЛОК 1: ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ  +  БЛОК 2: ПЛАН НА СЛЕДУЮЩИЙ ДЕНЬ)"
             }
             canvas.drawText(layoutDescription, 34f, 48f, docModePaint)
 

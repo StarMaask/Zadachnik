@@ -209,9 +209,9 @@ class ExampleUnitTest {
             role = "WORKER",
             position = "Электромонтажник 5 разряда",
             groupId = "grp_1",
-            groupName = "Бригада №1",
+            groupName = "ЛПДС \"Быково\"",
             personnelNumber = "ТН-0452",
-            siteName = "Участок №1",
+            siteName = "УЭСАиТМ",
             phone = "+79991234567"
         )
         val encodedApprovedBy = draftMember.encodeApprovedByForFirestore(approverName = "Ковалёв Д.С.")
@@ -224,7 +224,7 @@ class ExampleUnitTest {
             approvedByName = encodedApprovedBy
         )
         assertEquals("ТН-0452", decodedMember.effectivePersonnelNumber)
-        assertEquals("Участок №1", decodedMember.effectiveSiteName)
+        assertEquals("УЭСАиТМ", decodedMember.effectiveSiteName)
         assertEquals("+79991234567", decodedMember.effectivePhone)
 
         // Updating employee card fields overwrites previous metadata cleanly
@@ -493,6 +493,7 @@ class ExampleUnitTest {
         assertEquals(sampleB64, decoded.uriString.substringAfter("#b64="))
         assertEquals("Плиткин Д.", decoded.authorName)
         assertEquals("Фотофиксация #1", decoded.comment)
+        assertEquals("УЭСАиТМ", decoded.gpsCoords)
 
         val baseTask = com.example.data.model.TaskDocument(id = "t_rev_1", title = "Проверка ревизии")
         val revTask = baseTask.withUpdatedRevision(1700000000123L)
@@ -1690,4 +1691,213 @@ class ExampleUnitTest {
         assertEquals(7, periodPreview.sheets.single().sections[0].rows.size)
         assertEquals(7, periodPreview.attachedPhotos.size)
     }
+
+    @Test
+    fun `report only, plan only, and combined 1-page modes with date and range filtering work accurately for 17_11_2026`() {
+        val nov17 = LocalDate.of(2026, 11, 17).toEpochDay()
+        val nov18 = nov17 + 1L
+        val head = CorporateSeedData.findEmployee("emp_head_1")
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+
+        val taskNov17WithMixedDatePhotos = TaskDocument(
+            id = "t_17_mixed_photos",
+            title = "Распечатать журнал для работ по распоряжению",
+            creatorId = head.id,
+            creatorName = head.shortName,
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = "Бригада №1 • Монолит и ЖБК",
+            geoLocation = "Участок №1 — ПГС и Инженер",
+            status = TaskStatus.APPROVED.code,
+            dueDateEpochDay = nov17,
+            photoItems = listOf(
+                com.example.data.model.PhotoReportItem(
+                    id = "ph_old_13",
+                    uriString = "stamp://ph_old_13",
+                    authorId = worker.id,
+                    authorName = worker.shortName,
+                    capturedAtText = "13.11 16:16",
+                    gpsCoords = "Участок №1 — ПГС и Инженер",
+                    comment = "Старое фото 13.11"
+                ).encode(),
+                com.example.data.model.PhotoReportItem(
+                    id = "ph_old_14",
+                    uriString = "stamp://ph_old_14",
+                    authorId = worker.id,
+                    authorName = worker.shortName,
+                    capturedAtText = "14.11 14:13",
+                    gpsCoords = "Участок №1 — ПГС и Инженерные сети",
+                    comment = "Старое фото 14.11"
+                ).encode(),
+                com.example.data.model.PhotoReportItem(
+                    id = "ph_today_17",
+                    uriString = "stamp://ph_today_17",
+                    authorId = head.id,
+                    authorName = head.shortName,
+                    capturedAtText = "17.11 11:29",
+                    gpsCoords = "Участок №1 — ПГС и Инженер",
+                    comment = "Актуальное фото 17.11"
+                ).encode()
+            )
+        )
+
+        val taskNov17Carryover = TaskDocument(
+            id = "t_17_carry",
+            title = "Продолжаем заполнение еврокубов",
+            creatorId = head.id,
+            creatorName = head.shortName,
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            geoLocation = "Участок №1 — ПГС и Инженерные сети",
+            status = TaskStatus.IN_PROGRESS.code,
+            dueDateEpochDay = nov17
+        )
+
+        val taskNov18Planned = TaskDocument(
+            id = "t_18_plan",
+            title = "Плановый обход оборудования 18.11",
+            creatorId = head.id,
+            creatorName = head.shortName,
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            geoLocation = "УЭСАиТМ",
+            status = TaskStatus.NEW.code,
+            dueDateEpochDay = nov18
+        )
+
+        val allTasks = listOf(taskNov17WithMixedDatePhotos, taskNov17Carryover, taskNov18Planned)
+
+        // 1. Report-only for current day (17.11.2026)
+        val dailyTpl = ReportTemplateDocument(
+            id = "tpl_daily_only",
+            name = "Отчет за текущий день",
+            reportType = ReportType.DAILY_REPORT.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.PDF.code
+        )
+        val reportOnlyPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = dailyTpl,
+            allTasks = allTasks,
+            currentEpochDay = nov17,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            includePhotos = true,
+            startEpochDay = nov17,
+            endEpochDay = nov17,
+            contentScope = com.example.domain.reporting.ReportContentScope.REPORT_ONLY
+        )
+        assertEquals(1, reportOnlyPreview.sheets.size)
+        assertEquals(1, reportOnlyPreview.sheets.single().sections.size)
+        val reportRows = reportOnlyPreview.sheets.single().sections.single().rows
+        assertEquals(2, reportRows.size)
+        assertTrue(reportRows.none { it.commentSummary.contains("Участок №1") || it.groupName.contains("Бригада №1") })
+        assertTrue(reportRows.all { it.groupName == "ЛПДС \"Быково\"" })
+        // Only the photo taken on 17.11 is included; 13.11 and 14.11 photos are filtered out
+        assertEquals(1, reportOnlyPreview.attachedPhotos.size)
+        assertEquals("ph_today_17", reportOnlyPreview.attachedPhotos.single().photo.id)
+        assertFalse(reportOnlyPreview.attachedPhotos.single().photo.gpsCoords.contains("Участок №1"))
+
+        // 2. Plan-only for next day (18.11.2026)
+        val planTpl = ReportTemplateDocument(
+            id = "tpl_plan_only",
+            name = "План работ на следующий день",
+            reportType = ReportType.NEXT_DAY_PLAN.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.PDF.code
+        )
+        val planOnlyPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = planTpl,
+            allTasks = allTasks,
+            currentEpochDay = nov17,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            includePhotos = false,
+            startEpochDay = nov18,
+            endEpochDay = nov18,
+            contentScope = com.example.domain.reporting.ReportContentScope.PLAN_ONLY
+        )
+        assertEquals(1, planOnlyPreview.sheets.size)
+        assertEquals(1, planOnlyPreview.sheets.single().sections.size)
+        val planOnlyRows = planOnlyPreview.sheets.single().sections.single().rows
+        assertEquals(2, planOnlyRows.size)
+        assertTrue(planOnlyRows.any { it.taskTitle == "Плановый обход оборудования 18.11" })
+        assertTrue(planOnlyRows.any { it.taskTitle == "Продолжаем заполнение еврокубов" })
+        assertTrue(planOnlyPreview.attachedPhotos.isEmpty())
+
+        // 3. Combined daily report (17.11.2026) + next day plan (18.11.2026) on 1 page
+        val combinedTpl = ReportTemplateDocument(
+            id = "tpl_combined_1p",
+            name = "Отчет за текущий день и план работ на следующий день (на 1 странице)",
+            reportType = ReportType.COMBINED_DAILY_AND_PLAN.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.PDF.code
+        )
+        val combinedPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = combinedTpl,
+            allTasks = allTasks,
+            currentEpochDay = nov17,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            includePhotos = true,
+            startEpochDay = nov17,
+            endEpochDay = nov17,
+            contentScope = com.example.domain.reporting.ReportContentScope.COMBINED_REPORT_AND_PLAN
+        )
+        assertEquals(1, combinedPreview.sheets.size)
+        assertEquals(2, combinedPreview.sheets.single().sections.size)
+        assertEquals(2, combinedPreview.sheets.single().sections[0].rows.size)
+        assertEquals(2, combinedPreview.sheets.single().sections[1].rows.size)
+        assertEquals(1, combinedPreview.attachedPhotos.size)
+    }
+
+    @Test
+    fun `task assignment and completion notifications fire reliably for assignee and creator`() {
+        val head = CorporateSeedData.findEmployee("emp_head_1")
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+        val assignedTask = TaskDocument(
+            id = "t_notif_1",
+            title = "Проверить радиосвязь на МПВ",
+            creatorId = head.id,
+            creatorName = head.shortName,
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            status = TaskStatus.NEW.code,
+            dueDateEpochDay = CorporateSeedData.BASE_EPOCH_DAY
+        )
+
+        // Worker receives TASK_ASSIGNED even before baseline is marked ready
+        val workerPending = com.example.ui.viewmodel.EzhednevnikViewModel.computePendingTaskNotifications(
+            tasks = listOf(assignedTask),
+            currentEmployee = worker,
+            employees = CorporateSeedData.employees,
+            seenEventKeys = emptySet(),
+            isBaselineReady = false
+        )
+        assertEquals(1, workerPending.eventsToNotify.size)
+        assertEquals(
+            com.example.ui.viewmodel.EzhednevnikViewModel.TaskNotificationType.TASK_ASSIGNED,
+            workerPending.eventsToNotify.single().type
+        )
+
+        // When worker submits report, supervisor/creator receives REPORT_SUBMITTED
+        val reviewTask = assignedTask.copy(status = TaskStatus.ON_REVIEW.code)
+        val headPending = com.example.ui.viewmodel.EzhednevnikViewModel.computePendingTaskNotifications(
+            tasks = listOf(reviewTask),
+            currentEmployee = head,
+            employees = CorporateSeedData.employees,
+            seenEventKeys = emptySet(),
+            isBaselineReady = false
+        )
+        assertEquals(1, headPending.eventsToNotify.size)
+        assertEquals(
+            com.example.ui.viewmodel.EzhednevnikViewModel.TaskNotificationType.REPORT_SUBMITTED,
+            headPending.eventsToNotify.single().type
+        )
+    }
 }
+

@@ -592,8 +592,9 @@ object PhotoCaptureUtils {
             286f,
             subPaint
         )
+        val cleanGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(gpsCoords)
         canvas.drawText(
-            "Геометка: ${gpsCoords.ifBlank { "Участок" }.take(44)}",
+            "Участок: ${cleanGps.take(54)}",
             80f,
             332f,
             subPaint
@@ -605,7 +606,7 @@ object PhotoCaptureUtils {
             height = height,
             taskTitle = taskTitle.ifBlank { comment },
             authorName = authorName.ifBlank { "Сотрудник" },
-            gpsCoords = gpsCoords,
+            gpsCoords = cleanGps,
             comment = comment,
             stampTimeText = stampTimeText
         )
@@ -620,13 +621,18 @@ object PhotoCaptureUtils {
         authorName: String,
         gpsCoords: String,
         comment: String,
-        stampTimeText: String = nowStampText()
+        stampTimeText: String = nowStampText(),
+        opaqueBackground: Boolean = false
     ) {
         val barHeight = (height * 0.14f).coerceIn(78f, 128f)
         val topY = height - barHeight
 
         val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.argb(196, 15, 23, 42)
+            color = if (opaqueBackground) {
+                AndroidColor.rgb(15, 23, 42)
+            } else {
+                AndroidColor.argb(230, 15, 23, 42)
+            }
         }
         canvas.drawRect(0f, topY, width.toFloat(), height.toFloat(), barPaint)
 
@@ -643,21 +649,22 @@ object PhotoCaptureUtils {
 
         val padX = 20f * textScale
         val effectiveTitle = taskTitle.ifBlank { comment.ifBlank { "Фотофиксация" } }
+        val cleanGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(gpsCoords)
         canvas.drawText(
-            "${stampTimeText.ifBlank { nowStampText() }} • ${effectiveTitle.take(36)}",
+            "${stampTimeText.ifBlank { nowStampText() }} • ${effectiveTitle.take(42)}",
             padX,
             topY + 28f * textScale,
             line1Paint
         )
         canvas.drawText(
-            "Автор: ${authorName.ifBlank { "Исполнитель" }} • ${gpsCoords.ifBlank { "Участок" }.take(34)}",
+            "Автор: ${authorName.ifBlank { "Исполнитель" }} • ${cleanGps.take(58)}",
             padX,
             topY + 54f * textScale,
             line2Paint
         )
         if (comment.isNotBlank() && barHeight >= 96f) {
             canvas.drawText(
-                comment.take(52),
+                comment.take(56),
                 padX,
                 topY + 78f * textScale,
                 line2Paint
@@ -665,15 +672,44 @@ object PhotoCaptureUtils {
         }
     }
 
+    private fun refreshStampOverlayOnDecodedBitmap(
+        source: Bitmap,
+        taskTitle: String,
+        authorName: String,
+        gpsCoords: String,
+        comment: String,
+        stampTimeText: String
+    ): Bitmap {
+        if (authorName.isBlank() && gpsCoords.isBlank() && taskTitle.isBlank()) return source
+        return runCatching {
+            val mutable = source.copy(Bitmap.Config.ARGB_8888, true) ?: return source
+            val canvas = Canvas(mutable)
+            drawMetadataStampOverlay(
+                canvas = canvas,
+                width = mutable.width,
+                height = mutable.height,
+                taskTitle = taskTitle,
+                authorName = authorName,
+                gpsCoords = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(gpsCoords),
+                comment = comment,
+                stampTimeText = stampTimeText,
+                opaqueBackground = true
+            )
+            mutable
+        }.getOrDefault(source)
+    }
+
     private fun cacheKeyFor(
         uriOrPath: String,
         fallbackComment: String = "",
         fallbackAuthor: String = "",
-        fallbackTime: String = ""
+        fallbackTime: String = "",
+        fallbackGps: String = ""
     ): String {
         val prefix = uriOrPath.take(120)
         val suffix = uriOrPath.takeLast(64)
-        return "${uriOrPath.length}_${prefix}_${suffix}_${fallbackComment}_${fallbackAuthor}_$fallbackTime"
+        val cleanGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(fallbackGps)
+        return "${uriOrPath.length}_${prefix}_${suffix}_${fallbackComment}_${fallbackAuthor}_${fallbackTime}_$cleanGps"
     }
 
     /**
@@ -695,11 +731,13 @@ object PhotoCaptureUtils {
     ): Bitmap? {
         if (uriOrPath.isBlank() && fallbackComment.isBlank()) return null
 
+        val cleanGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(fallbackGps)
         val effectiveDocId = photoId.ifBlank { extractCloudPhotoDocId(uriOrPath).orEmpty() }
 
         // 1. Полноразмерный кэш облачной коллекции task_photos
         if (effectiveDocId.isNotBlank()) {
-            bitmapCache.get("cloud_$effectiveDocId")?.let { cached ->
+            val cloudKey = "cloud_${effectiveDocId}_$cleanGps"
+            bitmapCache.get(cloudKey)?.let { cached ->
                 if (!cached.isRecycled) return cached
             }
             if (context != null) {
@@ -707,14 +745,22 @@ object PhotoCaptureUtils {
                 if (cachedFile.exists() && cachedFile.length() > 0L) {
                     val decodedCloud = decodeFileSafely(cachedFile, MAX_CLOUD_IMAGE_DIMENSION)
                     if (decodedCloud != null) {
-                        bitmapCache.put("cloud_$effectiveDocId", decodedCloud)
-                        return decodedCloud
+                        val stamped = refreshStampOverlayOnDecodedBitmap(
+                            source = decodedCloud,
+                            taskTitle = fallbackTaskTitle,
+                            authorName = fallbackAuthor,
+                            gpsCoords = cleanGps,
+                            comment = fallbackComment,
+                            stampTimeText = fallbackTime
+                        )
+                        bitmapCache.put(cloudKey, stamped)
+                        return stamped
                     }
                 }
             }
         }
 
-        val key = cacheKeyFor(uriOrPath, fallbackComment, fallbackAuthor, fallbackTime)
+        val key = cacheKeyFor(uriOrPath, fallbackComment, fallbackAuthor, fallbackTime, cleanGps)
         bitmapCache.get(key)?.let { cached ->
             if (!cached.isRecycled) return cached
         }
@@ -728,8 +774,16 @@ object PhotoCaptureUtils {
             if (file.exists()) {
                 val decodedFile = decodeFileSafely(file, MAX_LOCAL_IMAGE_DIMENSION)
                 if (decodedFile != null) {
-                    bitmapCache.put(key, decodedFile)
-                    return decodedFile
+                    val stamped = refreshStampOverlayOnDecodedBitmap(
+                        source = decodedFile,
+                        taskTitle = fallbackTaskTitle,
+                        authorName = fallbackAuthor,
+                        gpsCoords = cleanGps,
+                        comment = fallbackComment,
+                        stampTimeText = fallbackTime
+                    )
+                    bitmapCache.put(key, stamped)
+                    return stamped
                 }
             }
         }
@@ -741,8 +795,16 @@ object PhotoCaptureUtils {
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }.getOrNull()
             if (decodedB64 != null) {
-                bitmapCache.put(key, decodedB64)
-                return decodedB64
+                val stamped = refreshStampOverlayOnDecodedBitmap(
+                    source = decodedB64,
+                    taskTitle = fallbackTaskTitle,
+                    authorName = fallbackAuthor,
+                    gpsCoords = cleanGps,
+                    comment = fallbackComment,
+                    stampTimeText = fallbackTime
+                )
+                bitmapCache.put(key, stamped)
+                return stamped
             }
         }
 
@@ -752,7 +814,7 @@ object PhotoCaptureUtils {
             val generated = createStampBitmap(
                 taskTitle = fallbackTaskTitle.ifBlank { fallbackComment.ifBlank { "Фотоотчёт по заданию" } },
                 authorName = fallbackAuthor.ifBlank { "Исполнитель" },
-                gpsCoords = fallbackGps.ifBlank { "Строительный участок" },
+                gpsCoords = cleanGps,
                 comment = fallbackComment.ifBlank { "Фотофиксация #$inferredIndex" },
                 stampTimeText = fallbackTime.ifBlank { nowStampText() },
                 photoIndex = inferredIndex
@@ -782,6 +844,7 @@ object PhotoCaptureUtils {
             return OriginalPhotoLoadResult(null, "Нет данных", 0, 0)
         }
 
+        val cleanGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(fallbackGps)
         val effectiveDocId = photoId.ifBlank { extractCloudPhotoDocId(uriOrPath).orEmpty() }
         val localPart = extractLocalPath(uriOrPath)
         val b64Part = extractBase64Payload(uriOrPath)
@@ -790,14 +853,22 @@ object PhotoCaptureUtils {
         if (localPart.isNotBlank() && !localPart.startsWith("stamp://") && !localPart.startsWith("data:")) {
             val file = File(localPart)
             if (file.exists() && file.length() > 0L) {
-                val origKey = "orig_file_${file.absolutePath}_${file.length()}"
+                val origKey = "orig_file_${file.absolutePath}_${file.length()}_$cleanGps"
                 bitmapCache.get(origKey)?.takeIf { !it.isRecycled }?.let { cached ->
                     return OriginalPhotoLoadResult(cached, "Исходный файл", cached.width, cached.height)
                 }
                 val decodedFile = decodeFileSafely(file, MAX_ORIGINAL_VIEW_DIMENSION)
                 if (decodedFile != null) {
-                    bitmapCache.put(origKey, decodedFile)
-                    return OriginalPhotoLoadResult(decodedFile, "Исходный файл", decodedFile.width, decodedFile.height)
+                    val stamped = refreshStampOverlayOnDecodedBitmap(
+                        source = decodedFile,
+                        taskTitle = fallbackTaskTitle,
+                        authorName = fallbackAuthor,
+                        gpsCoords = cleanGps,
+                        comment = fallbackComment,
+                        stampTimeText = fallbackTime
+                    )
+                    bitmapCache.put(origKey, stamped)
+                    return OriginalPhotoLoadResult(stamped, "Исходный файл", stamped.width, stamped.height)
                 }
             }
         }
@@ -806,14 +877,22 @@ object PhotoCaptureUtils {
         if (effectiveDocId.isNotBlank() && context != null) {
             val cachedFile = cloudCacheFile(context, effectiveDocId)
             if (cachedFile.exists() && cachedFile.length() > 0L) {
-                val origCloudKey = "orig_cloud_${effectiveDocId}_${cachedFile.length()}"
+                val origCloudKey = "orig_cloud_${effectiveDocId}_${cachedFile.length()}_$cleanGps"
                 bitmapCache.get(origCloudKey)?.takeIf { !it.isRecycled }?.let { cached ->
                     return OriginalPhotoLoadResult(cached, "Облачный оригинал", cached.width, cached.height)
                 }
                 val decodedCloud = decodeFileSafely(cachedFile, MAX_ORIGINAL_VIEW_DIMENSION)
                 if (decodedCloud != null) {
-                    bitmapCache.put(origCloudKey, decodedCloud)
-                    return OriginalPhotoLoadResult(decodedCloud, "Облачный оригинал", decodedCloud.width, decodedCloud.height)
+                    val stamped = refreshStampOverlayOnDecodedBitmap(
+                        source = decodedCloud,
+                        taskTitle = fallbackTaskTitle,
+                        authorName = fallbackAuthor,
+                        gpsCoords = cleanGps,
+                        comment = fallbackComment,
+                        stampTimeText = fallbackTime
+                    )
+                    bitmapCache.put(origCloudKey, stamped)
+                    return OriginalPhotoLoadResult(stamped, "Облачный оригинал", stamped.width, stamped.height)
                 }
             }
         }
@@ -825,7 +904,15 @@ object PhotoCaptureUtils {
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }.getOrNull()
             if (decodedB64 != null) {
-                return OriginalPhotoLoadResult(decodedB64, "Облачная копия", decodedB64.width, decodedB64.height)
+                val stamped = refreshStampOverlayOnDecodedBitmap(
+                    source = decodedB64,
+                    taskTitle = fallbackTaskTitle,
+                    authorName = fallbackAuthor,
+                    gpsCoords = cleanGps,
+                    comment = fallbackComment,
+                    stampTimeText = fallbackTime
+                )
+                return OriginalPhotoLoadResult(stamped, "Облачная копия", stamped.width, stamped.height)
             }
         }
 
@@ -835,7 +922,7 @@ object PhotoCaptureUtils {
             fallbackComment = fallbackComment,
             fallbackAuthor = fallbackAuthor,
             fallbackTime = fallbackTime,
-            fallbackGps = fallbackGps,
+            fallbackGps = cleanGps,
             fallbackTaskTitle = fallbackTaskTitle,
             context = context,
             photoId = photoId

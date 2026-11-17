@@ -31,9 +31,10 @@ data class QuickTaskTemplate(
 
 object CorporateSeedData {
 
-    const val DEFAULT_ORG_NAME = "ООО «ГлавСтройИнжиниринг»"
+    const val DEFAULT_ORG_NAME = "ООО «Транснефть-Балтика»"
     const val DEFAULT_SITE_ID = "site_1"
-    const val DEFAULT_SITE_NAME = "Участок №1 — ПГС и Инженерные сети"
+    const val DEFAULT_SITE_NAME = "УЭСАиТМ"
+    const val DEFAULT_SUBDIVISION_NAME = "ЛПДС \"Быково\""
 
     fun currentDeviceEpochDay(): Long {
         val sysZone = java.time.ZoneId.systemDefault()
@@ -55,30 +56,30 @@ object CorporateSeedData {
     val workGroups: List<WorkGroup> = listOf(
         WorkGroup(
             id = "grp_monolith",
-            name = "Бригада №1 • Монолит и ЖБК",
+            name = DEFAULT_SUBDIVISION_NAME,
             siteId = DEFAULT_SITE_ID,
             siteName = DEFAULT_SITE_NAME,
             supervisorId = "emp_itr_1",
             supervisorName = "Соколов А.В.",
-            specialization = "Армирование, опалубка, бетонирование конструкций"
+            specialization = "Эксплуатация и техническое обслуживание оборудования"
         ),
         WorkGroup(
             id = "grp_mep",
-            name = "Бригада №2 • Инженерные сети (ЭОМ и ОВиК)",
+            name = DEFAULT_SUBDIVISION_NAME,
             siteId = DEFAULT_SITE_ID,
             siteName = DEFAULT_SITE_NAME,
             supervisorId = "emp_itr_2",
             supervisorName = "Ермакова Е.И.",
-            specialization = "Силовые кабельные линии, вентиляция, трубопроводы"
+            specialization = "Автоматика, телемеханика и связь"
         ),
         WorkGroup(
             id = "grp_control",
-            name = "Служба ИТР и стройконтроля",
+            name = DEFAULT_SUBDIVISION_NAME,
             siteId = DEFAULT_SITE_ID,
             siteName = DEFAULT_SITE_NAME,
             supervisorId = "emp_head_1",
             supervisorName = "Ковалёв Д.С.",
-            specialization = "Геодезия, приёмка скрытых работ, охрана труда"
+            specialization = "Управление участком и контроль выполнения работ"
         )
     )
 
@@ -87,35 +88,35 @@ object CorporateSeedData {
             id = "emp_head_1",
             fullName = "Ковалёв Дмитрий Сергеевич",
             shortName = "Ковалёв Д.С.",
-            position = "Начальник строительного участка",
+            position = "Начальник участка",
             role = CorporateRole.HEAD,
             groupId = "grp_control",
-            groupName = "Служба ИТР и стройконтроля",
+            groupName = DEFAULT_SUBDIVISION_NAME,
             siteId = DEFAULT_SITE_ID,
             siteName = DEFAULT_SITE_NAME,
             supervisorId = null,
             phone = "+7 (916) 440-10-01",
-            email = "kovalev.ds@glavstroy.ru"
+            email = "kovalev.ds@site1.ru"
         ),
         CorporateEmployee(
             id = "emp_itr_1",
             fullName = "Соколов Андрей Викторович",
             shortName = "Соколов А.В.",
-            position = "Производитель работ (Инженер СМР)",
+            position = "ИТР",
             role = CorporateRole.ITR,
             groupId = "grp_monolith",
-            groupName = "Бригада №1 • Монолит и ЖБК",
+            groupName = DEFAULT_SUBDIVISION_NAME,
             siteId = DEFAULT_SITE_ID,
             siteName = DEFAULT_SITE_NAME,
             supervisorId = "emp_head_1",
             phone = "+7 (916) 440-10-12",
-            email = "sokolov.av@glavstroy.ru"
+            email = "sokolov.av@site1.ru"
         ),
         CorporateEmployee(
             id = "emp_itr_2",
             fullName = "Ермакова Елена Игоревна",
             shortName = "Ермакова Е.И.",
-            position = "Инженер ПТО и технадзора",
+            position = "ИТР",
             role = CorporateRole.ITR,
             groupId = "grp_mep",
             groupName = "Бригада №2 • Инженерные сети (ЭОМ и ОВиК)",
@@ -840,6 +841,89 @@ object CorporateSeedData {
     fun isLegacyFakeSeedTaskId(id: String): Boolean {
         val clean = id.trim()
         return clean.startsWith("seed_task_") || clean.contains("_seed_task_")
+    }
+
+    fun isLegacyFakeSiteName(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        val clean = raw.trim()
+        return clean.equals("Участок №1", ignoreCase = true) ||
+            clean.equals("Участок №2", ignoreCase = true) ||
+            clean.equals("Участок №3", ignoreCase = true) ||
+            clean.contains("ПГС и Инженер", ignoreCase = true) ||
+            clean.contains("СМР и Инженерия", ignoreCase = true) ||
+            clean.contains("СМР и Отделка", ignoreCase = true) ||
+            clean.contains("Наружные сети и Благоустройство", ignoreCase = true) ||
+            clean.contains("ГлавСтройИнжиниринг", ignoreCase = true) ||
+            clean.contains("Участок №1 (СМР)", ignoreCase = true) ||
+            clean.startsWith("Участок №1 —", ignoreCase = true) ||
+            clean.startsWith("Участок N1", ignoreCase = true) ||
+            clean.contains("ПТО и Контроль качества", ignoreCase = true)
+    }
+
+    fun isLegacyFakeSubdivisionName(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        val clean = raw.trim()
+        return clean.contains("Монолит и ЖБК", ignoreCase = true) ||
+            clean.contains("ЭОМ и ОВиК", ignoreCase = true) ||
+            clean.contains("Служба ИТР и стройконтроля", ignoreCase = true) ||
+            clean.contains("Административно-управленческий персонал", ignoreCase = true) ||
+            clean.equals("Бригада №1", ignoreCase = true) ||
+            clean.equals("Бригада №2", ignoreCase = true)
+    }
+
+    fun isLegacyFakePositionName(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        val clean = raw.trim()
+        return clean.contains("Производитель работ", ignoreCase = true) ||
+            clean.contains("Инженер СМР", ignoreCase = true) ||
+            clean.contains("Инженер ПТО и технадзора", ignoreCase = true) ||
+            clean.contains("Монтажник ЖБК", ignoreCase = true) ||
+            clean.contains("Арматурщик-бетонщик", ignoreCase = true) ||
+            clean.contains("Начальник строительного участка", ignoreCase = true)
+    }
+
+    fun sanitizeSiteOrLocation(
+        raw: String?,
+        fallbackSite: String = "",
+        fallbackSubdivision: String = ""
+    ): String {
+        val cleanRaw = raw?.trim().orEmpty()
+        if (cleanRaw.isNotBlank() && !isLegacyFakeSiteName(cleanRaw) && !isLegacyFakeSubdivisionName(cleanRaw)) {
+            return cleanRaw
+        }
+        val cleanSite = fallbackSite.trim().takeIf { it.isNotBlank() && !isLegacyFakeSiteName(it) }
+        val cleanSub = fallbackSubdivision.trim().takeIf { it.isNotBlank() && !isLegacyFakeSubdivisionName(it) }
+        return when {
+            cleanSite != null && cleanSub != null && !cleanSite.equals(cleanSub, ignoreCase = true) -> cleanSite
+            cleanSite != null -> cleanSite
+            cleanSub != null -> cleanSub
+            else -> DEFAULT_SITE_NAME
+        }
+    }
+
+    fun sanitizeSubdivisionName(
+        raw: String?,
+        fallbackSubdivision: String = ""
+    ): String {
+        val cleanRaw = raw?.trim().orEmpty()
+        if (cleanRaw.isNotBlank() && !isLegacyFakeSubdivisionName(cleanRaw) && !isLegacyFakeSiteName(cleanRaw)) {
+            return cleanRaw
+        }
+        val cleanFallback = fallbackSubdivision.trim().takeIf { it.isNotBlank() && !isLegacyFakeSubdivisionName(it) }
+        return cleanFallback ?: DEFAULT_SUBDIVISION_NAME
+    }
+
+    fun sanitizePositionName(
+        raw: String?,
+        role: CorporateRole,
+        fallbackPosition: String = ""
+    ): String {
+        val cleanRaw = raw?.trim().orEmpty()
+        if (cleanRaw.isNotBlank() && !isLegacyFakePositionName(cleanRaw)) {
+            return cleanRaw
+        }
+        val cleanFallback = fallbackPosition.trim().takeIf { it.isNotBlank() && !isLegacyFakePositionName(it) }
+        return cleanFallback ?: role.titleRu
     }
 
     fun buildInitialSiteMembers(): List<com.example.data.model.SiteMemberDocument> = emptyList()

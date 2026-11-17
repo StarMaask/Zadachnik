@@ -92,6 +92,7 @@ import com.example.data.model.SubtaskItem
 import com.example.data.model.TaskDocument
 import com.example.data.model.TaskDraft
 import com.example.data.model.TaskPriority
+import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.ReportDocumentGenerator
 import com.example.ui.theme.LocalAppThemeTokens
 import java.time.LocalDate
@@ -134,6 +135,7 @@ private data class CreateTaskInitialValues(
 
 private fun computeCreateTaskInitialValues(
     editingTask: TaskDocument?,
+    activeEmployee: CorporateEmployee,
     assignees: List<CorporateEmployee>,
     currentEpochDay: Long,
     initialDueDateEpochDay: Long,
@@ -164,7 +166,11 @@ private fun computeCreateTaskInitialValues(
             customUnitText = "",
             requiresApproval = true,
             selectedRecurrence = RecurrenceRule.NONE,
-            geoLocation = defaultSiteName,
+            geoLocation = CorporateSeedData.sanitizeSiteOrLocation(
+                raw = defaultSiteName,
+                fallbackSite = activeEmployee.siteName,
+                fallbackSubdivision = activeEmployee.groupName
+            ),
             showMoreOptions = false,
             hasRecurrenceSeries = false
         )
@@ -207,7 +213,11 @@ private fun computeCreateTaskInitialValues(
         customUnitText = if (!isStdUnit) editUnit else "",
         requiresApproval = editingTask.requiresApproval,
         selectedRecurrence = editingTask.recurrence,
-        geoLocation = editingTask.geoLocation ?: defaultSiteName,
+        geoLocation = CorporateSeedData.sanitizeSiteOrLocation(
+            raw = editingTask.geoLocation,
+            fallbackSite = activeEmployee.siteName.ifBlank { defaultSiteName },
+            fallbackSubdivision = activeEmployee.groupName
+        ),
         showMoreOptions = editingTask.description.isNotBlank() ||
             editingTask.taskPriority != TaskPriority.MEDIUM ||
             editingTask.recurrence != RecurrenceRule.NONE ||
@@ -226,6 +236,7 @@ fun CreateTaskDialog(
     currentEpochDay: Long,
     initialDueDateEpochDay: Long = currentEpochDay,
     editingTask: TaskDocument? = null,
+    defaultSiteName: String = activeEmployee.siteName,
     onDismiss: () -> Unit,
     onCreate: (TaskDraft) -> Unit
 ) {
@@ -268,14 +279,16 @@ fun CreateTaskDialog(
         assignees,
         currentEpochDay,
         initialDueDateEpochDay,
-        activeEmployee.siteName
+        activeEmployee.siteName,
+        defaultSiteName
     ) {
         computeCreateTaskInitialValues(
             editingTask = editingTask,
+            activeEmployee = activeEmployee,
             assignees = assignees,
             currentEpochDay = currentEpochDay,
             initialDueDateEpochDay = initialDueDateEpochDay,
-            defaultSiteName = activeEmployee.siteName
+            defaultSiteName = defaultSiteName
         )
     }
 

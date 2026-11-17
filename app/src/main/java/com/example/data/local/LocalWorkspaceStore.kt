@@ -75,24 +75,36 @@ object LocalWorkspaceStore {
     }
 
     fun loadOrganizationName(context: Context): String {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_ORG_NAME, CorporateSeedData.DEFAULT_ORG_NAME)
-            ?.takeIf { it.isNotBlank() }
-            ?: CorporateSeedData.DEFAULT_ORG_NAME
+            ?.trim()
+            .orEmpty()
+        return if (raw.isBlank() || CorporateSeedData.isLegacyFakeSiteName(raw)) {
+            CorporateSeedData.DEFAULT_ORG_NAME
+        } else {
+            raw
+        }
     }
 
     fun loadSiteName(context: Context): String {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_SITE_NAME, CorporateSeedData.DEFAULT_SITE_NAME)
-            ?.takeIf { it.isNotBlank() }
-            ?: CorporateSeedData.DEFAULT_SITE_NAME
+            ?.trim()
+            .orEmpty()
+        return if (raw.isBlank() || CorporateSeedData.isLegacyFakeSiteName(raw)) {
+            CorporateSeedData.DEFAULT_SITE_NAME
+        } else {
+            raw
+        }
     }
 
     fun saveOrganizationAndSite(context: Context, orgName: String, siteName: String) {
-        val cleanSite = siteName.trim().ifBlank { CorporateSeedData.DEFAULT_SITE_NAME }
+        val cleanSite = CorporateSeedData.sanitizeSiteOrLocation(siteName, CorporateSeedData.DEFAULT_SITE_NAME)
+        val cleanOrg = orgName.trim().takeIf { it.isNotBlank() && !CorporateSeedData.isLegacyFakeSiteName(it) }
+            ?: CorporateSeedData.DEFAULT_ORG_NAME
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_ORG_NAME, orgName.trim().ifBlank { CorporateSeedData.DEFAULT_ORG_NAME })
+            .putString(KEY_ORG_NAME, cleanOrg)
             .putString(KEY_SITE_NAME, cleanSite)
             .apply()
         val currentSites = loadSites(context)
@@ -337,6 +349,16 @@ object LocalWorkspaceStore {
     }
 
     private fun jsonToTask(obj: JSONObject): TaskDocument {
+        val rawGroup = obj.optString("groupName")
+        val cleanGroup = CorporateSeedData.sanitizeSubdivisionName(rawGroup)
+        val rawGeo = obj.optString("geoLocation").takeIf { it.isNotBlank() }
+        val cleanGeo = rawGeo?.let {
+            if (CorporateSeedData.isLegacyFakeSiteName(it) || CorporateSeedData.isLegacyFakeSubdivisionName(it)) {
+                null
+            } else {
+                it
+            }
+        }
         return TaskDocument(
             id = obj.optString("id"),
             userId = obj.optString("userId"),
@@ -347,7 +369,7 @@ object LocalWorkspaceStore {
             assigneeId = obj.optString("assigneeId"),
             assigneeName = obj.optString("assigneeName"),
             groupId = obj.optString("groupId"),
-            groupName = obj.optString("groupName"),
+            groupName = cleanGroup,
             siteId = obj.optString("siteId", "site_1"),
             priority = obj.optString("priority", "MEDIUM"),
             status = obj.optString("status", "NEW"),
@@ -369,7 +391,7 @@ object LocalWorkspaceStore {
             historyItems = jsonArrayToList(obj.optJSONArray("historyItems")),
             rejectionReason = obj.optString("rejectionReason").takeIf { it.isNotBlank() },
             approvedByName = obj.optString("approvedByName").takeIf { it.isNotBlank() },
-            geoLocation = obj.optString("geoLocation").takeIf { it.isNotBlank() }
+            geoLocation = cleanGeo
         )
     }
 
@@ -391,6 +413,18 @@ object LocalWorkspaceStore {
 
     private fun jsonToMember(obj: JSONObject): SiteMemberDocument {
         val mId = obj.optString("memberId").ifBlank { obj.optString("id") }
+        val rawGroup = obj.optString("groupName", "")
+        val cleanGroup = if (CorporateSeedData.isLegacyFakeSubdivisionName(rawGroup)) {
+            CorporateSeedData.DEFAULT_SUBDIVISION_NAME
+        } else {
+            rawGroup.ifBlank { CorporateSeedData.DEFAULT_SUBDIVISION_NAME }
+        }
+        val rawSite = obj.optString("siteName", "")
+        val cleanSite = if (CorporateSeedData.isLegacyFakeSiteName(rawSite)) {
+            ""
+        } else {
+            rawSite
+        }
         return SiteMemberDocument(
             id = mId,
             memberId = mId,
@@ -400,10 +434,10 @@ object LocalWorkspaceStore {
             role = obj.optString("role", "PENDING"),
             approvalStatus = obj.optString("approvalStatus", "PENDING"),
             groupId = obj.optString("groupId", "grp_monolith"),
-            groupName = obj.optString("groupName", "Основное подразделение"),
+            groupName = cleanGroup,
             approvedByName = obj.optString("approvedByName").takeIf { it.isNotBlank() },
             personnelNumber = obj.optString("personnelNumber", ""),
-            siteName = obj.optString("siteName", ""),
+            siteName = cleanSite,
             phone = obj.optString("phone", "")
         )
     }

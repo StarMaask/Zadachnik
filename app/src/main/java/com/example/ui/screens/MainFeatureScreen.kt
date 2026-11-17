@@ -168,8 +168,8 @@ enum class MainNavDestination(
 ) {
     TODAY("today", "Задачи", Icons.Default.CalendarToday),
     APPROVALS("approvals", "Приёмка", Icons.AutoMirrored.Filled.FactCheck),
-    ARCHIVE("archive", "Архив", Icons.Default.Inventory2),
-    REPORTING("reporting", "Отчетные документы", Icons.Default.Description),
+    ARCHIVE("archive", "Архив отчетов", Icons.Default.Inventory2),
+    REPORTING("reporting", "Отчетная документация", Icons.Default.Description),
     STATS("stats", "Сводка", Icons.Default.Analytics),
     ADMIN("admin", "Персонал", Icons.Default.AdminPanelSettings)
 }
@@ -880,7 +880,7 @@ fun MainFeatureScreen(
                                 onToggleAutoPlan = viewModel::toggleAutoSchedulePlan,
                                 onToggleAutoReport = viewModel::toggleAutoScheduleReport,
                                 onOpenOrganizationSettings = { showOrgSettingsDialog = true },
-                                onGenerateReport = { tpl, layout, fmt, save, includePhotos, targetEpochDay ->
+                                onGenerateReport = { tpl, layout, fmt, save, includePhotos, targetEpochDay, startEpochDay, endEpochDay, contentScope ->
                                     viewModel.previewOrGenerateReport(
                                         context = context,
                                         template = tpl,
@@ -888,7 +888,10 @@ fun MainFeatureScreen(
                                         exportFormat = fmt,
                                         saveToHistory = save,
                                         includePhotos = includePhotos,
-                                        targetEpochDay = targetEpochDay
+                                        targetEpochDay = targetEpochDay,
+                                        startEpochDay = startEpochDay,
+                                        endEpochDay = endEpochDay,
+                                        contentScope = contentScope
                                     )
                                 },
                                 onSaveCustomTemplate = viewModel::saveCustomTemplate
@@ -989,6 +992,7 @@ fun MainFeatureScreen(
             currentEpochDay = currentEpochDay,
             initialDueDateEpochDay = createDialogTargetEpochDay,
             existingTasks = roleVisibleTasks,
+            defaultSiteName = activeEmployee.siteName.ifBlank { siteName },
             onDismiss = { showCreateTaskDialog = false },
             onCreate = viewModel::createNewTask
         )
@@ -1052,6 +1056,7 @@ fun MainFeatureScreen(
             currentEpochDay = currentEpochDay,
             initialDueDateEpochDay = editing.dueDateEpochDay,
             editingTask = editing,
+            defaultSiteName = activeEmployee.siteName.ifBlank { siteName },
             onDismiss = { taskBeingEdited = null },
             onCreate = { draft ->
                 viewModel.updateTaskDetails(editing, draft)

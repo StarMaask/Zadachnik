@@ -109,7 +109,9 @@ import com.example.data.model.SheetLayout
 import com.example.data.model.TaskStatus
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.GeneratedDocumentResult
+import com.example.domain.reporting.ReportContentScope
 import com.example.domain.reporting.ReportDocumentGenerator
+import com.example.domain.reporting.ReportPeriodMode
 import com.example.domain.reporting.ReportSectionBlock
 import com.example.domain.reporting.ReportSectionKind
 import com.example.ui.theme.LocalAppThemeTokens
@@ -131,22 +133,22 @@ private enum class ReportCategoryTab(
     ALL(
         code = "ALL",
         tabLabel = "Все",
-        sectionTitle = "Все отчётные документы",
-        sectionSubtitle = "Полный каталог оперативных и аналитических сводок",
+        sectionTitle = "Вся отчётная документация",
+        sectionSubtitle = "Полный каталог оперативных отчётов, планов работ и аналитических сводок",
         accentColor = Color(0xFF2563EB)
     ),
     DAILY_OPERATIONAL(
         code = "DAILY_OPERATIONAL",
         tabLabel = "Ежедневные",
         sectionTitle = "Ежедневные (Оперативные)",
-        sectionSubtitle = "Отчёт за смену, план-наряд на завтра и сводка работ по участку",
+        sectionSubtitle = "Отчёт за день/дату/период, план работ на завтра/дату/период и совмещённый отчёт+план на 1 странице",
         accentColor = Color(0xFF2563EB)
     ),
     ITR_ANALYTICS(
         code = "ITR_ANALYTICS",
         tabLabel = "Аналитика ИТР",
         sectionTitle = "Аналитика (Для ИТР)",
-        sectionSubtitle = "Контроль фотофиксации, реестр просрочек, дисциплина SLA и выработка бригад",
+        sectionSubtitle = "Контроль фотофиксации, реестр просрочек, дисциплина SLA и выработка подразделений",
         accentColor = Color(0xFF7C3AED)
     ),
     CONSTRUCTOR(
@@ -172,19 +174,29 @@ private fun ReportType.visualSpec(): ReportVisualSpec {
             category = ReportCategoryTab.DAILY_OPERATIONAL,
             icon = Icons.Default.CalendarToday,
             iconTint = Color(0xFF059669),
-            iconBgColor = Color(0xFF10B981).copy(alpha = 0.14f)
+            iconBgColor = Color(0xFF10B981).copy(alpha = 0.14f),
+            badgeLabel = "Только отчёт"
         )
         ReportType.NEXT_DAY_PLAN -> ReportVisualSpec(
             category = ReportCategoryTab.DAILY_OPERATIONAL,
             icon = Icons.Default.EventNote,
             iconTint = Color(0xFF2563EB),
-            iconBgColor = Color(0xFF3B82F6).copy(alpha = 0.14f)
+            iconBgColor = Color(0xFF3B82F6).copy(alpha = 0.14f),
+            badgeLabel = "Только план"
+        )
+        ReportType.COMBINED_DAILY_AND_PLAN -> ReportVisualSpec(
+            category = ReportCategoryTab.DAILY_OPERATIONAL,
+            icon = Icons.Default.Assignment,
+            iconTint = Color(0xFF0D9488),
+            iconBgColor = Color(0xFF14B8A6).copy(alpha = 0.14f),
+            badgeLabel = "Отчёт + План (1 стр.)"
         )
         ReportType.PERIOD_REPORT -> ReportVisualSpec(
             category = ReportCategoryTab.DAILY_OPERATIONAL,
             icon = Icons.Default.DateRange,
             iconTint = Color(0xFF0284C7),
-            iconBgColor = Color(0xFF0EA5E9).copy(alpha = 0.14f)
+            iconBgColor = Color(0xFF0EA5E9).copy(alpha = 0.14f),
+            badgeLabel = "Период / Дата"
         )
         ReportType.PHOTO_QUALITY -> ReportVisualSpec(
             category = ReportCategoryTab.ITR_ANALYTICS,
@@ -290,7 +302,10 @@ fun ReportingCenterScreen(
         format: ExportFormat,
         saveToHistory: Boolean,
         includePhotos: Boolean,
-        targetEpochDay: Long
+        targetEpochDay: Long,
+        startEpochDay: Long?,
+        endEpochDay: Long?,
+        contentScope: ReportContentScope?
     ) -> Unit,
     onSaveCustomTemplate: (ReportTemplateDocument) -> Unit
 ) {
@@ -299,7 +314,7 @@ fun ReportingCenterScreen(
     val tonalSurface = MaterialTheme.colorScheme.surfaceVariant.copy(
         alpha = if (tokens.isDark) 0.28f else 0.44f
     )
-    var selectedLayout by remember { mutableStateOf(SheetLayout.SPLIT_SHEETS) }
+    var selectedLayout by remember { mutableStateOf(SheetLayout.SINGLE_SHEET) }
     var selectedFormat by remember { mutableStateOf(ExportFormat.PDF) }
     var includePhotosInReport by remember { mutableStateOf(true) }
     var showDefaultParamsAccordion by remember { mutableStateOf(false) }
@@ -318,21 +333,30 @@ fun ReportingCenterScreen(
     val isTodaySelected = selectedReportEpochDay == currentEpochDay
 
     val isAdminOrHead = activeEmployee.role.isAdminOrHead
+    val cleanSubdivision = remember(activeEmployee.groupName) {
+        CorporateSeedData.sanitizeSubdivisionName(activeEmployee.groupName)
+    }
+    val cleanSite = remember(activeEmployee.siteName, siteName, cleanSubdivision) {
+        CorporateSeedData.sanitizeSiteOrLocation(
+            raw = activeEmployee.siteName.ifBlank { siteName },
+            fallbackSite = siteName,
+            fallbackSubdivision = cleanSubdivision
+        )
+    }
 
     val allReportCatalog = remember(
         templates,
         todayFormatted,
         organizationName,
-        siteName,
-        activeEmployee.groupName,
-        activeEmployee.siteName,
+        cleanSite,
+        cleanSubdivision,
         selectedReportEpochDay,
         isAdminOrHead
     ) {
         val headerText = ReportDocumentGenerator.formatOrgHeader(
             organizationName = organizationName,
-            subdivisionName = activeEmployee.groupName,
-            siteName = activeEmployee.siteName.ifBlank { siteName }
+            subdivisionName = cleanSubdivision,
+            siteName = cleanSite
         )
         val normalizedTemplates = templates.map { tpl ->
             tpl.copy(
@@ -348,15 +372,15 @@ fun ReportingCenterScreen(
                     id = "catalog_${rType.code.lowercase()}",
                     name = rType.formatTitleWithDate(todayFormatted),
                     reportType = rType.code,
-                    sheetLayout = SheetLayout.SPLIT_SHEETS.code,
+                    sheetLayout = SheetLayout.SINGLE_SHEET.code,
                     exportFormat = ExportFormat.PDF.code,
                     orgHeader = headerText
                 )
             }
-        // Сортируем в логическом порядке: сначала DAILY_REPORT, затем NEXT_DAY_PLAN, PERIOD_REPORT и далее
         val orderPriority = listOf(
             ReportType.DAILY_REPORT,
             ReportType.NEXT_DAY_PLAN,
+            ReportType.COMBINED_DAILY_AND_PLAN,
             ReportType.PERIOD_REPORT,
             ReportType.PHOTO_QUALITY,
             ReportType.OVERDUE_CARRYOVER,
@@ -373,7 +397,6 @@ fun ReportingCenterScreen(
         )
         (normalizedTemplates + extraTemplates)
             .filter { tpl ->
-                // Контроль SLA проверяющих ИТР доступен только Руководителю / Администратору
                 if (!isAdminOrHead && tpl.parsedReportType == ReportType.APPROVAL_SLA) {
                     false
                 } else {
@@ -403,10 +426,9 @@ fun ReportingCenterScreen(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 36.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. УМНЫЙ ВЕРХНИЙ БЛОК: Заголовок «Отчетные документы», компактный селектор даты и тонкая строка параметров
+        // 1. УМНЫЙ ВЕРХНИЙ БЛОК: Заголовок «Отчетная документация», компактный селектор даты и тонкая строка параметров
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Строка заголовка и селектора даты смены
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -414,13 +436,13 @@ fun ReportingCenterScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Отчетные документы",
+                            text = "Отчетная документация",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.onBackground
                         )
                         Text(
-                            text = "$organizationName • $siteName",
+                            text = "$organizationName • $cleanSubdivision • $cleanSite",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -1076,33 +1098,40 @@ fun ReportingCenterScreen(
                 selectedLayout = selectedLayout,
                 selectedFormat = selectedFormat,
                 includePhotos = includePhotosInReport,
+                baseEpochDay = selectedReportEpochDay,
                 todayFormatted = todayFormatted,
                 tomorrowFormatted = tomorrowFormatted,
                 onSelectLayout = { selectedLayout = it },
                 onSelectFormat = { selectedFormat = it },
                 onTogglePhotos = { includePhotosInReport = it },
-                onPreviewOnScreen = {
+                onPreviewOnScreen = { resolvedBaseDay, startDay, endDay, scope, effectiveLayout ->
                     activeActionSheetTemplate = null
                     onGenerateReport(
                         sheetTpl,
-                        selectedLayout,
+                        effectiveLayout,
                         selectedFormat,
                         false,
-                        includePhotosInReport,
-                        selectedReportEpochDay
+                        includePhotosInReport && scope != ReportContentScope.PLAN_ONLY,
+                        resolvedBaseDay,
+                        startDay,
+                        endDay,
+                        scope
                     )
                 },
-                onDownloadToPhone = {
+                onDownloadToPhone = { resolvedBaseDay, startDay, endDay, scope, effectiveLayout ->
                     activeActionSheetTemplate = null
                     onGenerateReport(
                         sheetTpl,
-                        selectedLayout,
+                        effectiveLayout,
                         selectedFormat,
                         true,
-                        includePhotosInReport,
-                        selectedReportEpochDay
+                        includePhotosInReport && scope != ReportContentScope.PLAN_ONLY,
+                        resolvedBaseDay,
+                        startDay,
+                        endDay,
+                        scope
                     )
-                    lastDownloadedNotice = "Файл «${sheetTpl.name}» (${selectedFormat.code}, ${selectedLayout.shortRu}) сохранён в папку «Загрузки» телефона."
+                    lastDownloadedNotice = "Файл «${sheetTpl.name}» (${selectedFormat.code}) сохранён в папку «Загрузки» телефона."
                 },
                 onDismiss = { activeActionSheetTemplate = null }
             )
@@ -1113,8 +1142,8 @@ fun ReportingCenterScreen(
         CustomTemplateConstructorDialog(
             defaultOrgHeader = ReportDocumentGenerator.formatOrgHeader(
                 organizationName = organizationName,
-                subdivisionName = activeEmployee.groupName,
-                siteName = activeEmployee.siteName.ifBlank { siteName }
+                subdivisionName = cleanSubdivision,
+                siteName = cleanSite
             ),
             onDismiss = { showCustomTemplateDialog = false },
             onSave = { newTpl ->
@@ -1411,17 +1440,80 @@ private fun ReportActionBottomSheetContent(
     selectedLayout: SheetLayout,
     selectedFormat: ExportFormat,
     includePhotos: Boolean,
+    baseEpochDay: Long,
     todayFormatted: String,
     tomorrowFormatted: String,
     onSelectLayout: (SheetLayout) -> Unit,
     onSelectFormat: (ExportFormat) -> Unit,
     onTogglePhotos: (Boolean) -> Unit,
-    onPreviewOnScreen: () -> Unit,
-    onDownloadToPhone: () -> Unit,
+    onPreviewOnScreen: (
+        resolvedBaseDay: Long,
+        startEpochDay: Long?,
+        endEpochDay: Long?,
+        contentScope: ReportContentScope,
+        effectiveLayout: SheetLayout
+    ) -> Unit,
+    onDownloadToPhone: (
+        resolvedBaseDay: Long,
+        startEpochDay: Long?,
+        endEpochDay: Long?,
+        contentScope: ReportContentScope,
+        effectiveLayout: SheetLayout
+    ) -> Unit,
     onDismiss: () -> Unit
 ) {
     val rType = template.parsedReportType
     val visual = rType.visualSpec()
+
+    val isPlanDocument = rType == ReportType.NEXT_DAY_PLAN
+    val isCombinedSinglePage = rType == ReportType.COMBINED_DAILY_AND_PLAN
+    val contentScope = when {
+        isCombinedSinglePage -> ReportContentScope.COMBINED_REPORT_AND_PLAN
+        isPlanDocument -> ReportContentScope.PLAN_ONLY
+        else -> ReportContentScope.REPORT_ONLY
+    }
+
+    var periodMode by remember(rType) {
+        mutableStateOf(
+            if (rType == ReportType.PERIOD_REPORT || rType == ReportType.PERIOD_COMPARISON) {
+                ReportPeriodMode.DATE_RANGE
+            } else {
+                ReportPeriodMode.CURRENT_OR_NEXT_DAY
+            }
+        )
+    }
+    val defaultTargetDay = if (isPlanDocument) baseEpochDay + 1L else baseEpochDay
+    var singleTargetEpochDay by remember(baseEpochDay, isPlanDocument) {
+        mutableLongStateOf(defaultTargetDay)
+    }
+    var rangeStartEpochDay by remember(baseEpochDay, isPlanDocument, rType) {
+        mutableLongStateOf(
+            when {
+                isPlanDocument -> baseEpochDay + 1L
+                rType == ReportType.PERIOD_REPORT || rType == ReportType.PERIOD_COMPARISON -> baseEpochDay - 6L
+                else -> baseEpochDay
+            }
+        )
+    }
+    var rangeEndEpochDay by remember(baseEpochDay, isPlanDocument) {
+        mutableLongStateOf(
+            if (isPlanDocument) baseEpochDay + 7L else baseEpochDay
+        )
+    }
+
+    val resolvedStartDay = when {
+        isCombinedSinglePage -> baseEpochDay
+        periodMode == ReportPeriodMode.CURRENT_OR_NEXT_DAY -> defaultTargetDay
+        periodMode == ReportPeriodMode.SINGLE_DATE -> singleTargetEpochDay
+        else -> minOf(rangeStartEpochDay, rangeEndEpochDay)
+    }
+    val resolvedEndDay = when {
+        isCombinedSinglePage -> baseEpochDay
+        periodMode == ReportPeriodMode.CURRENT_OR_NEXT_DAY -> defaultTargetDay
+        periodMode == ReportPeriodMode.SINGLE_DATE -> singleTargetEpochDay
+        else -> maxOf(rangeStartEpochDay, rangeEndEpochDay)
+    }
+    val effectiveLayout = if (isCombinedSinglePage) SheetLayout.SINGLE_SHEET else SheetLayout.SINGLE_SHEET
 
     Column(
         modifier = Modifier
@@ -1506,7 +1598,7 @@ private fun ReportActionBottomSheetContent(
                         )
                     }
                     Text(
-                        text = "Сводная аналитика по подразделению, контроль SLA и рейтинг бригад доступны для ролей ИТР (Инженер / Мастер), Руководитель участка и Администратор.",
+                        text = "Сводная аналитика по подразделению, контроль SLA и рейтинг доступны для ролей ИТР, Руководитель и Администратор.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1520,88 +1612,201 @@ private fun ReportActionBottomSheetContent(
                 Text("Понятно")
             }
         } else {
-            // Блок «Настройки страниц и формата» внутри Action Sheet
+            if (isCombinedSinglePage) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF0D9488).copy(alpha = 0.10f),
+                    border = BorderStroke(1.dp, Color(0xFF0D9488).copy(alpha = 0.28f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Совмещённая выгрузка на одной странице",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0F766E)
+                        )
+                        Text(
+                            text = "Верхняя таблица: Отчёт о выполненных работах за $todayFormatted • Нижняя таблица: План работ на $tomorrowFormatted",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    text = if (isPlanDocument) {
+                        "Период выгрузки плана работ"
+                    } else {
+                        "Период выгрузки отчёта о выполненных работах"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val primaryDayLabel = if (isPlanDocument) {
+                        "На следующий день ($tomorrowFormatted)"
+                    } else {
+                        "За текущий день ($todayFormatted)"
+                    }
+                    FilterChip(
+                        selected = periodMode == ReportPeriodMode.CURRENT_OR_NEXT_DAY,
+                        onClick = { periodMode = ReportPeriodMode.CURRENT_OR_NEXT_DAY },
+                        label = { Text(primaryDayLabel) },
+                        modifier = Modifier.testTag("period_mode_current_or_next")
+                    )
+                    FilterChip(
+                        selected = periodMode == ReportPeriodMode.SINGLE_DATE,
+                        onClick = { periodMode = ReportPeriodMode.SINGLE_DATE },
+                        label = { Text("На указанную дату") },
+                        modifier = Modifier.testTag("period_mode_single_date")
+                    )
+                    FilterChip(
+                        selected = periodMode == ReportPeriodMode.DATE_RANGE,
+                        onClick = { periodMode = ReportPeriodMode.DATE_RANGE },
+                        label = {
+                            Text(if (isPlanDocument) "На указанный период" else "За указанный период")
+                        },
+                        modifier = Modifier.testTag("period_mode_date_range")
+                    )
+                }
+
+                if (periodMode == ReportPeriodMode.SINGLE_DATE) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isPlanDocument) "Дата плана работ:" else "Дата отчёта:",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { singleTargetEpochDay -= 1L },
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Предыдущая дата")
+                                }
+                                Text(
+                                    text = ReportDocumentGenerator.formatEpochDay(singleTargetEpochDay),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 6.dp)
+                                )
+                                IconButton(
+                                    onClick = { singleTargetEpochDay += 1L },
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Следующая дата")
+                                }
+                            }
+                        }
+                    }
+                } else if (periodMode == ReportPeriodMode.DATE_RANGE) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Начало периода (С):",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(
+                                        onClick = { rangeStartEpochDay -= 1L },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Раньше")
+                                    }
+                                    Text(
+                                        text = ReportDocumentGenerator.formatEpochDay(rangeStartEpochDay),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    IconButton(
+                                        onClick = { rangeStartEpochDay += 1L },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Позже")
+                                    }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Конец периода (По):",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(
+                                        onClick = { rangeEndEpochDay -= 1L },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Раньше")
+                                    }
+                                    Text(
+                                        text = ReportDocumentGenerator.formatEpochDay(rangeEndEpochDay),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    IconButton(
+                                        onClick = { rangeEndEpochDay += 1L },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Позже")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             Text(
-                text = "Настройки страниц и формата",
+                text = "Формат файла и фотоприложение",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val isSplit = selectedLayout == SheetLayout.SPLIT_SHEETS
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (isSplit) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { onSelectLayout(SheetLayout.SPLIT_SHEETS) }
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(
-                            text = "На раздельных страницах",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isSplit) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Стр. 1: Отчёт ($todayFormatted) • Стр. 2: План ($tomorrowFormatted)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isSplit) {
-                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                }
-
-                val isSingle = selectedLayout == SheetLayout.SINGLE_SHEET
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (isSingle) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { onSelectLayout(SheetLayout.SINGLE_SHEET) }
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        Text(
-                            text = "На одной странице",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isSingle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Отчёт ($todayFormatted) + План ($tomorrowFormatted) вместе",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isSingle) {
-                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                }
-            }
 
             Row(
                 modifier = Modifier
@@ -1610,22 +1815,24 @@ private fun ReportActionBottomSheetContent(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                FilterChip(
-                    selected = includePhotos,
-                    onClick = { onTogglePhotos(true) },
-                    leadingIcon = {
-                        Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(15.dp))
-                    },
-                    label = { Text("С фото") }
-                )
-                FilterChip(
-                    selected = !includePhotos,
-                    onClick = { onTogglePhotos(false) },
-                    leadingIcon = {
-                        Icon(Icons.Default.HideImage, contentDescription = null, modifier = Modifier.size(15.dp))
-                    },
-                    label = { Text("Без фото") }
-                )
+                if (!isPlanDocument) {
+                    FilterChip(
+                        selected = includePhotos,
+                        onClick = { onTogglePhotos(true) },
+                        leadingIcon = {
+                            Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(15.dp))
+                        },
+                        label = { Text("С фото") }
+                    )
+                    FilterChip(
+                        selected = !includePhotos,
+                        onClick = { onTogglePhotos(false) },
+                        leadingIcon = {
+                            Icon(Icons.Default.HideImage, contentDescription = null, modifier = Modifier.size(15.dp))
+                        },
+                        label = { Text("Без фото") }
+                    )
+                }
                 ExportFormat.entries.forEach { fmt ->
                     FilterChip(
                         selected = selectedFormat == fmt,
@@ -1643,7 +1850,15 @@ private fun ReportActionBottomSheetContent(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OutlinedButton(
-                    onClick = onPreviewOnScreen,
+                    onClick = {
+                        onPreviewOnScreen(
+                            baseEpochDay,
+                            resolvedStartDay,
+                            resolvedEndDay,
+                            contentScope,
+                            effectiveLayout
+                        )
+                    },
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .weight(1f)
@@ -1662,7 +1877,15 @@ private fun ReportActionBottomSheetContent(
                 }
 
                 Button(
-                    onClick = onDownloadToPhone,
+                    onClick = {
+                        onDownloadToPhone(
+                            baseEpochDay,
+                            resolvedStartDay,
+                            resolvedEndDay,
+                            contentScope,
+                            effectiveLayout
+                        )
+                    },
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .weight(1.15f)

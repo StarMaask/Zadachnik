@@ -106,23 +106,20 @@ import com.example.data.model.GeneratedReportDocument
 import com.example.data.model.ReportTemplateDocument
 import com.example.data.model.ReportType
 import com.example.data.model.SheetLayout
-import com.example.data.model.TaskDocument
 import com.example.data.model.TaskStatus
 import com.example.data.seed.CorporateSeedData
 import com.example.domain.reporting.GeneratedDocumentResult
 import com.example.domain.reporting.ReportDocumentGenerator
 import com.example.domain.reporting.ReportSectionBlock
 import com.example.domain.reporting.ReportSectionKind
-import com.example.ui.components.TaskItemCard
 import com.example.ui.theme.LocalAppThemeTokens
 import java.io.File
 
 /**
- * Смысловые уровни (категории) отчётов в премиальной дизайн-системе:
- * 1. Принятые / Архив заданий (скрытые с главной страницы после подтверждения)
- * 2. Ежедневные (Оперативные)
- * 3. Аналитика (Для ИТР)
- * 4. Конструктор
+ * Смысловые уровни (категории) отчётных документов:
+ * 1. Ежедневные (Оперативные)
+ * 2. Аналитика (Для ИТР)
+ * 3. Конструктор
  */
 private enum class ReportCategoryTab(
     val code: String,
@@ -134,16 +131,9 @@ private enum class ReportCategoryTab(
     ALL(
         code = "ALL",
         tabLabel = "Все",
-        sectionTitle = "Все отчёты",
+        sectionTitle = "Все отчётные документы",
         sectionSubtitle = "Полный каталог оперативных и аналитических сводок",
         accentColor = Color(0xFF2563EB)
-    ),
-    ACCEPTED_ARCHIVE(
-        code = "ACCEPTED_ARCHIVE",
-        tabLabel = "Принятые задания",
-        sectionTitle = "Принятые отчёты и архив заданий",
-        sectionSubtitle = "Подтверждённые отчёты по заданиям, перенесённые с главной страницы",
-        accentColor = Color(0xFF059669)
     ),
     DAILY_OPERATIONAL(
         code = "DAILY_OPERATIONAL",
@@ -286,8 +276,6 @@ fun ReportingCenterScreen(
     activeEmployee: CorporateEmployee,
     templates: List<ReportTemplateDocument>,
     generatedReports: List<GeneratedReportDocument>,
-    allTasks: List<TaskDocument> = emptyList(),
-    onTaskClick: (TaskDocument) -> Unit = {},
     currentEpochDay: Long = CorporateSeedData.BASE_EPOCH_DAY,
     organizationName: String = CorporateSeedData.DEFAULT_ORG_NAME,
     siteName: String = CorporateSeedData.DEFAULT_SITE_NAME,
@@ -301,7 +289,8 @@ fun ReportingCenterScreen(
         layout: SheetLayout,
         format: ExportFormat,
         saveToHistory: Boolean,
-        includePhotos: Boolean
+        includePhotos: Boolean,
+        targetEpochDay: Long
     ) -> Unit,
     onSaveCustomTemplate: (ReportTemplateDocument) -> Unit
 ) {
@@ -406,11 +395,6 @@ fun ReportingCenterScreen(
     val constructorList = remember(allReportCatalog) {
         allReportCatalog.filter { it.parsedReportType.visualSpec().category == ReportCategoryTab.CONSTRUCTOR }
     }
-    val acceptedAndArchivedTasks = remember(allTasks) {
-        allTasks.filter {
-            it.taskStatus == TaskStatus.APPROVED || it.taskStatus == TaskStatus.ARCHIVED
-        }.sortedByDescending { it.dueDateEpochDay }
-    }
 
     LazyColumn(
         modifier = Modifier
@@ -419,7 +403,7 @@ fun ReportingCenterScreen(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 36.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. УМНЫЙ ВЕРХНИЙ БЛОК: Заголовок «Отчёты», компактный селектор даты и тонкая строка параметров по умолчанию
+        // 1. УМНЫЙ ВЕРХНИЙ БЛОК: Заголовок «Отчетные документы», компактный селектор даты и тонкая строка параметров
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Строка заголовка и селектора даты смены
@@ -430,7 +414,7 @@ fun ReportingCenterScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Отчёты",
+                            text = "Отчетные документы",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.onBackground
@@ -788,7 +772,6 @@ fun ReportingCenterScreen(
                         val isSelected = selectedCategoryTab == tab
                         val countBadge = when (tab) {
                             ReportCategoryTab.ALL -> allReportCatalog.size
-                            ReportCategoryTab.ACCEPTED_ARCHIVE -> acceptedAndArchivedTasks.size
                             ReportCategoryTab.DAILY_OPERATIONAL -> dailyOperationalList.size
                             ReportCategoryTab.ITR_ANALYTICS -> itrAnalyticsList.size
                             ReportCategoryTab.CONSTRUCTOR -> constructorList.size
@@ -895,69 +878,7 @@ fun ReportingCenterScreen(
             }
         }
 
-        // СЕКЦИЯ 0: Принятые отчёты и архив заданий (перемещённые с главной страницы)
-        if (selectedCategoryTab == ReportCategoryTab.ACCEPTED_ARCHIVE ||
-            (selectedCategoryTab == ReportCategoryTab.ALL && acceptedAndArchivedTasks.isNotEmpty())
-        ) {
-            item {
-                ReportCategorySectionHeader(
-                    category = ReportCategoryTab.ACCEPTED_ARCHIVE,
-                    topAirSpacing = 4.dp
-                )
-            }
-            if (acceptedAndArchivedTasks.isEmpty()) {
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(
-                            alpha = if (tokens.isDark) 0.22f else 0.34f
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF059669).copy(alpha = 0.12f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = Color(0xFF059669),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-                            Text(
-                                text = "Принятых отчётов пока нет",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "После подтверждения отчёты скрываются с главной страницы и сохраняются здесь.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-                }
-            } else {
-                items(acceptedAndArchivedTasks, key = { "rep_arch_${it.id}" }) { task ->
-                    TaskItemCard(
-                        task = task,
-                        onClick = { onTaskClick(task) }
-                    )
-                }
-            }
-        }
+        // Каталог отчётных документов (выполненные работы перенесены во вкладку «Архив»)
 
         // СЕКЦИЯ 1: Ежедневные (Оперативные)
         if (selectedCategoryTab == ReportCategoryTab.ALL || selectedCategoryTab == ReportCategoryTab.DAILY_OPERATIONAL) {
@@ -1167,7 +1088,8 @@ fun ReportingCenterScreen(
                         selectedLayout,
                         selectedFormat,
                         false,
-                        includePhotosInReport
+                        includePhotosInReport,
+                        selectedReportEpochDay
                     )
                 },
                 onDownloadToPhone = {
@@ -1177,7 +1099,8 @@ fun ReportingCenterScreen(
                         selectedLayout,
                         selectedFormat,
                         true,
-                        includePhotosInReport
+                        includePhotosInReport,
+                        selectedReportEpochDay
                     )
                     lastDownloadedNotice = "Файл «${sheetTpl.name}» (${selectedFormat.code}, ${selectedLayout.shortRu}) сохранён в папку «Загрузки» телефона."
                 },

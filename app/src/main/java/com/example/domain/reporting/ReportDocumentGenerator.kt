@@ -252,20 +252,38 @@ object ReportDocumentGenerator {
         }
 
         // 1. Задачи для ПЛАНА РАБОТ НА СЛЕДУЮЩИЙ ДЕНЬ:
-        // - Задачи, назначенные на следующую смену (dueDateEpochDay >= currentEpochDay + 1)
-        // - Незавершённые задачи текущего дня (остаток объёма < 100% или статус переходящий)
-        val planTasks = roleScopedTasks.filter {
-            it.dueDateEpochDay >= currentEpochDay + 1L ||
-                (it.dueDateEpochDay == currentEpochDay && (it.taskStatus.isEligibleForCarryover || !it.isVolumeCompleted100Percent()))
+        // - Для ежедневного отчёта / плана на завтра: строго задачи на следующую смену (currentEpochDay + 1)
+        //   и незавершённые переходящие задачи именно выбранной текущей смены (currentEpochDay).
+        // - Для многодневных / сводных отчётов за период: все будущие и переходящие незавершённые задачи.
+        val planTasks = when (reportType) {
+            ReportType.DAILY_REPORT, ReportType.NEXT_DAY_PLAN -> roleScopedTasks.filter {
+                it.dueDateEpochDay == currentEpochDay + 1L ||
+                    (it.dueDateEpochDay == currentEpochDay &&
+                        !it.taskStatus.isTerminalOrDone &&
+                        (it.taskStatus.isEligibleForCarryover || !it.isVolumeCompleted100Percent()))
+            }
+            else -> roleScopedTasks.filter {
+                it.dueDateEpochDay >= currentEpochDay + 1L ||
+                    (it.dueDateEpochDay == currentEpochDay &&
+                        !it.taskStatus.isTerminalOrDone &&
+                        (it.taskStatus.isEligibleForCarryover || !it.isVolumeCompleted100Percent()))
+            }
         }
 
         // 2. Задачи для ОТЧЁТА ЗА ТЕКУЩИЙ ДЕНЬ (ФАКТ):
+        // Для ежедневного отчёта и плана на завтра берём строго задачи за выбранный день (currentEpochDay),
+        // чтобы в суточный отчёт и фотоприложение не попадали выполненные и старые задания за весь прошлый период.
         val factTasks = when (reportType) {
-            ReportType.NEXT_DAY_PLAN -> roleScopedTasks.filter { it.dueDateEpochDay <= currentEpochDay }
-            ReportType.DAILY_REPORT -> roleScopedTasks.filter { it.dueDateEpochDay <= currentEpochDay }
+            ReportType.NEXT_DAY_PLAN,
+            ReportType.DAILY_REPORT -> roleScopedTasks.filter { it.dueDateEpochDay == currentEpochDay }
+            ReportType.PERIOD_REPORT,
+            ReportType.PERIOD_COMPARISON -> roleScopedTasks
             ReportType.PHOTO_QUALITY -> roleScopedTasks.filter { it.requiresPhotoReport || it.photoItems.isNotEmpty() }
             ReportType.OVERDUE_CARRYOVER -> roleScopedTasks.filter {
-                it.carryoverCount > 0L || it.taskStatus == TaskStatus.OVERDUE || it.taskStatus == TaskStatus.REJECTED || !it.isVolumeCompleted100Percent()
+                it.carryoverCount > 0L ||
+                    it.taskStatus == TaskStatus.OVERDUE ||
+                    it.taskStatus == TaskStatus.REJECTED ||
+                    (!it.taskStatus.isTerminalOrDone && !it.isVolumeCompleted100Percent())
             }
             ReportType.RECURRING_EXECUTION -> roleScopedTasks.filter { it.recurrenceRule != "NONE" }
             ReportType.PRIORITY_DISTRIBUTION -> roleScopedTasks
@@ -427,8 +445,13 @@ object ReportDocumentGenerator {
             )
         }
 
+        val photoSourceTasks = when (reportType) {
+            ReportType.DAILY_REPORT,
+            ReportType.NEXT_DAY_PLAN -> factTasks.distinctBy { it.id }
+            else -> (factTasks + planTasks).distinctBy { it.id }
+        }
         val attachedPhotos = if (includePhotos) {
-            roleScopedTasks.flatMap { t ->
+            photoSourceTasks.flatMap { t ->
                 t.decodedPhotos().map { ph ->
                     ReportAttachedPhoto(
                         taskTitle = t.title,

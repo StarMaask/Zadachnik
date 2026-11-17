@@ -1507,4 +1507,187 @@ class ExampleUnitTest {
         assertTrue(gamifPreview.sheets.first().rows.isNotEmpty())
         assertTrue(gamifPreview.summaryText.contains("XP"))
     }
+
+    @Test
+    fun `daily report and next day plan strictly scope tasks and photos to selected day without leaking past period`() {
+        val today = LocalDate.of(2026, 11, 16).toEpochDay()
+        val head = CorporateSeedData.findEmployee("emp_head_1")
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+
+        fun makePhoto(id: String, comment: String) = com.example.data.model.PhotoReportItem(
+            id = id,
+            uriString = "stamp://$id",
+            authorId = worker.id,
+            authorName = worker.shortName,
+            capturedAtText = "12:00",
+            gpsCoords = "Участок №1",
+            comment = comment
+        ).encode()
+
+        val pastApproved3DaysAgo = TaskDocument(
+            id = "t_past_13",
+            title = "Составить план на декабрь (13.11)",
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            status = TaskStatus.APPROVED.code,
+            dueDateEpochDay = today - 3L,
+            photoItems = listOf(makePhoto("ph_13_1", "Фото 13.11 #1"), makePhoto("ph_13_2", "Фото 13.11 #2"))
+        )
+        val pastUncarried2DaysAgo = TaskDocument(
+            id = "t_past_14",
+            title = "Старая задача (14.11)",
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            status = TaskStatus.REJECTED.code,
+            dueDateEpochDay = today - 2L,
+            photoItems = listOf(makePhoto("ph_14_1", "Фото 14.11 #1"))
+        )
+        val pastApprovedYesterday = TaskDocument(
+            id = "t_past_15",
+            title = "Взять болгарку (15.11)",
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            status = TaskStatus.APPROVED.code,
+            dueDateEpochDay = today - 1L,
+            photoItems = listOf(makePhoto("ph_15_1", "Фото 15.11 #1"))
+        )
+        val todayApproved = TaskDocument(
+            id = "t_today_done",
+            title = "Планёрка сегодня (16.11)",
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            status = TaskStatus.APPROVED.code,
+            dueDateEpochDay = today,
+            photoItems = listOf(makePhoto("ph_16_done", "Фото 16.11 выполнено"))
+        )
+        val todayInProgress = TaskDocument(
+            id = "t_today_active",
+            title = "Заполнение еврокубов сегодня (16.11)",
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            status = TaskStatus.IN_PROGRESS.code,
+            dueDateEpochDay = today,
+            photoItems = listOf(makePhoto("ph_16_active", "Фото 16.11 в работе"))
+        ).withUpdatedVolume(12.0, 4.0, "шт")
+        val tomorrowPlan = TaskDocument(
+            id = "t_tomorrow_17",
+            title = "План на завтра (17.11)",
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            status = TaskStatus.NEW.code,
+            dueDateEpochDay = today + 1L
+        )
+        val distantFuture = TaskDocument(
+            id = "t_future_21",
+            title = "Дальний план (21.11)",
+            assigneeId = worker.id,
+            assigneeName = worker.shortName,
+            groupId = worker.groupId,
+            groupName = worker.groupName,
+            status = TaskStatus.NEW.code,
+            dueDateEpochDay = today + 5L,
+            photoItems = listOf(makePhoto("ph_21_1", "Фото 21.11"))
+        )
+
+        val allTasks = listOf(
+            pastApproved3DaysAgo,
+            pastUncarried2DaysAgo,
+            pastApprovedYesterday,
+            todayApproved,
+            todayInProgress,
+            tomorrowPlan,
+            distantFuture
+        )
+
+        val dailyTemplate = ReportTemplateDocument(
+            id = "tpl_daily",
+            name = "Отчет за текущий день",
+            reportType = ReportType.DAILY_REPORT.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.PDF.code
+        )
+
+        val dailyPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = dailyTemplate,
+            allTasks = allTasks,
+            currentEpochDay = today,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            includePhotos = true
+        )
+
+        val sections = dailyPreview.sheets.single().sections
+        assertEquals(2, sections.size)
+
+        val factRows = sections[0].rows
+        assertEquals(2, factRows.size)
+        assertTrue(factRows.all { it.deadlineLabel.startsWith("16.11.2026") })
+        assertFalse(factRows.any { it.taskTitle.contains("13.11") || it.taskTitle.contains("14.11") || it.taskTitle.contains("15.11") })
+
+        val planRows = sections[1].rows
+        assertEquals(2, planRows.size)
+        assertTrue(planRows.any { it.taskTitle == "План на завтра (17.11)" })
+        assertTrue(planRows.any { it.taskTitle == "Заполнение еврокубов сегодня (16.11)" })
+        assertFalse(planRows.any { it.taskTitle.contains("21.11") || it.taskTitle.contains("14.11") })
+
+        assertEquals(2, dailyPreview.attachedPhotos.size)
+        assertTrue(dailyPreview.attachedPhotos.all { it.photo.id.startsWith("ph_16_") })
+
+        // Verify SPLIT_SHEETS mode also isolates daily fact & photos to 16.11.2026
+        val splitPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = dailyTemplate,
+            allTasks = allTasks,
+            currentEpochDay = today,
+            overrideLayout = SheetLayout.SPLIT_SHEETS,
+            includePhotos = true
+        )
+        assertEquals(2, splitPreview.sheets[1].rows.size)
+        assertEquals(2, splitPreview.sheets[0].rows.size)
+        assertEquals(2, splitPreview.attachedPhotos.size)
+
+        // Selecting yesterday (15.11.2026) exports strictly yesterday's fact & photo
+        val yesterdayPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = dailyTemplate,
+            allTasks = allTasks,
+            currentEpochDay = today - 1L,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            includePhotos = true
+        )
+        val yesterdayFactRows = yesterdayPreview.sheets.single().sections[0].rows
+        assertEquals(1, yesterdayFactRows.size)
+        assertEquals("Взять болгарку (15.11)", yesterdayFactRows.single().taskTitle)
+        assertEquals(1, yesterdayPreview.attachedPhotos.size)
+        assertEquals("ph_15_1", yesterdayPreview.attachedPhotos.single().photo.id)
+
+        // Multi-day PERIOD_REPORT still aggregates across the period
+        val periodTemplate = dailyTemplate.copy(
+            id = "tpl_period",
+            name = "Отчёт за произвольный период",
+            reportType = ReportType.PERIOD_REPORT.code
+        )
+        val periodPreview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = periodTemplate,
+            allTasks = allTasks,
+            currentEpochDay = today,
+            overrideLayout = SheetLayout.SINGLE_SHEET,
+            includePhotos = true
+        )
+        assertEquals(7, periodPreview.sheets.single().sections[0].rows.size)
+        assertEquals(7, periodPreview.attachedPhotos.size)
+    }
 }

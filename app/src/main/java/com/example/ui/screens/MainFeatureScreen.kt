@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
@@ -97,6 +98,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
@@ -166,7 +168,8 @@ enum class MainNavDestination(
 ) {
     TODAY("today", "Задачи", Icons.Default.CalendarToday),
     APPROVALS("approvals", "Приёмка", Icons.AutoMirrored.Filled.FactCheck),
-    REPORTING("reporting", "Отчёты", Icons.Default.Description),
+    ARCHIVE("archive", "Архив", Icons.Default.Inventory2),
+    REPORTING("reporting", "Отчетные документы", Icons.Default.Description),
     STATS("stats", "Сводка", Icons.Default.Analytics),
     ADMIN("admin", "Персонал", Icons.Default.AdminPanelSettings)
 }
@@ -331,6 +334,7 @@ fun MainFeatureScreen(
         if (isWorkerRole) {
             listOf(
                 MainNavDestination.TODAY,
+                MainNavDestination.ARCHIVE,
                 MainNavDestination.STATS,
                 MainNavDestination.ADMIN
             )
@@ -509,18 +513,17 @@ fun MainFeatureScreen(
                                         viewModel.triggerEndOfDayCarryover()
                                     }
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Архив выполненных работ") },
+                                    leadingIcon = { Icon(Icons.Default.Inventory2, contentDescription = null) },
+                                    onClick = {
+                                        showTopOverflowMenu = false
+                                        currentTab = MainNavDestination.ARCHIVE
+                                    }
+                                )
                                 if (!isWorkerRole) {
                                     DropdownMenuItem(
-                                        text = { Text("Принятые отчёты (Архив заданий)") },
-                                        leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
-                                        onClick = {
-                                            showTopOverflowMenu = false
-                                            approvalsOpenArchiveByDefault = true
-                                            currentTab = MainNavDestination.APPROVALS
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Сформировать план / отчёт") },
+                                        text = { Text("Отчетные документы") },
                                         leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
                                         onClick = {
                                             showTopOverflowMenu = false
@@ -602,7 +605,16 @@ fun MainFeatureScreen(
                                         }
                                     }
                                 },
-                                label = { Text(tabTitle) },
+                                label = {
+                                    Text(
+                                        text = tabTitle,
+                                        fontSize = if (dest == MainNavDestination.REPORTING) 9.sp else 10.sp,
+                                        lineHeight = 10.5.sp,
+                                        maxLines = if (dest == MainNavDestination.REPORTING) 2 else 1,
+                                        textAlign = TextAlign.Center,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
                                 modifier = Modifier.testTag("nav_${dest.route}")
                             )
                         }
@@ -812,12 +824,7 @@ fun MainFeatureScreen(
                                 onSearchChange = viewModel::updateSearchQuery,
                                 onOpenRoleAssignments = { currentTab = MainNavDestination.ADMIN },
                                 onOpenAcceptedArchive = {
-                                    if (isWorkerRole) {
-                                        currentTab = MainNavDestination.STATS
-                                    } else {
-                                        approvalsOpenArchiveByDefault = true
-                                        currentTab = MainNavDestination.APPROVALS
-                                    }
+                                    currentTab = MainNavDestination.ARCHIVE
                                 },
                                 onOpenCreateDialogForDate = { targetDay ->
                                     createDialogTargetEpochDay = targetDay
@@ -844,6 +851,14 @@ fun MainFeatureScreen(
                                 onRejectTask = { task, reason -> viewModel.rejectReport(task, reason) }
                             )
                         }
+                        MainNavDestination.ARCHIVE -> {
+                            CompletedArchiveScreen(
+                                activeEmployee = activeEmployee,
+                                allTasks = roleVisibleTasks,
+                                currentEpochDay = currentEpochDay,
+                                onTaskClick = { selectedTaskId = it.id }
+                            )
+                        }
                         MainNavDestination.REPORTING -> {
                             val tpls = (templatesState as? UiState.Success)?.data
                                 ?: CorporateSeedData.buildInitialReportTemplates(
@@ -857,8 +872,6 @@ fun MainFeatureScreen(
                                 activeEmployee = activeEmployee,
                                 templates = tpls,
                                 generatedReports = genReps,
-                                allTasks = roleVisibleTasks,
-                                onTaskClick = { selectedTaskId = it.id },
                                 currentEpochDay = currentEpochDay,
                                 organizationName = organizationName,
                                 siteName = siteName,
@@ -867,14 +880,15 @@ fun MainFeatureScreen(
                                 onToggleAutoPlan = viewModel::toggleAutoSchedulePlan,
                                 onToggleAutoReport = viewModel::toggleAutoScheduleReport,
                                 onOpenOrganizationSettings = { showOrgSettingsDialog = true },
-                                onGenerateReport = { tpl, layout, fmt, save, includePhotos ->
+                                onGenerateReport = { tpl, layout, fmt, save, includePhotos, targetEpochDay ->
                                     viewModel.previewOrGenerateReport(
                                         context = context,
                                         template = tpl,
                                         sheetLayout = layout,
                                         exportFormat = fmt,
                                         saveToHistory = save,
-                                        includePhotos = includePhotos
+                                        includePhotos = includePhotos,
+                                        targetEpochDay = targetEpochDay
                                     )
                                 },
                                 onSaveCustomTemplate = viewModel::saveCustomTemplate
@@ -1847,7 +1861,7 @@ private fun TodayTasksContent(
             onDismissRequest = { homeApprovedOutcomeTask = null },
             title = { Text("Отчёт принят") },
             text = {
-                Text("Выполнение задания «${acceptedTask.title}» подтверждено. Принятый отчёт перемещён с главной страницы в раздел принятых заданий (Приёмка / Архив).")
+                Text("Выполнение задания «${acceptedTask.title}» подтверждено. Принятый отчёт перемещён с главной страницы во вкладку «Архив».")
             },
             confirmButton = {
                 Button(

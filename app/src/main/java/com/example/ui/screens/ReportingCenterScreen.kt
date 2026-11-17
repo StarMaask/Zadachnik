@@ -1964,16 +1964,12 @@ fun ReportPreviewDialog(
                             Text(
                                 text = result.reportTitle,
                                 style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
+                                fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = result.orgHeader,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         IconButton(
@@ -2182,10 +2178,10 @@ fun ReportPreviewDialog(
                                                     Row(
                                                         modifier = Modifier.fillMaxWidth(),
                                                         horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
+                                                        verticalAlignment = Alignment.Top
                                                     ) {
                                                         Row(
-                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            verticalAlignment = Alignment.Top,
                                                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                                                             modifier = Modifier.weight(1f)
                                                         ) {
@@ -2204,9 +2200,7 @@ fun ReportPreviewDialog(
                                                             Text(
                                                                 text = "${row.index}. ${row.taskTitle}",
                                                                 style = MaterialTheme.typography.bodySmall.copy(textDecoration = deco),
-                                                                fontWeight = FontWeight.Bold,
-                                                                maxLines = 2,
-                                                                overflow = TextOverflow.Ellipsis
+                                                                fontWeight = FontWeight.Bold
                                                             )
                                                         }
                                                         Spacer(modifier = Modifier.width(6.dp))
@@ -2259,9 +2253,12 @@ fun ReportPreviewDialog(
                                                     }
 
                                                     val metaLine = buildString {
-                                                        append("${row.assigneeFio} (${row.groupName}) • ${row.deadlineLabel}")
+                                                        append("Исполнитель: ${row.assigneeFio} (${row.groupName}) • Срок: ${row.deadlineLabel}")
                                                         if (result.includePhotos) {
                                                             append(" • Фото: ${row.photoInfo}")
+                                                        }
+                                                        if (row.commentSummary.isNotBlank()) {
+                                                            append(" • Контроль: ${row.commentSummary}")
                                                         }
                                                     }
                                                     Text(

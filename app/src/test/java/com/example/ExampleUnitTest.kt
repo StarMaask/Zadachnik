@@ -1899,5 +1899,25 @@ class ExampleUnitTest {
             headPending.eventsToNotify.single().type
         )
     }
+
+    @Test
+    fun `wrapTextToLines wraps long report cells across multiple lines without cutting off text`() {
+        val dummyPaint = android.graphics.Paint()
+        val longTaskTitle = "Распечатать журнал для работ по распоряжению и подключить пожарную сигнализацию в ССВД МНС-2"
+        val wrappedTitle = ReportDocumentGenerator.wrapTextToLines(longTaskTitle, dummyPaint, 174f)
+        assertTrue(wrappedTitle.size >= 2)
+        assertEquals(longTaskTitle, wrappedTitle.joinToString(" "))
+
+        val multiAssignees = "Плиткин Д.А., Старшинов М.Ю., Бойцов Д.С., Большаков В.Н., Дорохов С.Н."
+        val wrappedAssignees = ReportDocumentGenerator.wrapTextToLines(multiAssignees, dummyPaint, 94f)
+        assertTrue(wrappedAssignees.size >= 2)
+        assertEquals(multiAssignees, wrappedAssignees.joinToString(" "))
+
+        val longVolume = "Не до конца: 0 из 12 шт (0%, ост. 12 шт) [Чек-лист: 0/4 п.]"
+        val wrappedVolume = ReportDocumentGenerator.wrapTextToLines(longVolume, dummyPaint, 148f)
+        assertTrue(wrappedVolume.size >= 2)
+        assertEquals(longVolume, wrappedVolume.joinToString(" "))
+    }
 }
+
 

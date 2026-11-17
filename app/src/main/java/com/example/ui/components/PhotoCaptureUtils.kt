@@ -624,7 +624,49 @@ object PhotoCaptureUtils {
         stampTimeText: String = nowStampText(),
         opaqueBackground: Boolean = false
     ) {
-        val barHeight = (height * 0.14f).coerceIn(78f, 128f)
+        val textScale = (width / 760f).coerceIn(0.66f, 1.35f)
+        val line1Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = AndroidColor.parseColor("#F8FAFC")
+            textSize = 17.5f * textScale
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        val line2Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = AndroidColor.parseColor("#CBD5E1")
+            textSize = 14.5f * textScale
+        }
+
+        val padX = 18f * textScale
+        val maxTextW = (width - padX * 2f).coerceAtLeast(180f)
+        val effectiveTitle = taskTitle.ifBlank { comment.ifBlank { "Фотофиксация" } }
+        val cleanGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(gpsCoords)
+
+        val titleLines = com.example.domain.reporting.ReportDocumentGenerator.wrapTextToLines(
+            "${stampTimeText.ifBlank { nowStampText() }} • $effectiveTitle",
+            line1Paint,
+            maxTextW
+        )
+        val authorLines = com.example.domain.reporting.ReportDocumentGenerator.wrapTextToLines(
+            "Автор: ${authorName.ifBlank { "Исполнитель" }} • $cleanGps",
+            line2Paint,
+            maxTextW
+        )
+        val commentLines = if (comment.isNotBlank()) {
+            com.example.domain.reporting.ReportDocumentGenerator.wrapTextToLines(
+                comment,
+                line2Paint,
+                maxTextW
+            )
+        } else {
+            emptyList()
+        }
+
+        val step1 = 21f * textScale
+        val step2 = 18f * textScale
+        val computedBarH = (16f * textScale) +
+            (titleLines.size * step1) +
+            (authorLines.size * step2) +
+            (commentLines.size * step2)
+        val barHeight = maxOf((height * 0.14f).coerceIn(78f, 128f), computedBarH).coerceAtMost(height * 0.36f)
         val topY = height - barHeight
 
         val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -636,39 +678,25 @@ object PhotoCaptureUtils {
         }
         canvas.drawRect(0f, topY, width.toFloat(), height.toFloat(), barPaint)
 
-        val textScale = (width / 760f).coerceIn(0.66f, 1.35f)
-        val line1Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.parseColor("#F8FAFC")
-            textSize = 19f * textScale
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        var curY = topY + 22f * textScale
+        val maxBottomY = height - 6f * textScale
+        titleLines.forEach { tLine ->
+            if (curY <= maxBottomY) {
+                canvas.drawText(tLine, padX, curY, line1Paint)
+                curY += step1
+            }
         }
-        val line2Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = AndroidColor.parseColor("#CBD5E1")
-            textSize = 15.5f * textScale
+        authorLines.forEach { aLine ->
+            if (curY <= maxBottomY) {
+                canvas.drawText(aLine, padX, curY, line2Paint)
+                curY += step2
+            }
         }
-
-        val padX = 20f * textScale
-        val effectiveTitle = taskTitle.ifBlank { comment.ifBlank { "Фотофиксация" } }
-        val cleanGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(gpsCoords)
-        canvas.drawText(
-            "${stampTimeText.ifBlank { nowStampText() }} • ${effectiveTitle.take(42)}",
-            padX,
-            topY + 28f * textScale,
-            line1Paint
-        )
-        canvas.drawText(
-            "Автор: ${authorName.ifBlank { "Исполнитель" }} • ${cleanGps.take(58)}",
-            padX,
-            topY + 54f * textScale,
-            line2Paint
-        )
-        if (comment.isNotBlank() && barHeight >= 96f) {
-            canvas.drawText(
-                comment.take(56),
-                padX,
-                topY + 78f * textScale,
-                line2Paint
-            )
+        commentLines.forEach { cLine ->
+            if (curY <= maxBottomY) {
+                canvas.drawText(cLine, padX, curY, line2Paint)
+                curY += step2
+            }
         }
     }
 

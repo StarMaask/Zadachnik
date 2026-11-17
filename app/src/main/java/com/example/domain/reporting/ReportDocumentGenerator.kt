@@ -238,6 +238,79 @@ object ReportDocumentGenerator {
         )
     }
 
+    fun measureTextWidthSafe(paint: Paint, text: String): Float {
+        if (text.isEmpty()) return 0f
+        val nativeWidth = runCatching { paint.measureText(text) }.getOrDefault(0f)
+        if (nativeWidth > 0f) return nativeWidth
+        val textSize = runCatching { paint.textSize }.getOrDefault(8f).let { if (it > 0f) it else 8f }
+        val isBold = runCatching { paint.isFakeBoldText }.getOrDefault(false)
+        val charFactor = if (isBold) 0.56f else 0.51f
+        return text.length * textSize * charFactor
+    }
+
+    /**
+     * Разбивает произвольный текст на строки, гарантированно помещающиеся в заданную ширину колонки maxWidth (в пунктах PDF).
+     * Поддерживает перенос по словам, сохранение абзацев и посимвольный перенос сверхдлинных непрерывных лексем.
+     */
+    fun wrapTextToLines(
+        text: String,
+        paint: Paint,
+        maxWidth: Float
+    ): List<String> {
+        val clean = text.trim()
+        if (clean.isEmpty()) return listOf("")
+        val minWidth = (runCatching { paint.textSize }.getOrDefault(8f).coerceAtLeast(7f)) * 2f
+        val safeMaxWidth = maxWidth.coerceAtLeast(minWidth)
+        val result = mutableListOf<String>()
+
+        val paragraphs = clean.split('\n')
+        for (paragraph in paragraphs) {
+            val trimmedPara = paragraph.trim()
+            if (trimmedPara.isEmpty()) {
+                result.add("")
+                continue
+            }
+            val words = trimmedPara.split(Regex("\\s+"))
+            var currentLine = StringBuilder()
+
+            fun flushCurrentLine() {
+                if (currentLine.isNotEmpty()) {
+                    result.add(currentLine.toString())
+                    currentLine = StringBuilder()
+                }
+            }
+
+            for (word in words) {
+                val candidate = if (currentLine.isEmpty()) word else "$currentLine $word"
+                if (measureTextWidthSafe(paint, candidate) <= safeMaxWidth) {
+                    currentLine.clear()
+                    currentLine.append(candidate)
+                } else {
+                    flushCurrentLine()
+                    if (measureTextWidthSafe(paint, word) <= safeMaxWidth) {
+                        currentLine.append(word)
+                    } else {
+                        var chunk = StringBuilder()
+                        for (ch in word) {
+                            val nextChunk = "$chunk$ch"
+                            if (chunk.isNotEmpty() && measureTextWidthSafe(paint, nextChunk) > safeMaxWidth) {
+                                result.add(chunk.toString())
+                                chunk = StringBuilder().append(ch)
+                            } else {
+                                chunk.append(ch)
+                            }
+                        }
+                        if (chunk.isNotEmpty()) {
+                            currentLine.append(chunk)
+                        }
+                    }
+                }
+            }
+            flushCurrentLine()
+        }
+        return if (result.isEmpty()) listOf("") else result
+    }
+
     fun formatEpochDay(epochDay: Long): String {
         val date = LocalDate.ofEpochDay(epochDay)
         return String.format(
@@ -1035,52 +1108,59 @@ object ReportDocumentGenerator {
             val page = pdf.startPage(pageInfo)
             val canvas = page.canvas
 
-            val headerRect = RectF(28f, 24f, pageWidth - 28f, 82f)
-            canvas.drawRoundRect(headerRect, 8f, 8f, headerBgPaint)
-            canvas.drawRoundRect(headerRect, 8f, 8f, borderPaint)
-
-            canvas.drawText(
-                "Фотоотчёт: ${task.title.ifBlank { "Задача" }.take(56)}",
-                38f,
-                44f,
-                titlePaint
-            )
             val siteOrGroup = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
                 raw = task.geoLocation,
                 fallbackSubdivision = task.groupName
             )
             val executor = task.assigneeName.ifBlank { "Исполнитель" }
-            canvas.drawText(
-                "Объект: ${siteOrGroup.take(44)}  •  Исполнитель: ${executor.take(28)}  •  Срок: ${formatEpochDay(task.dueDateEpochDay)}",
-                38f,
-                60f,
-                subPaint
+            val headerMaxW = (pageWidth - 76f)
+            val titleLines = wrapTextToLines(
+                "Фотоотчёт: ${task.title.ifBlank { "Задача" }}",
+                titlePaint,
+                headerMaxW
             )
-            val authorSuffix = if (preparedByName.isNotBlank()) "  •  Сформировал: ${preparedByName.take(26)}" else ""
-            canvas.drawText(
+            val objLines = wrapTextToLines(
+                "Объект: $siteOrGroup  •  Исполнитель: $executor  •  Срок: ${formatEpochDay(task.dueDateEpochDay)}",
+                subPaint,
+                headerMaxW
+            )
+            val authorSuffix = if (preparedByName.isNotBlank()) "  •  Сформировал: $preparedByName" else ""
+            val metaLines = wrapTextToLines(
                 "Всего фото: ${photos.size} шт.  •  Дата выгрузки: $generatedAt$authorSuffix  •  Стр. ${pageIdx + 1} из $totalPages",
-                38f,
-                74f,
-                subPaint
+                subPaint,
+                headerMaxW
             )
+
+            val headerHeight = 16f + (titleLines.size * 13f) + (objLines.size * 11f) + (metaLines.size * 11f)
+            val headerRect = RectF(28f, 20f, pageWidth - 28f, 20f + headerHeight)
+            canvas.drawRoundRect(headerRect, 8f, 8f, headerBgPaint)
+            canvas.drawRoundRect(headerRect, 8f, 8f, borderPaint)
+
+            var headerTextY = 35f
+            titleLines.forEach { line ->
+                canvas.drawText(line, 38f, headerTextY, titlePaint)
+                headerTextY += 13f
+            }
+            objLines.forEach { line ->
+                canvas.drawText(line, 38f, headerTextY, subPaint)
+                headerTextY += 11f
+            }
+            metaLines.forEach { line ->
+                canvas.drawText(line, 38f, headerTextY, subPaint)
+                headerTextY += 11f
+            }
 
             val cardLeft = 28f
             val cardRight = pageWidth - 28f
-            val cardHeight = 352f
-            val cardGap = 16f
-            var y = 94f
+            var y = 20f + headerHeight + 10f
+            val availableTotalH = (pageHeight - 24f - y).coerceAtLeast(300f)
+            val cardGap = 12f
+            val cardHeight = ((availableTotalH - cardGap) / 2f).coerceAtLeast(240f)
 
             chunk.forEachIndexed { localIdx, photo ->
                 val globalIndex = pageIdx * 2 + localIdx + 1
                 val cardRect = RectF(cardLeft, y, cardRight, y + cardHeight)
                 canvas.drawRoundRect(cardRect, 8f, 8f, borderPaint)
-
-                val frameLeft = cardLeft + 10f
-                val frameTop = y + 10f
-                val frameRight = cardRight - 10f
-                val frameBottom = y + cardHeight - 58f
-                val frameRect = RectF(frameLeft, frameTop, frameRight, frameBottom)
-                canvas.drawRoundRect(frameRect, 6f, 6f, frameBgPaint)
 
                 val cleanPhotoGps = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
                     raw = photo.gpsCoords,
@@ -1097,6 +1177,36 @@ object ReportDocumentGenerator {
                     context = context,
                     photoId = photo.id
                 )
+                val resLabel = if (origResult.width > 0 && origResult.height > 0) {
+                    " • ${origResult.width}×${origResult.height} px (${origResult.sourceLabel})"
+                } else {
+                    ""
+                }
+                val cardTextMaxW = (cardRight - cardLeft) - 24f
+                val pTitleLines = wrapTextToLines(
+                    "Фото #$globalIndex из ${photos.size}  •  ${photo.authorName.ifBlank { executor }}  •  ${photo.capturedAtText}$resLabel",
+                    cardTitlePaint,
+                    cardTextMaxW
+                )
+                val pCommentLines = wrapTextToLines(
+                    "Комментарий: ${photo.comment.ifBlank { "Фотофиксация #$globalIndex" }}",
+                    subPaint,
+                    cardTextMaxW
+                )
+                val pGpsLines = wrapTextToLines(
+                    "Участок / Подразделение: $cleanPhotoGps",
+                    subPaint,
+                    cardTextMaxW
+                )
+                val footerTextHeight = (pTitleLines.size * 11.5f) + (pCommentLines.size * 10.5f) + (pGpsLines.size * 10.5f) + 14f
+
+                val frameLeft = cardLeft + 10f
+                val frameTop = y + 10f
+                val frameRight = cardRight - 10f
+                val frameBottom = (y + cardHeight - footerTextHeight).coerceAtLeast(frameTop + 90f)
+                val frameRect = RectF(frameLeft, frameTop, frameRight, frameBottom)
+                canvas.drawRoundRect(frameRect, 6f, 6f, frameBgPaint)
+
                 val bmp = origResult.bitmap
                 if (bmp != null && bmp.width > 0 && bmp.height > 0) {
                     val fitted = computeAspectFitBounds(
@@ -1117,31 +1227,19 @@ object ReportDocumentGenerator {
                     canvas.drawText("Изображение недоступно для предпросмотра", frameLeft + 20f, (frameTop + frameBottom) / 2f, missingPaint)
                 }
 
-                val resLabel = if (origResult.width > 0 && origResult.height > 0) {
-                    " • ${origResult.width}×${origResult.height} px (${origResult.sourceLabel})"
-                } else {
-                    ""
+                var captionY = frameBottom + 13f
+                pTitleLines.forEach { line ->
+                    canvas.drawText(line, cardLeft + 12f, captionY, cardTitlePaint)
+                    captionY += 11.5f
                 }
-                canvas.drawText(
-                    "Фото #$globalIndex из ${photos.size}  •  ${photo.authorName.ifBlank { executor }}  •  ${photo.capturedAtText}$resLabel",
-                    cardLeft + 12f,
-                    frameBottom + 18f,
-                    cardTitlePaint
-                )
-                val commentLine = photo.comment.ifBlank { "Фотофиксация #$globalIndex" }.take(74)
-                val gpsLine = cleanPhotoGps.take(54)
-                canvas.drawText(
-                    "Комментарий: $commentLine",
-                    cardLeft + 12f,
-                    frameBottom + 33f,
-                    subPaint
-                )
-                canvas.drawText(
-                    "Участок / Подразделение: $gpsLine",
-                    cardLeft + 12f,
-                    frameBottom + 46f,
-                    subPaint
-                )
+                pCommentLines.forEach { line ->
+                    canvas.drawText(line, cardLeft + 12f, captionY, subPaint)
+                    captionY += 10.5f
+                }
+                pGpsLines.forEach { line ->
+                    canvas.drawText(line, cardLeft + 12f, captionY, subPaint)
+                    captionY += 10.5f
+                }
 
                 y += cardHeight + cardGap
             }
@@ -1545,18 +1643,24 @@ object ReportDocumentGenerator {
         }
 
         val colX = if (doc.includePhotos) {
-            floatArrayOf(30f, 48f, 128f, 228f, 385f, 555f, 635f, 700f, 755f)
+            floatArrayOf(29f, 47f, 113f, 211f, 389f, 541f, 615f, 673f, 725f)
         } else {
-            floatArrayOf(30f, 48f, 132f, 240f, 415f, 590f, 670f, 735f)
+            floatArrayOf(29f, 47f, 115f, 221f, 413f, 577f, 655f, 717f)
+        }
+        val colRight = if (doc.includePhotos) {
+            floatArrayOf(44f, 109f, 207f, 385f, 537f, 611f, 669f, 721f, 813f)
+        } else {
+            floatArrayOf(44f, 111f, 217f, 409f, 573f, 651f, 713f, 813f)
+        }
+        val verticalGridPaint = Paint().apply {
+            color = Color.rgb(226, 232, 240)
+            strokeWidth = 0.55f
         }
 
         fun drawTopDocumentHeader(canvas: Canvas, sheetTitleText: String, isContinuation: Boolean): Float {
-            val boxRect = RectF(26f, 18f, pageWidth - 26f, 68f)
-            canvas.drawRoundRect(boxRect, 6f, 6f, headerBoxBgPaint)
-            canvas.drawRoundRect(boxRect, 6f, 6f, headerBoxBorderPaint)
-
+            val headerMaxW = pageWidth - 68f
             val contSuffix = if (isContinuation) " (продолжение)" else ""
-            canvas.drawText("${doc.orgHeader}$contSuffix", 34f, 33f, orgTitlePaint)
+            val orgLines = wrapTextToLines("${doc.orgHeader}$contSuffix", orgTitlePaint, headerMaxW)
 
             val layoutDescription = if (doc.sheetLayout == SheetLayout.SPLIT_SHEETS && doc.sheets.size > 1) {
                 "РЕЖИМ ВЫГРУЗКИ: НА РАЗДЕЛЬНЫХ ЛИСТАХ (2 ЛИСТА)  —  $sheetTitleText"
@@ -1565,16 +1669,33 @@ object ReportDocumentGenerator {
             } else {
                 "РЕЖИМ ВЫГРУЗКИ: НА ОДНОЙ СТРАНИЦЕ (БЛОК 1: ОТЧЁТ ЗА ТЕКУЩИЙ ДЕНЬ  +  БЛОК 2: ПЛАН НА СЛЕДУЮЩИЙ ДЕНЬ)"
             }
-            canvas.drawText(layoutDescription, 34f, 48f, docModePaint)
+            val modeLines = wrapTextToLines(layoutDescription, docModePaint, headerMaxW)
 
             val photoBadge = if (doc.includePhotos) "Фотоотчёт: Включён" else "Фотоотчёт: Без фото"
-            canvas.drawText(
-                "Период: ${doc.periodLabel}   |   Сформирован: ${doc.generatedAtLabel}   |   $photoBadge   |   Подготовил: ${doc.preparedByLabel}",
-                34f,
-                61f,
-                metaPaint
-            )
-            return 76f
+            val metaText = "Период: ${doc.periodLabel}   |   Сформирован: ${doc.generatedAtLabel}   |   $photoBadge   |   Подготовил: ${doc.preparedByLabel}"
+            val metaLines = wrapTextToLines(metaText, metaPaint, headerMaxW)
+
+            val boxTop = 16f
+            val boxHeight = 10f + (orgLines.size * 12.5f) + (modeLines.size * 11f) + (metaLines.size * 10f)
+            val boxBottom = boxTop + boxHeight
+            val boxRect = RectF(26f, boxTop, pageWidth - 26f, boxBottom)
+            canvas.drawRoundRect(boxRect, 6f, 6f, headerBoxBgPaint)
+            canvas.drawRoundRect(boxRect, 6f, 6f, headerBoxBorderPaint)
+
+            var curY = boxTop + 12f
+            orgLines.forEach { line ->
+                canvas.drawText(line, 34f, curY, orgTitlePaint)
+                curY += 12.5f
+            }
+            modeLines.forEach { line ->
+                canvas.drawText(line, 34f, curY, docModePaint)
+                curY += 11f
+            }
+            metaLines.forEach { line ->
+                canvas.drawText(line, 34f, curY, metaPaint)
+                curY += 10f
+            }
+            return boxBottom + 6f
         }
 
         fun drawSectionHeaderAndColumns(canvas: Canvas, section: ReportSectionBlock, startY: Float): Float {
@@ -1584,27 +1705,30 @@ object ReportDocumentGenerator {
             val subHeaderBg = if (isPlan) planSubHeaderBgPaint else reportSubHeaderBgPaint
             val subHeaderText = if (isPlan) planSubHeaderTextPaint else reportSubHeaderTextPaint
 
-            // 1. Крупная цветная плашка заголовка раздела (Отчёт vs План)
-            val bannerRect = RectF(26f, y, pageWidth - 26f, y + 28f)
-            canvas.drawRoundRect(bannerRect, 4f, 4f, bannerPaint)
-            canvas.drawText(
+            val bannerMaxW = pageWidth - 68f
+            val bTitleLines = wrapTextToLines(
                 "${section.bannerTitle}   [Всего позиций: ${section.rows.size}]",
-                34f,
-                y + 13f,
-                bannerTitlePaint
+                bannerTitlePaint,
+                bannerMaxW
             )
-            canvas.drawText(
-                section.bannerSubtitle,
-                34f,
-                y + 24f,
-                bannerSubtitlePaint
-            )
-            y += 30f
+            val bSubLines = wrapTextToLines(section.bannerSubtitle, bannerSubtitlePaint, bannerMaxW)
+            val bannerH = 6f + (bTitleLines.size * 11f) + (bSubLines.size * 9.5f)
 
-            // 2. Шапка колонок таблицы раздела
-            canvas.drawRect(26f, y, pageWidth - 26f, y + 18f, subHeaderBg)
-            canvas.drawRect(26f, y, pageWidth - 26f, y + 18f, headerBoxBorderPaint)
+            // 1. Крупная цветная плашка заголовка раздела (Отчёт vs План)
+            val bannerRect = RectF(26f, y, pageWidth - 26f, y + bannerH)
+            canvas.drawRoundRect(bannerRect, 4f, 4f, bannerPaint)
+            var bTextY = y + 11f
+            bTitleLines.forEach { line ->
+                canvas.drawText(line, 34f, bTextY, bannerTitlePaint)
+                bTextY += 11f
+            }
+            bSubLines.forEach { line ->
+                canvas.drawText(line, 34f, bTextY, bannerSubtitlePaint)
+                bTextY += 9.5f
+            }
+            y += bannerH + 2f
 
+            // 2. Шапка колонок таблицы раздела (с поддержкой переноса длинных заголовков колонок)
             val shortHeaders = if (isPlan) {
                 if (doc.includePhotos) {
                     listOf("№", "Раздел", "Исполнитель", "Планируемые работы (План)", "Плановый объём на смену", "Статус / Тип", "Срок", "Фото", "Примечание")
@@ -1619,12 +1743,29 @@ object ReportDocumentGenerator {
                 }
             }
 
-            shortHeaders.forEachIndexed { cIdx, hText ->
+            val wrappedHeaders = shortHeaders.mapIndexed { cIdx, hText ->
+                val colW = if (cIdx < colX.size) (colRight[cIdx] - colX[cIdx]) else 50f
+                wrapTextToLines(hText, subHeaderText, colW)
+            }
+            val headerMaxLines = wrappedHeaders.maxOfOrNull { it.size }?.coerceAtLeast(1) ?: 1
+            val headerBarH = 6f + headerMaxLines * 9.5f
+
+            canvas.drawRect(26f, y, pageWidth - 26f, y + headerBarH, subHeaderBg)
+            canvas.drawRect(26f, y, pageWidth - 26f, y + headerBarH, headerBoxBorderPaint)
+
+            wrappedHeaders.forEachIndexed { cIdx, lines ->
                 if (cIdx < colX.size) {
-                    canvas.drawText(hText, colX[cIdx], y + 12.5f, subHeaderText)
+                    if (cIdx > 0) {
+                        canvas.drawLine(colX[cIdx] - 3f, y, colX[cIdx] - 3f, y + headerBarH, headerBoxBorderPaint)
+                    }
+                    var hy = y + 10f
+                    lines.forEach { line ->
+                        canvas.drawText(line, colX[cIdx], hy, subHeaderText)
+                        hy += 9.5f
+                    }
                 }
             }
-            return y + 20f
+            return y + headerBarH + 2f
         }
 
         pdfSheetsOrder.forEach { sheet ->
@@ -1680,8 +1821,68 @@ object ReportDocumentGenerator {
                     y += 24f
                 } else {
                     section.rows.forEachIndexed { rIdx, row ->
-                        val neededHeight = 16f + (row.checklistBreakdown.take(4).size * 11f)
-                        if (y + neededHeight > pageHeight - 62f) {
+                        val volumeCellText = if (isPlan) {
+                            row.planVolumeLabel.ifBlank { row.volumeInfo }
+                        } else {
+                            row.factVolumeLabel.ifBlank { row.volumeInfo }
+                        }
+
+                        // Полные тексты всех ячеек без какого-либо обрезания .take(...)
+                        val rawCells = if (doc.includePhotos) {
+                            listOf(
+                                row.index.toString(),
+                                row.rowTypeBadge,
+                                row.assigneeFio,
+                                row.taskTitle,
+                                volumeCellText,
+                                row.statusLabel,
+                                row.deadlineLabel,
+                                row.photoInfo,
+                                row.commentSummary
+                            )
+                        } else {
+                            listOf(
+                                row.index.toString(),
+                                row.rowTypeBadge,
+                                row.assigneeFio,
+                                row.taskTitle,
+                                volumeCellText,
+                                row.statusLabel,
+                                row.deadlineLabel,
+                                row.commentSummary
+                            )
+                        }
+
+                        val wrappedCells = rawCells.mapIndexed { cIdx, cellText ->
+                            val paintToUse = when (cIdx) {
+                                1 -> badgePaint
+                                4 -> cellBoldPaint
+                                else -> cellPaint
+                            }
+                            val colWidth = if (cIdx < colX.size) (colRight[cIdx] - colX[cIdx]) else 60f
+                            wrapTextToLines(cellText, paintToUse, colWidth)
+                        }
+
+                        val checklistColLeft = colX[3]
+                        val checklistMaxWidth = (colRight.last() - checklistColLeft).coerceAtLeast(240f)
+                        val wrappedChecklistItems: List<List<String>> = row.checklistBreakdown.map { subLine ->
+                            val prefix = if (isPlan) "↳ Пункт плана по чек-листу: " else "↳ Выполнение по чек-листу: "
+                            wrapTextToLines("$prefix$subLine", checklistPaint, checklistMaxWidth)
+                        }
+
+                        val maxCellLines = wrappedCells.maxOfOrNull { it.size }?.coerceAtLeast(1) ?: 1
+                        val cellLineStep = 9.4f
+                        val checklistLineStep = 9.0f
+                        val totalChecklistLines = wrappedChecklistItems.sumOf { it.size }
+                        val mainCellsHeight = 5f + (maxCellLines * cellLineStep)
+                        val checklistBlockHeight = if (totalChecklistLines > 0) {
+                            2f + (totalChecklistLines * checklistLineStep)
+                        } else {
+                            0f
+                        }
+                        val neededHeight = mainCellsHeight + checklistBlockHeight + 2f
+
+                        if (y + neededHeight > pageHeight - 52f) {
                             pdf.finishPage(page)
                             pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber++).create()
                             page = pdf.startPage(pageInfo)
@@ -1690,57 +1891,42 @@ object ReportDocumentGenerator {
                             y = drawSectionHeaderAndColumns(canvas, section, y)
                         }
 
+                        val rowTop = y - 1f
+                        val rowBottom = y + neededHeight
                         if (rIdx % 2 == 1) {
-                            canvas.drawRect(26f, y - 2f, pageWidth - 26f, y + neededHeight, zebraRowPaint)
+                            canvas.drawRect(26f, rowTop, pageWidth - 26f, rowBottom, zebraRowPaint)
+                        }
+                        // Боковые границы таблицы и разделители колонок
+                        canvas.drawLine(26f, rowTop, 26f, rowBottom, linePaint)
+                        canvas.drawLine(pageWidth - 26f, rowTop, pageWidth - 26f, rowBottom, linePaint)
+                        for (cIdx in 1 until colX.size) {
+                            canvas.drawLine(colX[cIdx] - 3f, rowTop, colX[cIdx] - 3f, rowTop + mainCellsHeight, verticalGridPaint)
                         }
 
-                        val volumeCellText = if (isPlan) {
-                            row.planVolumeLabel.ifBlank { row.volumeInfo }
-                        } else {
-                            row.factVolumeLabel.ifBlank { row.volumeInfo }
-                        }
-
-                        val cells = if (doc.includePhotos) {
-                            listOf(
-                                row.index.toString(),
-                                row.rowTypeBadge.take(15),
-                                row.assigneeFio.take(17),
-                                row.taskTitle.take(27),
-                                volumeCellText.take(32),
-                                row.statusLabel.take(15),
-                                row.deadlineLabel.take(10),
-                                row.photoInfo.take(10),
-                                row.commentSummary.take(14)
-                            )
-                        } else {
-                            listOf(
-                                row.index.toString(),
-                                row.rowTypeBadge.take(15),
-                                row.assigneeFio.take(18),
-                                row.taskTitle.take(30),
-                                volumeCellText.take(35),
-                                row.statusLabel.take(15),
-                                row.deadlineLabel.take(10),
-                                row.commentSummary.take(16)
-                            )
-                        }
-
-                        cells.forEachIndexed { cIdx, text ->
+                        // Отрисовка многострочного текста каждой ячейки
+                        wrappedCells.forEachIndexed { cIdx, lines ->
                             if (cIdx < colX.size) {
                                 val paintToUse = when (cIdx) {
                                     1 -> badgePaint
                                     4 -> cellBoldPaint
                                     else -> cellPaint
                                 }
-                                canvas.drawText(text, colX[cIdx], y + 10f, paintToUse)
+                                var lineY = y + 8.5f
+                                lines.forEach { lineText ->
+                                    canvas.drawText(lineText, colX[cIdx], lineY, paintToUse)
+                                    lineY += cellLineStep
+                                }
                             }
                         }
-                        y += 13f
+                        y += mainCellsHeight
 
-                        row.checklistBreakdown.take(4).forEach { subLine ->
-                            val prefix = if (isPlan) "   ↳ Пункт плана по чек-листу: " else "   ↳ Выполнение по чек-листу: "
-                            canvas.drawText("$prefix${subLine.take(92)}", colX[3], y + 8.5f, checklistPaint)
-                            y += 11f
+                        // Отрисовка всех пунктов чек-листа с переносом длинных строк
+                        wrappedChecklistItems.forEach { subLines ->
+                            subLines.forEachIndexed { subIdx, subText ->
+                                val drawX = if (subIdx == 0) checklistColLeft else (checklistColLeft + 10f)
+                                canvas.drawText(subText, drawX, y + 7.5f, checklistPaint)
+                                y += checklistLineStep
+                            }
                         }
 
                         y += 2f
@@ -1748,20 +1934,28 @@ object ReportDocumentGenerator {
                     }
                 }
 
-                // Итоговая строка по конкретному разделу (Отчёт или План)
+                // Итоговая строка по конкретному разделу (Отчёт или План) с переносом при необходимости
                 val summaryStripText = if (isPlan) {
                     "ИТОГО ПО РАЗДЕЛУ «ПЛАН РАБОТ НА ${section.dateLabel}»: запланировано задач — ${section.rows.size}"
                 } else {
                     val done100 = section.rows.count { it.completionPercent >= 100 }
                     "ИТОГО ПО РАЗДЕЛУ «ОТЧЁТ ЗА ${section.dateLabel}»: всего задач — ${section.rows.size}, выполнено на 100% — $done100, в работе/частично — ${section.rows.size - done100}"
                 }
-                canvas.drawText(summaryStripText, 32f, y + 11f, if (isPlan) planSubHeaderTextPaint else reportSubHeaderTextPaint)
-                y += 16f
+                val summaryPaint = if (isPlan) planSubHeaderTextPaint else reportSubHeaderTextPaint
+                val summaryLines = wrapTextToLines(summaryStripText, summaryPaint, pageWidth - 64f)
+                summaryLines.forEach { sLine ->
+                    canvas.drawText(sLine, 32f, y + 10.5f, summaryPaint)
+                    y += 11.5f
+                }
+                y += 4f
             }
 
-            // Нижний колонтитул с подписями (с переносом на новую страницу, если таблица дошла до самого низа)
-            val neededSigHeight = (doc.signatureBlock.size * 13f) + 12f
-            if (y + neededSigHeight > pageHeight - 14f) {
+            // Нижний колонтитул с подписями (с поддержкой переноса длинных строк и переходом на новую страницу при нехватке места)
+            val wrappedSigLines = doc.signatureBlock.flatMap { sig ->
+                wrapTextToLines(sig, metaPaint, pageWidth - 56f)
+            }
+            val neededSigHeight = (wrappedSigLines.size * 12f) + 12f
+            if (y + neededSigHeight > pageHeight - 12f) {
                 pdf.finishPage(page)
                 pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber++).create()
                 page = pdf.startPage(pageInfo)
@@ -1769,17 +1963,17 @@ object ReportDocumentGenerator {
                 y = drawTopDocumentHeader(canvas, sheet.sheetTitle, isContinuation = true)
             }
             var sigY = (pageHeight - 36f).coerceAtLeast(y + 10f).coerceAtMost(pageHeight - neededSigHeight)
-            doc.signatureBlock.forEach { sig ->
-                if (sigY <= pageHeight - 8f) {
-                    canvas.drawText(sig, 28f, sigY, metaPaint)
-                    sigY += 13f
+            wrappedSigLines.forEach { sigLine ->
+                if (sigY <= pageHeight - 6f) {
+                    canvas.drawText(sigLine, 28f, sigY, metaPaint)
+                    sigY += 12f
                 }
             }
 
             pdf.finishPage(page)
         }
 
-        // Приложение с фотоотчётами (все фото с сохранением точных пропорций, пагинация по 6 карточек на лист)
+        // Приложение с фотоотчётами (все фото с сохранением точных пропорций, пагинация по 6 карточек на лист и многострочные подписи)
         if (doc.includePhotos && doc.attachedPhotos.isNotEmpty()) {
             val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
             val photoFrameBgPaint = Paint().apply {
@@ -1794,23 +1988,27 @@ object ReportDocumentGenerator {
                 val page = pdf.startPage(pageInfo)
                 val canvas = page.canvas
 
-                var y = 32f
+                var y = 30f
                 val pageSuffix = if (totalPages > 1) " (стр. ${chunkIdx + 1} из $totalPages)" else ""
-                canvas.drawText(
+                val appendixHeaderLines = wrapTextToLines(
                     "${doc.reportTitle} — Приложение: Фотоотчёты (${doc.attachedPhotos.size} шт.)$pageSuffix",
-                    28f,
-                    y,
-                    orgTitlePaint
+                    orgTitlePaint,
+                    pageWidth - 56f
                 )
-                y += 18f
+                appendixHeaderLines.forEach { hLine ->
+                    canvas.drawText(hLine, 28f, y, orgTitlePaint)
+                    y += 14f
+                }
+                y += 4f
 
                 var col = 0
                 val cardW = 246f
-                val cardH = 232f
+                val cardH = 236f
                 val colGap = 18f
-                val rowGap = 14f
+                val rowGap = 12f
                 val frameInset = 6f
-                val frameHeight = 166f
+                val frameHeight = 148f
+                val captionMaxW = cardW - 14f
 
                 chunk.forEachIndexed { localIdx, item ->
                     val globalIdx = chunkIdx * 6 + localIdx
@@ -1847,9 +2045,35 @@ object ReportDocumentGenerator {
                         val dstRect = RectF(fitted.left, fitted.top, fitted.right, fitted.bottom)
                         canvas.drawBitmap(bmp, null, dstRect, bitmapPaint)
                     }
-                    canvas.drawText("${globalIdx + 1}. ${item.taskTitle.take(30)}", x + 8f, y + 188f, cellBoldPaint)
-                    canvas.drawText("${item.assigneeFio.take(24)} • ${item.photo.capturedAtText}", x + 8f, y + 203f, metaPaint)
-                    canvas.drawText(item.photo.comment.take(36), x + 8f, y + 217f, metaPaint)
+
+                    val titleWrapped = wrapTextToLines("${globalIdx + 1}. ${item.taskTitle}", cellBoldPaint, captionMaxW)
+                    val authorAndLocWrapped = wrapTextToLines(
+                        "${item.assigneeFio} • ${item.photo.capturedAtText} • ${item.photo.gpsCoords}",
+                        metaPaint,
+                        captionMaxW
+                    )
+                    val commentWrapped = wrapTextToLines(item.photo.comment, metaPaint, captionMaxW)
+
+                    var textY = frameBottom + 11f
+                    val maxCardBottomY = y + cardH - 5f
+                    titleWrapped.forEach { tLine ->
+                        if (textY <= maxCardBottomY) {
+                            canvas.drawText(tLine, x + 7f, textY, cellBoldPaint)
+                            textY += 9.5f
+                        }
+                    }
+                    authorAndLocWrapped.forEach { aLine ->
+                        if (textY <= maxCardBottomY) {
+                            canvas.drawText(aLine, x + 7f, textY, metaPaint)
+                            textY += 9.0f
+                        }
+                    }
+                    commentWrapped.forEach { cLine ->
+                        if (textY <= maxCardBottomY) {
+                            canvas.drawText(cLine, x + 7f, textY, metaPaint)
+                            textY += 9.0f
+                        }
+                    }
 
                     col++
                     if (col >= 3) {
@@ -2096,6 +2320,19 @@ object ReportDocumentGenerator {
                 zip.write(
                     """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cols>
+    <col min="1" max="1" width="6" customWidth="1"/>
+    <col min="2" max="2" width="18" customWidth="1"/>
+    <col min="3" max="3" width="28" customWidth="1"/>
+    <col min="4" max="4" width="24" customWidth="1"/>
+    <col min="5" max="5" width="46" customWidth="1"/>
+    <col min="6" max="6" width="38" customWidth="1"/>
+    <col min="7" max="7" width="16" customWidth="1"/>
+    <col min="8" max="8" width="22" customWidth="1"/>
+    <col min="9" max="9" width="18" customWidth="1"/>
+    <col min="10" max="10" width="18" customWidth="1"/>
+    <col min="11" max="11" width="32" customWidth="1"/>
+  </cols>
   <sheetData>
     $rowsXml
   </sheetData>

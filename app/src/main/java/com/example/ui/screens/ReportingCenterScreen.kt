@@ -1967,8 +1967,13 @@ fun ReportPreviewDialog(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = result.orgHeader,
+                                text = result.preparedByLabel.substringBefore(" — ").ifBlank { result.orgHeader },
                                 style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "Подготовил: ${result.preparedByLabel}",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -2163,11 +2168,51 @@ fun ReportPreviewDialog(
                                         color = MaterialTheme.colorScheme.surface,
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
+                                        val hasFactStatusGrouping = !isPlanSection && section.rows.any { it.rowTypeBadge == "ОТЧЁТ (ФАКТ)" }
+                                        val confirmedCount = if (hasFactStatusGrouping) {
+                                            section.rows.count { com.example.domain.reporting.ReportDocumentGenerator.isConfirmedReportRow(it) }
+                                        } else {
+                                            0
+                                        }
+                                        val unconfirmedCount = if (hasFactStatusGrouping) section.rows.size - confirmedCount else 0
+
                                         Column(modifier = Modifier.fillMaxWidth()) {
                                             section.rows.forEachIndexed { idx, row ->
-                                                val isApproved = row.statusLabel == TaskStatus.APPROVED.titleRu
+                                                val isApproved = com.example.domain.reporting.ReportDocumentGenerator.isConfirmedReportRow(row)
+                                                val showConfirmedHeader = hasFactStatusGrouping && idx == 0 && isApproved
+                                                val showUnconfirmedHeader = hasFactStatusGrouping &&
+                                                    !isApproved &&
+                                                    (idx == 0 || com.example.domain.reporting.ReportDocumentGenerator.isConfirmedReportRow(section.rows[idx - 1]))
                                                 val deco = if (isApproved && !isPlanSection) TextDecoration.LineThrough else TextDecoration.None
                                                 val isPartialVolume = row.completionPercent in 0..99 && row.volumeInfo.startsWith("Не до конца")
+
+                                                if (showConfirmedHeader) {
+                                                    Surface(
+                                                        color = Color(0xFF15803D).copy(alpha = 0.12f),
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Text(
+                                                            text = "✓ ЧАСТЬ 1. ПОДТВЕРЖДЁННЫЕ ОТЧЁТЫ ($confirmedCount поз.)",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = Color(0xFF15803D),
+                                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                                        )
+                                                    }
+                                                } else if (showUnconfirmedHeader) {
+                                                    Surface(
+                                                        color = Color(0xFFD97706).copy(alpha = 0.12f),
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Text(
+                                                            text = "⏳ ЧАСТЬ 2. НЕВЫПОЛНЕННЫЕ И НЕПОДТВЕРЖДЁННЫЕ ЗАДАЧИ ($unconfirmedCount поз.)",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = Color(0xFFB45309),
+                                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                                        )
+                                                    }
+                                                }
 
                                                 Column(
                                                     modifier = Modifier

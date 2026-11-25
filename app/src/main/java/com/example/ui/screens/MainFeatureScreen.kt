@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -1156,7 +1157,7 @@ fun MainFeatureScreen(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                     ) {
                         Text("Отклонить")
                     }
@@ -1189,7 +1190,7 @@ fun MainFeatureScreen(
                         ),
                         modifier = Modifier
                             .weight(1.4f)
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("quick_approve_pending_${firstPending.memberId}")
                     ) {
                         Text("Назначить ${quickSelectedRole.shortTitleRu}")
@@ -2074,7 +2075,7 @@ private fun EmptyTasksCleanCard(
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                 modifier = Modifier
-                    .height(46.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("empty_state_create_task_button")
             ) {
                 Icon(
@@ -2491,7 +2492,7 @@ private fun CorporateCalendarSection(
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(36.dp)
+                                .heightIn(min = 44.dp)
                         ) {
                             Text(
                                 text = when {
@@ -2544,7 +2545,7 @@ private fun CalendarDayCell(
             null
         },
         modifier = modifier
-            .height(48.dp)
+            .heightIn(min = 48.dp)
             .clickable(onClick = onClick)
     ) {
         Column(

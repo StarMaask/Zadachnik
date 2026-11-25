@@ -106,12 +106,77 @@ data class UserLevel(
     val isMaxLevel: Boolean
 )
 
+enum class ServiceSpecialization(
+    val code: String,
+    val shortTitleRu: String,
+    val fullTitleRu: String,
+    val descriptionRu: String
+) {
+    ASUTP_UESAITM(
+        code = "ASUTP_UESAITM",
+        shortTitleRu = "УЭСАиТМ (АСУТП)",
+        fullTitleRu = "УЭСАиТМ — Участок эксплуатации средств автоматики и телемеханики (АСУТП / КИПиА)",
+        descriptionRu = "ПЛК, SCADA, датчики 4–20 мА / HART, ССВД, пожарная сигнализация, шкафы САиТМ и радиосвязь"
+    ),
+    OGE(
+        code = "OGE",
+        shortTitleRu = "ОГЭ (Энергетика)",
+        fullTitleRu = "ОГЭ — Отдел главного энергетика",
+        descriptionRu = "Силовые трансформаторы, РУ-6/10/0.4 кВ, релейная защита (РЗА), АВР, ВЛ и электроустановки"
+    ),
+    OGM(
+        code = "OGM",
+        shortTitleRu = "ОГМ (Механика)",
+        fullTitleRu = "ОГМ — Отдел главного механика",
+        descriptionRu = "Магистральные насосные агрегаты (МНА), запорная арматура, приводы задвижек, центровка и подшипники"
+    ),
+    OEN(
+        code = "OEN",
+        shortTitleRu = "ОЭН (Нефтепроводы)",
+        fullTitleRu = "ОЭН — Отдел эксплуатации нефтепроводов",
+        descriptionRu = "Линейная часть МН, камеры пуска-приёма СОД, резервуарный парк (РВС) и технологические трубопроводы"
+    );
+
+    companion object {
+        fun fromCode(code: String): ServiceSpecialization =
+            entries.firstOrNull { it.code.equals(code, ignoreCase = true) } ?: ASUTP_UESAITM
+    }
+}
+
+enum class TaskWorkNature(val code: String, val titleRu: String) {
+    PHYSICAL_LABOR("PHYSICAL_LABOR", "Физический труд и полевой монтаж"),
+    MENTAL_AUTOMATION_ELECTRICAL("MENTAL_AUTOMATION_ELECTRICAL", "Умственный труд: Электрика, Электроника и АСУТП"),
+    DOCUMENTATION_AND_SCHEMES("DOCUMENTATION_AND_SCHEMES", "Документация, схемы и отчётность"),
+    SAFETY_AND_IRONY("SAFETY_AND_IRONY", "ТБ, дисциплина и ирония (опыт на ошибках)"),
+    SERVICE_SPECIALIZATION("SERVICE_SPECIALIZATION", "Профиль службы (УЭСАиТМ / ОГЭ / ОГМ / ОЭН) и Надзор")
+}
+
 enum class SkillBranch(val code: String, val titleRu: String, val subtitleRu: String) {
-    PROFESSIONAL("PROFESSIONAL", "Профессионализм", "Точность исполнения нарядов и сложные приоритеты"),
-    QUALITY("QUALITY", "Качество и фотоотчёт", "Фотофиксация и сдача с первого раза без замечаний"),
-    TEAM("TEAM", "Командная работа", "Взаимовыручка в бригаде и совместные смены"),
-    SAFETY("SAFETY", "ТБ и дисциплина", "Соблюдение сроков, регламентов и безаварийность"),
-    LEADERSHIP("LEADERSHIP", "Лидерство и приёмка", "Контроль качества, наставничество и оперативность ИТР");
+    PROFESSIONAL(
+        "PROFESSIONAL",
+        "Физический труд и полевой монтаж",
+        "Силовой и кабельный монтаж, шкафы САиТМ, задвижки, трассы и работа руками"
+    ),
+    QUALITY(
+        "QUALITY",
+        "Умственный труд: Электрика, Электроника и АСУТП",
+        "ПЛК, SCADA, токовые петли 4–20 мА, датчики КИПиА, телемеханика и поиск плавающих КЗ"
+    ),
+    TEAM(
+        "TEAM",
+        "Документация, схемы и бюрократия",
+        "Исполнительные схемы, журналы, акты поверки, сводные таблицы, письма и планы работ"
+    ),
+    SAFETY(
+        "SAFETY",
+        "ТБ, выживание и ироничные навыки",
+        "ПУЭ, электробезопасность + юмористические навыки начального этапа, возвратов и переносов"
+    ),
+    LEADERSHIP(
+        "LEADERSHIP",
+        "Спецслужбы (УЭСАиТМ / ОГЭ / ОГМ / ОЭН) и Надзор",
+        "Специализация служб эксплуатации (АСУТП, энергетики, механики, трубопроводчики) и контроль ИТР"
+    );
 
     companion object {
         fun fromCode(code: String): SkillBranch =
@@ -127,8 +192,17 @@ data class SkillDefinition(
     val maxLevel: Int = 5,
     val xpBonusPercentPerLevel: Int = 2,
     val prerequisiteSkillId: String? = null,
-    val minRoleWeight: Int = CorporateRole.WORKER.hierarchyWeight
-)
+    val minRoleWeight: Int = CorporateRole.WORKER.hierarchyWeight,
+    val isHumorousOrPenaltySkill: Boolean = false,
+    val serviceTitlesRu: Map<ServiceSpecialization, String> = emptyMap(),
+    val serviceDescriptionsRu: Map<ServiceSpecialization, String> = emptyMap()
+) {
+    fun titleForService(service: ServiceSpecialization): String =
+        serviceTitlesRu[service]?.takeIf { it.isNotBlank() } ?: titleRu
+
+    fun descriptionForService(service: ServiceSpecialization): String =
+        serviceDescriptionsRu[service]?.takeIf { it.isNotBlank() } ?: descriptionRu
+}
 
 data class UserSkill(
     val skillId: String,
@@ -363,4 +437,31 @@ data class RpgWorkspaceState(
     ),
     val profiles: Map<String, EmployeeRpgProfile> = emptyMap(),
     val transactions: List<XpTransaction> = emptyList()
-)
+) {
+    fun profileForEmployee(employee: com.example.data.model.CorporateEmployee): EmployeeRpgProfile {
+        val canonicalId = com.example.data.model.SiteMemberDocument.canonicalMemberId(employee.id, employee.email)
+        val normId = employee.id.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+        val candidates = listOf(canonicalId, employee.id, normId)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .mapNotNull { profiles[it] }
+        if (candidates.isEmpty()) return EmployeeRpgProfile(employeeId = canonicalId.ifBlank { employee.id })
+        return candidates.maxByOrNull {
+            it.totalXp + it.skillPointsSpent * 100 + it.achievements.size * 50 + it.questProgress.size * 10
+        }!!.copy(employeeId = canonicalId.ifBlank { employee.id })
+    }
+
+    fun profileForId(rawId: String, email: String = ""): EmployeeRpgProfile {
+        val canonicalId = com.example.data.model.SiteMemberDocument.canonicalMemberId(rawId, email)
+        val normId = rawId.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+        val candidates = listOf(canonicalId, rawId, normId)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .mapNotNull { profiles[it] }
+        if (candidates.isEmpty()) return EmployeeRpgProfile(employeeId = canonicalId.ifBlank { rawId })
+        return candidates.maxByOrNull {
+            it.totalXp + it.skillPointsSpent * 100 + it.achievements.size * 50 + it.questProgress.size * 10
+        }!!.copy(employeeId = canonicalId.ifBlank { rawId })
+    }
+}
+

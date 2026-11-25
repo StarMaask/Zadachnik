@@ -453,7 +453,7 @@ object LocalWorkspaceStore {
 
     private const val KEY_RPG_WORKSPACE_STATE = "rpg_workspace_state_json"
 
-    fun saveRpgState(context: Context, state: com.example.domain.rpg.RpgWorkspaceState) {
+    fun serializeRpgStateToJson(state: com.example.domain.rpg.RpgWorkspaceState): String {
         val root = JSONObject().apply {
             val cfgObj = JSONObject().apply {
                 put("onTimeBonusRate", state.config.onTimeBonusRate)
@@ -591,17 +591,18 @@ object LocalWorkspaceStore {
             }
             put("transactions", txArr)
         }
+        return root.toString()
+    }
+
+    fun saveRpgState(context: Context, state: com.example.domain.rpg.RpgWorkspaceState) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_RPG_WORKSPACE_STATE, root.toString())
+            .putString(KEY_RPG_WORKSPACE_STATE, serializeRpgStateToJson(state))
             .apply()
     }
 
-    fun loadRpgState(context: Context): com.example.domain.rpg.RpgWorkspaceState? {
-        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_RPG_WORKSPACE_STATE, null)
-            ?.takeIf { it.isNotBlank() }
-            ?: return null
+    fun deserializeRpgStateFromJson(raw: String): com.example.domain.rpg.RpgWorkspaceState? {
+        if (raw.isBlank()) return null
         return runCatching {
             val root = JSONObject(raw)
             val cfgObj = root.optJSONObject("config")
@@ -801,4 +802,117 @@ object LocalWorkspaceStore {
             )
         }.getOrNull()
     }
+
+    fun loadRpgState(context: Context): com.example.domain.rpg.RpgWorkspaceState? {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_RPG_WORKSPACE_STATE, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return deserializeRpgStateFromJson(raw)
+    }
+
+    fun mergeRpgProfiles(
+        a: com.example.domain.rpg.EmployeeRpgProfile,
+        b: com.example.domain.rpg.EmployeeRpgProfile
+    ): com.example.domain.rpg.EmployeeRpgProfile {
+        val scoreA = a.prestige.prestigeLevel * 50000 + a.totalXp + a.skillPointsSpent * 100 + a.achievements.size * 50 + a.questProgress.size * 10
+        val scoreB = b.prestige.prestigeLevel * 50000 + b.totalXp + b.skillPointsSpent * 100 + b.achievements.size * 50 + b.questProgress.size * 10
+        val primary = if (scoreA >= scoreB) a else b
+        val secondary = if (scoreA >= scoreB) b else a
+
+        val mergedSkillsMap = linkedMapOf<String, Int>()
+        (secondary.skills + primary.skills).forEach { sk ->
+            val prev = mergedSkillsMap[sk.skillId] ?: 0
+            if (sk.level > prev) mergedSkillsMap[sk.skillId] = sk.level
+        }
+        val mergedSkills = mergedSkillsMap.entries.map { (id, lvl) ->
+            com.example.domain.rpg.UserSkill(skillId = id, level = lvl)
+        }
+
+        val mergedAchievements = (primary.achievements + secondary.achievements)
+            .distinctBy { it.achievementId }
+
+        val mergedQuestsMap = linkedMapOf<String, com.example.domain.rpg.UserQuestProgress>()
+        (secondary.questProgress + primary.questProgress).forEach { qp ->
+            val key = "${qp.questId}_${qp.periodKey}"
+            val existing = mergedQuestsMap[key]
+            if (existing == null || qp.currentCount > existing.currentCount || (qp.rewarded && !existing.rewarded)) {
+                val combinedIds = ((existing?.countedTaskIds ?: emptyList()) + qp.countedTaskIds).distinct()
+                mergedQuestsMap[key] = qp.copy(
+                    countedTaskIds = combinedIds,
+                    currentCount = maxOf(qp.currentCount, combinedIds.size),
+                    rewarded = qp.rewarded || (existing?.rewarded == true)
+                )
+            }
+        }
+
+        val mergedOwnedItems = (primary.inventory.ownedItemIds + secondary.inventory.ownedItemIds).distinct()
+        val mergedInventory = primary.inventory.copy(
+            ownedItemIds = mergedOwnedItems,
+            equippedBadgeId = primary.inventory.equippedBadgeId ?: secondary.inventory.equippedBadgeId,
+            equippedFrameId = primary.inventory.equippedFrameId ?: secondary.inventory.equippedFrameId,
+            equippedTitleId = primary.inventory.equippedTitleId ?: secondary.inventory.equippedTitleId,
+            streakRecoveryTokens = maxOf(primary.inventory.streakRecoveryTokens, secondary.inventory.streakRecoveryTokens)
+        )
+
+        val mergedRepHistory = (primary.reputation.history + secondary.reputation.history)
+            .distinctBy { it.id.ifBlank { "${it.createdAtMillis}_${it.reason}" } }
+            .sortedByDescending { it.createdAtMillis }
+            .take(30)
+
+        val mergedStreak = if (primary.streak.lastActivityEpochDay >= secondary.streak.lastActivityEpochDay) {
+            primary.streak.copy(bestDays = maxOf(primary.streak.bestDays, secondary.streak.bestDays))
+        } else {
+            secondary.streak.copy(bestDays = maxOf(primary.streak.bestDays, secondary.streak.bestDays))
+        }
+
+        return primary.copy(
+            totalXp = maxOf(primary.totalXp, secondary.totalXp),
+            seasonXp = maxOf(primary.seasonXp, secondary.seasonXp),
+            skills = mergedSkills,
+            achievements = mergedAchievements,
+            questProgress = mergedQuestsMap.values.toList(),
+            inventory = mergedInventory,
+            reputation = primary.reputation.copy(history = mergedRepHistory),
+            streak = mergedStreak
+        )
+    }
+
+    fun mergeRpgWorkspaceStates(
+        local: com.example.domain.rpg.RpgWorkspaceState,
+        remote: com.example.domain.rpg.RpgWorkspaceState
+    ): com.example.domain.rpg.RpgWorkspaceState {
+        val mergedProfiles = linkedMapOf<String, com.example.domain.rpg.EmployeeRpgProfile>()
+        remote.profiles.forEach { (empId, prof) ->
+            mergedProfiles[empId] = prof
+        }
+        local.profiles.forEach { (empId, localProf) ->
+            val remoteProf = mergedProfiles[empId]
+            mergedProfiles[empId] = if (remoteProf == null) {
+                localProf
+            } else {
+                mergeRpgProfiles(localProf, remoteProf)
+            }
+        }
+
+        val txMap = linkedMapOf<String, com.example.domain.rpg.XpTransaction>()
+        (remote.transactions + local.transactions).forEach { tx ->
+            val key = tx.idempotencyKey.ifBlank { tx.id }
+            val existing = txMap[key]
+            if (existing == null) {
+                txMap[key] = tx
+            } else if (tx.isRolledBack && !existing.isRolledBack) {
+                txMap[key] = tx
+            }
+        }
+        val mergedTransactions = txMap.values
+            .sortedByDescending { it.createdAtMillis }
+            .take(400)
+
+        return remote.copy(
+            profiles = mergedProfiles,
+            transactions = mergedTransactions
+        )
+    }
 }
+

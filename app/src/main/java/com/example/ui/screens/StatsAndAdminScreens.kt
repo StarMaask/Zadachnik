@@ -2530,7 +2530,7 @@ fun AdminAndAuditScreen(
                                     OutlinedButton(
                                         onClick = { memberBeingEdited = member },
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        modifier = Modifier.height(32.dp)
+                                        modifier = Modifier.heightIn(min = 36.dp)
                                     ) {
                                         Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -2754,7 +2754,7 @@ fun EditEmployeeDialog(
                                 onClick = saveEmployeeAction,
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                                 modifier = Modifier
-                                    .height(38.dp)
+                                    .heightIn(min = 40.dp)
                                     .testTag("top_save_employee_button")
                             ) {
                                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))

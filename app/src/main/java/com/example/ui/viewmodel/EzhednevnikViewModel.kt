@@ -209,20 +209,72 @@ class EzhednevnikViewModel(
     )
     val rpgState: StateFlow<RpgWorkspaceState> = _rpgState.asStateFlow()
 
-    private fun persistRpgState(nextState: RpgWorkspaceState) {
+    private fun persistRpgState(nextState: RpgWorkspaceState, syncToCloud: Boolean = true) {
         _rpgState.value = nextState
         appContext?.let { LocalWorkspaceStore.saveRpgState(it, nextState) }
+        if (syncToCloud && isCloudAuthenticated) {
+            viewModelScope.launch {
+                repository.saveRpgWorkspaceStateToCloud(nextState)
+            }
+        }
+    }
+
+    private fun observeRpgWorkspaceUpdates() {
+        viewModelScope.launch {
+            repository.observeRpgWorkspaceState().collect { remoteState ->
+                if (remoteState != null) {
+                    val merged = LocalWorkspaceStore.mergeRpgWorkspaceStates(
+                        local = _rpgState.value,
+                        remote = remoteState
+                    )
+                    if (merged != _rpgState.value) {
+                        _rpgState.value = merged
+                        appContext?.let { LocalWorkspaceStore.saveRpgState(it, merged) }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun syncRpgWorkspaceWithCloudSilently() {
+        if (!isCloudAuthenticated) return
+        val remoteState = repository.fetchRpgWorkspaceStateOnce()
+        if (remoteState != null) {
+            val merged = LocalWorkspaceStore.mergeRpgWorkspaceStates(
+                local = _rpgState.value,
+                remote = remoteState
+            )
+            if (merged != _rpgState.value) {
+                _rpgState.value = merged
+                appContext?.let { LocalWorkspaceStore.saveRpgState(it, merged) }
+            }
+            if (merged.profiles.size > remoteState.profiles.size ||
+                merged.transactions.size > remoteState.transactions.size
+            ) {
+                repository.saveRpgWorkspaceStateToCloud(merged)
+            }
+        } else if (_rpgState.value.profiles.isNotEmpty() || _rpgState.value.transactions.isNotEmpty()) {
+            repository.saveRpgWorkspaceStateToCloud(_rpgState.value)
+        }
     }
 
     private fun resolveTaskAssigneesForRpg(task: TaskDocument): List<CorporateEmployee> {
         val employees = availableEmployees.value
-        val byId = employees.filter { emp -> emp.id in task.allAssigneeIds }
-        if (byId.isNotEmpty()) return byId
+        val byIdOrAssigned = employees.filter { emp ->
+            val canonicalId = SiteMemberDocument.canonicalMemberId(emp.id, emp.email)
+            val normId = normalizeMemberKey(emp.id)
+            emp.id in task.allAssigneeIds ||
+                canonicalId in task.allAssigneeIds ||
+                normId in task.allAssigneeIds ||
+                task.isAssignedToEmployee(emp)
+        }
+        if (byIdOrAssigned.isNotEmpty()) return byIdOrAssigned
         if (task.assigneeId.isNotBlank()) {
             val displayName = task.assigneeName.ifBlank { "Исполнитель" }
+            val canonicalAssigneeId = SiteMemberDocument.canonicalMemberId(task.assigneeId, "")
             return listOf(
                 CorporateEmployee(
-                    id = task.assigneeId,
+                    id = canonicalAssigneeId.ifBlank { task.assigneeId },
                     fullName = displayName,
                     shortName = displayName,
                     position = CorporateRole.WORKER.titleRu,
@@ -703,6 +755,7 @@ class EzhednevnikViewModel(
         }
         initializeUserAndRoleStatus()
         observeMemberRoleUpdates()
+        observeRpgWorkspaceUpdates()
         observeTaskReportNotifications()
         startPeriodicCloudMembersSync()
     }
@@ -723,6 +776,7 @@ class EzhednevnikViewModel(
             if (isCloudAuthenticated) {
                 syncSiteMembersFromCloudSilently()
                 syncTasksAndPhotosWithCloudSilently()
+                syncRpgWorkspaceWithCloudSilently()
             }
         }
     }
@@ -734,6 +788,7 @@ class EzhednevnikViewModel(
             if (isCloudAuthenticated) {
                 syncSiteMembersFromCloudSilently()
                 syncTasksAndPhotosWithCloudSilently()
+                syncRpgWorkspaceWithCloudSilently()
             }
             while (isActive) {
                 delay(12_000L)
@@ -741,6 +796,7 @@ class EzhednevnikViewModel(
                 if (isCloudAuthenticated) {
                     syncSiteMembersFromCloudSilently()
                     syncTasksAndPhotosWithCloudSilently()
+                    syncRpgWorkspaceWithCloudSilently()
                     val cur = _currentMemberRecord.value
                     if (cur != null && cur.isPendingRole) {
                         val grp = CorporateSeedData.workGroups.firstOrNull {

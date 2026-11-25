@@ -2186,7 +2186,7 @@ fun TaskDetailDialog(
                                                 onClick = triggerCamera,
                                                 shape = RoundedCornerShape(12.dp),
                                                 modifier = Modifier
-                                                    .height(42.dp)
+                                                    .heightIn(min = 44.dp)
                                                     .testTag("native_camera_photo_button")
                                             ) {
                                                 Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -2201,7 +2201,7 @@ fun TaskDetailDialog(
                                                 },
                                                 shape = RoundedCornerShape(12.dp),
                                                 modifier = Modifier
-                                                    .height(42.dp)
+                                                    .heightIn(min = 44.dp)
                                                     .testTag("pick_gallery_photo_button")
                                             ) {
                                                 Icon(Icons.Default.AddAPhoto, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -2224,7 +2224,7 @@ fun TaskDetailDialog(
                                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                                         modifier = Modifier
                                             .weight(1f)
-                                            .height(42.dp)
+                                            .heightIn(min = 44.dp)
                                             .testTag("native_camera_photo_button")
                                     ) {
                                         Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -2241,7 +2241,7 @@ fun TaskDetailDialog(
                                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                                         modifier = Modifier
                                             .weight(1f)
-                                            .height(42.dp)
+                                            .heightIn(min = 44.dp)
                                             .testTag("pick_gallery_photo_button")
                                     ) {
                                         Icon(Icons.Default.AddAPhoto, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -2450,7 +2450,7 @@ fun TaskDetailDialog(
                                         border = BorderStroke(1.dp, crimsonSecondary.copy(alpha = 0.65f)),
                                         modifier = Modifier
                                             .weight(1f)
-                                            .height(50.dp)
+                                            .heightIn(min = 50.dp)
                                             .testTag("reject_report_button")
                                     ) {
                                         Text(
@@ -2473,7 +2473,7 @@ fun TaskDetailDialog(
                                         ),
                                         modifier = Modifier
                                             .weight(1.35f)
-                                            .height(50.dp)
+                                            .heightIn(min = 50.dp)
                                             .testTag("approve_report_button")
                                     ) {
                                         Icon(
@@ -2511,7 +2511,7 @@ fun TaskDetailDialog(
                                             },
                                             shape = RoundedCornerShape(12.dp),
                                             modifier = Modifier
-                                                .height(50.dp)
+                                                .heightIn(min = 50.dp)
                                                 .testTag("bottom_bar_open_camera_button")
                                         ) {
                                             Icon(
@@ -2546,7 +2546,7 @@ fun TaskDetailDialog(
                                         ),
                                         modifier = Modifier
                                             .weight(1f)
-                                            .height(50.dp)
+                                            .heightIn(min = 50.dp)
                                             .testTag("submit_task_completion_button")
                                     ) {
                                         Icon(

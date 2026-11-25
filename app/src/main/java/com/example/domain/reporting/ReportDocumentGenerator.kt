@@ -187,6 +187,35 @@ object ReportDocumentGenerator {
         return parts.joinToString(", ")
     }
 
+    /**
+     * Форматирует реквизиты строго в порядке: Организация, Подразделение, Должность, Участок.
+     */
+    fun formatMetadataInStandardOrder(
+        organizationName: String = com.example.data.seed.CorporateSeedData.DEFAULT_ORG_NAME,
+        subdivisionName: String = "",
+        positionName: String = "",
+        siteName: String = "",
+        role: com.example.data.model.CorporateRole = com.example.data.model.CorporateRole.ITR
+    ): String {
+        val cleanOrg = organizationName.trim().ifBlank { com.example.data.seed.CorporateSeedData.DEFAULT_ORG_NAME }
+        val cleanSub = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(subdivisionName)
+        val cleanPos = com.example.data.seed.CorporateSeedData.sanitizePositionName(positionName, role)
+        val cleanSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+            raw = siteName,
+            fallbackSubdivision = cleanSub
+        )
+        return listOfNotNull(
+            cleanOrg.takeIf { it.isNotBlank() },
+            cleanSub.takeIf { it.isNotBlank() },
+            cleanPos.takeIf { it.isNotBlank() },
+            cleanSite.takeIf { it.isNotBlank() }?.let { "Участок: $it" }
+        ).joinToString(", ")
+    }
+
+    fun isConfirmedReportRow(row: ReportTableRow): Boolean {
+        return row.statusLabel.startsWith(TaskStatus.APPROVED.titleRu, ignoreCase = true)
+    }
+
     fun formatPreparedBySignature(
         actor: CorporateEmployee,
         defaultSiteName: String = ""
@@ -723,7 +752,10 @@ object ReportDocumentGenerator {
             reportType == ReportType.NEXT_DAY_PLAN ||
             reportType == ReportType.COMBINED_DAILY_AND_PLAN
         val attachedPhotos = if (includePhotos && effectiveScope != ReportContentScope.PLAN_ONLY) {
-            factTasks.distinctBy { it.id }.flatMap { t ->
+            val sortedFactTasksForPhotos = factTasks
+                .distinctBy { it.id }
+                .sortedWith(compareTasksForReportSection(ReportSectionKind.DAILY_FACT_REPORT, currentEpochDay))
+            sortedFactTasksForPhotos.flatMap { t ->
                 val matchedEmp = allEmployees.firstOrNull { t.isAssignedToEmployee(it) }
                 val cleanSub = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(
                     raw = matchedEmp?.groupName?.ifBlank { t.groupName } ?: t.groupName,
@@ -771,16 +803,23 @@ object ReportDocumentGenerator {
             siteName = cleanActorSite
         ).ifBlank { template.orgHeader }
 
-        val signatures = listOf(
-            "Подготовил документ: ${formatPreparedBySignature(actor, cleanActorSite)}",
-            "Проверил / Принял: ____________________ (подпись), ФИО, должность"
+        // Строгий порядок данных: Организация, Подразделение, Должность, Участок
+        val standardActorMetadata = formatMetadataInStandardOrder(
+            organizationName = com.example.data.seed.CorporateSeedData.DEFAULT_ORG_NAME,
+            subdivisionName = cleanActorSubdivision,
+            positionName = cleanActorPosition,
+            siteName = cleanActorSite,
+            role = actor.role
         )
         val preparedByLabel = listOfNotNull(
-            actor.fullName.takeIf { it.isNotBlank() },
-            cleanActorPosition.takeIf { it.isNotBlank() },
-            cleanActorSubdivision.takeIf { it.isNotBlank() },
-            cleanActorSite.takeIf { it.isNotBlank() }?.let { "Участок: $it" }
-        ).joinToString(", ")
+            standardActorMetadata.takeIf { it.isNotBlank() },
+            actor.fullName.takeIf { it.isNotBlank() }
+        ).joinToString(" — ")
+
+        val signatures = listOf(
+            "Подготовил документ: $standardActorMetadata — ${formatPreparedBySignature(actor, cleanActorSite)}",
+            "Проверил / Принял: ____________________ (подпись), Организация, Подразделение, Должность, Участок, ФИО"
+        )
 
         val photoModeLabel = if (includePhotos && effectiveScope != ReportContentScope.PLAN_ONLY) {
             "С фотоотчётом (${attachedPhotos.size} фото за $reportRangeLabel)"
@@ -798,7 +837,7 @@ object ReportDocumentGenerator {
         }
 
         val summaryText = buildString {
-            appendLine(sanitizedOrgHeader)
+            appendLine(standardActorMetadata)
             appendLine("Документ: $resolvedReportTitle (${format.code})")
             appendLine("Компоновка: $layoutModeLabel • Режим фото: $photoModeLabel")
             appendLine("Период: $periodLabel • Охват: $roleScopeLabel")
@@ -808,11 +847,42 @@ object ReportDocumentGenerator {
                 if (factRows.isEmpty()) {
                     appendLine("   (По отчёту за $reportRangeLabel записей нет)")
                 } else {
-                    factRows.forEach { r ->
-                        val phPart = if (includePhotos) ", фото: ${r.photoInfo}" else ""
-                        appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} (${r.groupName}) — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel}$phPart")
-                        r.checklistBreakdown.forEach { subLine ->
-                            appendLine("   • Чек-лист: $subLine")
+                    val isStandardTaskFact = factRows.any { it.rowTypeBadge == "ОТЧЁТ (ФАКТ)" }
+                    val confirmedRows = if (isStandardTaskFact) factRows.filter { isConfirmedReportRow(it) } else emptyList()
+                    val unconfirmedRows = if (isStandardTaskFact) factRows.filterNot { isConfirmedReportRow(it) } else emptyList()
+
+                    if (isStandardTaskFact) {
+                        appendLine("   --- ЧАСТЬ 1. ПОДТВЕРЖДЁННЫЕ ОТЧЁТЫ (${confirmedRows.size} поз.) ---")
+                        if (confirmedRows.isEmpty()) {
+                            appendLine("   (Подтверждённых отчётов нет)")
+                        } else {
+                            confirmedRows.forEach { r ->
+                                val phPart = if (includePhotos) ", фото: ${r.photoInfo}" else ""
+                                appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} (${r.groupName}) — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel}$phPart")
+                                r.checklistBreakdown.forEach { subLine ->
+                                    appendLine("   • Чек-лист: $subLine")
+                                }
+                            }
+                        }
+                        appendLine("   --- ЧАСТЬ 2. НЕВЫПОЛНЕННЫЕ И НЕПОДТВЕРЖДЁННЫЕ ЗАДАЧИ (${unconfirmedRows.size} поз.) ---")
+                        if (unconfirmedRows.isEmpty()) {
+                            appendLine("   (Невыполненных и неподтверждённых задач нет)")
+                        } else {
+                            unconfirmedRows.forEach { r ->
+                                val phPart = if (includePhotos) ", фото: ${r.photoInfo}" else ""
+                                appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} (${r.groupName}) — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel}$phPart")
+                                r.checklistBreakdown.forEach { subLine ->
+                                    appendLine("   • Чек-лист: $subLine")
+                                }
+                            }
+                        }
+                    } else {
+                        factRows.forEach { r ->
+                            val phPart = if (includePhotos) ", фото: ${r.photoInfo}" else ""
+                            appendLine("${r.index}. [${r.rowTypeBadge}] ${r.assigneeFio} (${r.groupName}) — ${r.taskTitle} | Объём: ${r.volumeInfo} | Статус: ${r.statusLabel}$phPart")
+                            r.checklistBreakdown.forEach { subLine ->
+                                appendLine("   • Чек-лист: $subLine")
+                            }
                         }
                     }
                 }
@@ -1309,6 +1379,54 @@ object ReportDocumentGenerator {
         context.startActivity(chooser)
     }
 
+    /**
+     * Группировка задач в отчёте:
+     * 0 — Подтверждённые отчёты (TaskStatus.APPROVED, идут первыми по списку).
+     * 1 — Невыполненные и неподтверждённые задачи (ON_REVIEW, IN_PROGRESS, NEW, REJECTED, OVERDUE).
+     */
+    private fun taskStatusSortGroup(task: TaskDocument, sectionKind: ReportSectionKind): Int {
+        return if (sectionKind == ReportSectionKind.DAILY_FACT_REPORT) {
+            if (task.taskStatus == TaskStatus.APPROVED) 0 else 1
+        } else {
+            0
+        }
+    }
+
+    private fun taskStatusSecondaryRank(task: TaskDocument): Int = when (task.taskStatus) {
+        TaskStatus.APPROVED -> 0
+        TaskStatus.ON_REVIEW -> 1
+        TaskStatus.IN_PROGRESS -> 2
+        TaskStatus.NEW -> 3
+        TaskStatus.REJECTED -> 4
+        TaskStatus.OVERDUE -> 5
+        TaskStatus.ARCHIVED -> 6
+        TaskStatus.CANCELLED -> 7
+    }
+
+    private fun compareTasksForReportSection(
+        sectionKind: ReportSectionKind,
+        currentEpochDay: Long
+    ): Comparator<TaskDocument> {
+        return Comparator<TaskDocument> { a, b ->
+            val groupCmp = taskStatusSortGroup(a, sectionKind).compareTo(taskStatusSortGroup(b, sectionKind))
+            if (groupCmp != 0) return@Comparator groupCmp
+
+            if (sectionKind == ReportSectionKind.DAILY_FACT_REPORT) {
+                val statusCmp = taskStatusSecondaryRank(a).compareTo(taskStatusSecondaryRank(b))
+                if (statusCmp != 0) return@Comparator statusCmp
+            } else {
+                val aCarry = if (a.dueDateEpochDay <= currentEpochDay) 1 else 0
+                val bCarry = if (b.dueDateEpochDay <= currentEpochDay) 1 else 0
+                val carryCmp = aCarry.compareTo(bCarry)
+                if (carryCmp != 0) return@Comparator carryCmp
+            }
+
+            val nameCmp = a.assigneeName.compareTo(b.assigneeName, ignoreCase = true)
+            if (nameCmp != 0) return@Comparator nameCmp
+            a.dueDateEpochDay.compareTo(b.dueDateEpochDay)
+        }
+    }
+
     private fun mapTasksToRows(
         tasks: List<TaskDocument>,
         includePhotos: Boolean,
@@ -1319,15 +1437,16 @@ object ReportDocumentGenerator {
         actor: CorporateEmployee? = null,
         allEmployees: List<CorporateEmployee> = emptyList()
     ): List<ReportTableRow> {
-        val sorted = tasks.sortedWith(
-            compareBy<TaskDocument> { it.assigneeName }
-                .thenBy { it.dueDateEpochDay }
-        )
+        val sorted = tasks.sortedWith(compareTasksForReportSection(sectionKind, currentEpochDay))
         return sorted.mapIndexed { idx, task ->
             val matchedEmployee = allEmployees.firstOrNull { task.isAssignedToEmployee(it) }
             val resolvedSubdivision = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(
                 raw = matchedEmployee?.groupName?.ifBlank { task.groupName } ?: task.groupName,
                 fallbackSubdivision = actor?.groupName ?: com.example.data.seed.CorporateSeedData.DEFAULT_SUBDIVISION_NAME
+            )
+            val resolvedPosition = com.example.data.seed.CorporateSeedData.sanitizePositionName(
+                raw = matchedEmployee?.position ?: actor?.position.orEmpty(),
+                role = matchedEmployee?.role ?: actor?.role ?: com.example.data.model.CorporateRole.WORKER
             )
             val resolvedSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
                 raw = task.geoLocation,
@@ -1397,11 +1516,17 @@ object ReportDocumentGenerator {
                 else -> task.taskStatus.titleRu
             }
 
+            val standardRowOrgMeta = listOfNotNull(
+                resolvedSubdivision.takeIf { it.isNotBlank() },
+                resolvedPosition.takeIf { it.isNotBlank() },
+                resolvedSite.takeIf { it.isNotBlank() }?.let { "Уч.: $it" }
+            ).joinToString(", ")
+
             val note = when {
-                !task.rejectionReason.isNullOrBlank() -> "Возврат: ${task.rejectionReason}"
-                !task.approvedByName.isNullOrBlank() -> "Принял: ${task.approvedByName}"
-                task.decodedComments().isNotEmpty() -> task.decodedComments().last().text
-                resolvedSite.isNotBlank() -> resolvedSite
+                !task.rejectionReason.isNullOrBlank() -> "Возврат: ${task.rejectionReason} ($standardRowOrgMeta)"
+                !task.approvedByName.isNullOrBlank() -> "Принял: ${task.approvedByName} ($standardRowOrgMeta)"
+                task.decodedComments().isNotEmpty() -> "${task.decodedComments().last().text} ($standardRowOrgMeta)"
+                standardRowOrgMeta.isNotBlank() -> standardRowOrgMeta
                 else -> "Без замечаний"
             }
 
@@ -1470,23 +1595,41 @@ object ReportDocumentGenerator {
             com.example.domain.rpg.RpgProgressionEngine.canViewProgression(actor, it)
         }.distinctBy { it.id }
         return visibleEmployees.mapIndexed { idx, emp ->
-            val profile = rpgState.profiles[emp.id]
-                ?: com.example.domain.rpg.EmployeeRpgProfile(emp.id)
+            val profile = rpgState.profileForEmployee(emp)
             val lvl = com.example.domain.rpg.RpgProgressionEngine.resolveUserLevel(profile.totalXp, rpgState.config)
             val status = com.example.domain.rpg.RpgProgressionEngine.resolveUserStatus(emp.role, lvl.level)
+            val serviceSpec = com.example.domain.rpg.RpgProgressionEngine.resolveEmployeeServiceSpecialization(emp)
             val prestigePart = if (profile.prestige.prestigeLevel > 0) " • Престиж ${profile.prestige.prestigeLevel}" else ""
+            val empMetadataOrder = formatMetadataInStandardOrder(
+                organizationName = com.example.data.seed.CorporateSeedData.DEFAULT_ORG_NAME,
+                subdivisionName = emp.groupName,
+                positionName = emp.position,
+                siteName = emp.siteName,
+                role = emp.role
+            )
+            val activeSkillsSummary = profile.skills
+                .filter { it.level > 0 }
+                .mapNotNull { us ->
+                    val def = com.example.domain.rpg.RpgProgressionEngine.skillCatalog.firstOrNull { it.id == us.skillId }
+                    def?.let { "${it.titleForService(serviceSpec)} (ур.${us.level})" }
+                }
+                .joinToString(", ")
+                .ifBlank { "Начальный этап (навыки качаются автоматически при выполнении задач)" }
+
             ReportTableRow(
                 index = idx + 1,
                 sectionKind = sectionKind,
                 rowTypeBadge = "RPG УР.${lvl.level}",
                 assigneeFio = emp.fullName,
-                groupName = emp.groupName,
-                taskTitle = "${status.titleRu}$prestigePart • Ур. ${lvl.level}/${rpgState.config.maxLevel}",
+                groupName = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(emp.groupName),
+                taskTitle = "${status.titleRu}$prestigePart • Ур. ${lvl.level}/${rpgState.config.maxLevel} • ${serviceSpec.shortTitleRu}",
                 volumeInfo = "XP: ${profile.totalXp} (Сезон: ${profile.seasonXp})",
                 planVolumeLabel = "Репутация: ${profile.reputation.score}/100",
-                factVolumeLabel = "Серия: ${profile.streak.currentDays} дн. (рекорд ${profile.streak.bestDays})",
+                factVolumeLabel = "XP: ${profile.totalXp} • Серия: ${profile.streak.currentDays} дн. (рекорд ${profile.streak.bestDays})",
                 checklistBreakdown = listOf(
-                    "Достижений: ${profile.achievements.size}, SP доступно: ${profile.skillPointsAvailable}, Навыков: ${profile.skills.sumOf { it.level }}"
+                    "Реквизиты: $empMetadataOrder",
+                    "Служба: ${serviceSpec.fullTitleRu}",
+                    "Навыки (авто + SP ${profile.skillPointsAvailable}): $activeSkillsSummary"
                 ),
                 completionPercent = profile.reputation.score,
                 priorityLabel = emp.role.shortTitleRu,
@@ -1494,7 +1637,7 @@ object ReportDocumentGenerator {
                 deadlineLabel = "Серия ${profile.streak.currentDays} д.",
                 photoInfo = "Ачивок: ${profile.achievements.size}",
                 carryoverInfo = profile.reputation.tierTitleRu,
-                commentSummary = "Сезон ${rpgState.currentSeason.quarterCode}: ${profile.seasonXp} XP"
+                commentSummary = empMetadataOrder
             )
         }
     }
@@ -1660,7 +1803,9 @@ object ReportDocumentGenerator {
         fun drawTopDocumentHeader(canvas: Canvas, sheetTitleText: String, isContinuation: Boolean): Float {
             val headerMaxW = pageWidth - 68f
             val contSuffix = if (isContinuation) " (продолжение)" else ""
-            val orgLines = wrapTextToLines("${doc.orgHeader}$contSuffix", orgTitlePaint, headerMaxW)
+            // Выводим в шапке PDF полный порядок: Организация, Подразделение, Должность, Участок
+            val topHeaderMeta = doc.preparedByLabel.substringBefore(" — ").ifBlank { doc.orgHeader }
+            val orgLines = wrapTextToLines("$topHeaderMeta$contSuffix", orgTitlePaint, headerMaxW)
 
             val layoutDescription = if (doc.sheetLayout == SheetLayout.SPLIT_SHEETS && doc.sheets.size > 1) {
                 "РЕЖИМ ВЫГРУЗКИ: НА РАЗДЕЛЬНЫХ ЛИСТАХ (2 ЛИСТА)  —  $sheetTitleText"
@@ -1696,6 +1841,25 @@ object ReportDocumentGenerator {
                 curY += 10f
             }
             return boxBottom + 6f
+        }
+
+        val confirmedGroupBgPaint = Paint().apply {
+            color = Color.rgb(220, 252, 231) // Soft Emerald tint for confirmed reports
+            style = Paint.Style.FILL
+        }
+        val confirmedGroupTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(21, 128, 61)
+            textSize = 8.0f
+            isFakeBoldText = true
+        }
+        val unconfirmedGroupBgPaint = Paint().apply {
+            color = Color.rgb(254, 243, 199) // Soft Amber tint for unconfirmed/uncompleted tasks
+            style = Paint.Style.FILL
+        }
+        val unconfirmedGroupTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(180, 83, 9)
+            textSize = 8.0f
+            isFakeBoldText = true
         }
 
         fun drawSectionHeaderAndColumns(canvas: Canvas, section: ReportSectionBlock, startY: Float): Float {
@@ -1813,6 +1977,9 @@ object ReportDocumentGenerator {
                 y = drawSectionHeaderAndColumns(canvas, section, y)
                 val isPlan = section.kind == ReportSectionKind.NEXT_DAY_PLAN
                 val badgePaint = if (isPlan) planBadgeTextPaint else reportBadgeTextPaint
+                val hasFactStatusGrouping = !isPlan && section.rows.any { it.rowTypeBadge == "ОТЧЁТ (ФАКТ)" }
+                val confirmedCount = if (hasFactStatusGrouping) section.rows.count { isConfirmedReportRow(it) } else 0
+                val unconfirmedCount = if (hasFactStatusGrouping) section.rows.size - confirmedCount else 0
 
                 if (section.rows.isEmpty()) {
                     canvas.drawRect(26f, y, pageWidth - 26f, y + 20f, zebraRowPaint)
@@ -1821,6 +1988,13 @@ object ReportDocumentGenerator {
                     y += 24f
                 } else {
                     section.rows.forEachIndexed { rIdx, row ->
+                        val isConfirmed = isConfirmedReportRow(row)
+                        val shouldDrawConfirmedBanner = hasFactStatusGrouping && rIdx == 0 && isConfirmed
+                        val shouldDrawUnconfirmedBanner = hasFactStatusGrouping &&
+                            !isConfirmed &&
+                            (rIdx == 0 || isConfirmedReportRow(section.rows[rIdx - 1]))
+                        val subGroupBannerHeight = if (shouldDrawConfirmedBanner || shouldDrawUnconfirmedBanner) 15f else 0f
+
                         val volumeCellText = if (isPlan) {
                             row.planVolumeLabel.ifBlank { row.volumeInfo }
                         } else {
@@ -1880,7 +2054,7 @@ object ReportDocumentGenerator {
                         } else {
                             0f
                         }
-                        val neededHeight = mainCellsHeight + checklistBlockHeight + 2f
+                        val neededHeight = subGroupBannerHeight + mainCellsHeight + checklistBlockHeight + 2f
 
                         if (y + neededHeight > pageHeight - 52f) {
                             pdf.finishPage(page)
@@ -1891,8 +2065,31 @@ object ReportDocumentGenerator {
                             y = drawSectionHeaderAndColumns(canvas, section, y)
                         }
 
+                        // Визуальный подзаголовок группы внутри PDF-таблицы (1. Подтверждённые отчёты / 2. Невыполненные и неподтверждённые)
+                        if (shouldDrawConfirmedBanner) {
+                            canvas.drawRect(26f, y - 1f, pageWidth - 26f, y + 13f, confirmedGroupBgPaint)
+                            canvas.drawRect(26f, y - 1f, pageWidth - 26f, y + 13f, linePaint)
+                            canvas.drawText(
+                                "✓ ЧАСТЬ 1. ПОДТВЕРЖДЁННЫЕ ОТЧЁТЫ (Идут первыми по списку — принято: $confirmedCount поз.)",
+                                32f,
+                                y + 9f,
+                                confirmedGroupTextPaint
+                            )
+                            y += 15f
+                        } else if (shouldDrawUnconfirmedBanner) {
+                            canvas.drawRect(26f, y - 1f, pageWidth - 26f, y + 13f, unconfirmedGroupBgPaint)
+                            canvas.drawRect(26f, y - 1f, pageWidth - 26f, y + 13f, linePaint)
+                            canvas.drawText(
+                                "⏳ ЧАСТЬ 2. НЕВЫПОЛНЕННЫЕ И НЕПОДТВЕРЖДЁННЫЕ ЗАДАЧИ (Не подтверждено / Не выполнено: $unconfirmedCount поз.)",
+                                32f,
+                                y + 9f,
+                                unconfirmedGroupTextPaint
+                            )
+                            y += 15f
+                        }
+
                         val rowTop = y - 1f
-                        val rowBottom = y + neededHeight
+                        val rowBottom = y + mainCellsHeight + checklistBlockHeight + 2f
                         if (rIdx % 2 == 1) {
                             canvas.drawRect(26f, rowTop, pageWidth - 26f, rowBottom, zebraRowPaint)
                         }
@@ -1937,6 +2134,8 @@ object ReportDocumentGenerator {
                 // Итоговая строка по конкретному разделу (Отчёт или План) с переносом при необходимости
                 val summaryStripText = if (isPlan) {
                     "ИТОГО ПО РАЗДЕЛУ «ПЛАН РАБОТ НА ${section.dateLabel}»: запланировано задач — ${section.rows.size}"
+                } else if (hasFactStatusGrouping) {
+                    "ИТОГО ПО РАЗДЕЛУ «ОТЧЁТ ЗА ${section.dateLabel}»: всего задач — ${section.rows.size}, подтверждённых отчётов (идут первыми) — $confirmedCount, невыполненных и неподтверждённых — $unconfirmedCount"
                 } else {
                     val done100 = section.rows.count { it.completionPercent >= 100 }
                     "ИТОГО ПО РАЗДЕЛУ «ОТЧЁТ ЗА ${section.dateLabel}»: всего задач — ${section.rows.size}, выполнено на 100% — $done100, в работе/частично — ${section.rows.size - done100}"

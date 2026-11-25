@@ -2304,6 +2304,106 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
         customEmployees: List<CorporateEmployee>? = null
     ): StatisticsSummary = computeRoleScopedStatistics(actor, allTasks, customEmployees)
 
+    // --- RPG WORKSPACE CLOUD SYNC ---
+
+    fun observeRpgWorkspaceState(): Flow<com.example.domain.rpg.RpgWorkspaceState?> =
+        authUidFlow().flatMapLatest { authUid ->
+            if (authUid.isNullOrBlank()) {
+                flowOf(null)
+            } else {
+                val docRef = db.collection("rpg_workspace").document(RPG_WORKSPACE_DOC_ID)
+                docRef.snapshots()
+                    .map { snapshot ->
+                        val payloadJson = snapshot.getString("payloadJson")
+                        if (!payloadJson.isNullOrBlank()) {
+                            com.example.data.local.LocalWorkspaceStore.deserializeRpgStateFromJson(payloadJson)
+                        } else {
+                            null
+                        }
+                    }
+                    .catch { e ->
+                        if (e is CancellationException) throw e
+                        try {
+                            handleFirestoreError(e, OperationType.GET, docRef.path)
+                        } catch (_: Exception) {
+                        }
+                        emit(null)
+                    }
+            }
+        }
+
+    suspend fun fetchRpgWorkspaceStateOnce(): com.example.domain.rpg.RpgWorkspaceState? {
+        if (auth.currentUser == null) return null
+        val docRef = db.collection("rpg_workspace").document(RPG_WORKSPACE_DOC_ID)
+        return try {
+            val snap = docRef.get().await()
+            val payloadJson = snap.getString("payloadJson")
+            if (!payloadJson.isNullOrBlank()) {
+                com.example.data.local.LocalWorkspaceStore.deserializeRpgStateFromJson(payloadJson)
+            } else {
+                null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            try {
+                handleFirestoreError(e, OperationType.GET, docRef.path)
+            } catch (_: Exception) {
+            }
+            null
+        }
+    }
+
+    suspend fun saveRpgWorkspaceStateToCloud(state: com.example.domain.rpg.RpgWorkspaceState): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        val docRef = db.collection("rpg_workspace").document(RPG_WORKSPACE_DOC_ID)
+        val payloadJson = com.example.data.local.LocalWorkspaceStore.serializeRpgStateToJson(state).take(890_000)
+        val nowMillis = System.currentTimeMillis()
+        try {
+            val existing = docRef.get().await()
+            if (existing.exists()) {
+                val remoteState = existing.getString("payloadJson")?.let {
+                    com.example.data.local.LocalWorkspaceStore.deserializeRpgStateFromJson(it)
+                }
+                val finalJson = if (remoteState != null) {
+                    val merged = com.example.data.local.LocalWorkspaceStore.mergeRpgWorkspaceStates(
+                        local = state,
+                        remote = remoteState
+                    ).copy(
+                        config = state.config,
+                        currentSeason = state.currentSeason
+                    )
+                    com.example.data.local.LocalWorkspaceStore.serializeRpgStateToJson(merged).take(890_000)
+                } else {
+                    payloadJson
+                }
+                val updatePayload = mapOf(
+                    "workspaceId" to RPG_WORKSPACE_DOC_ID,
+                    "userId" to uid,
+                    "payloadJson" to finalJson,
+                    "revisionMillis" to nowMillis,
+                    "createdAt" to (existing.getTimestamp("createdAt") ?: FieldValue.serverTimestamp()),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.set(updatePayload).await()
+            } else {
+                val createPayload = mapOf(
+                    "workspaceId" to RPG_WORKSPACE_DOC_ID,
+                    "userId" to uid,
+                    "payloadJson" to payloadJson,
+                    "revisionMillis" to nowMillis,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.set(createPayload).await()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docRef.path)
+        }
+    }
+
     // --- INTERNAL PAYLOAD HELPERS ---
 
     private suspend fun appendAuditLog(
@@ -2431,6 +2531,8 @@ class EzhednevnikRepository(private val db: FirebaseFirestore) {
     }
 
     companion object {
+        const val RPG_WORKSPACE_DOC_ID = "site_rpg_state"
+
         fun computeRoleScopedStatistics(
             actor: CorporateEmployee,
             allTasks: List<TaskDocument>,

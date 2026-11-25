@@ -218,7 +218,82 @@ test("Task photos collection: allows authenticated upload & cross-user read, blo
   await assertFails(
     bobDb.collection("task_photos").doc("ph_1700000000001_101").update({
       imageBase64: "C".repeat(1000),
-      updatedAt: new Date(),
+      updatedAt: new Date(Date.now() - 1000),
     })
   );
 });
+
+test("RPG workspace collection: allows authenticated create, update, and cross-user read, blocks unauthenticated and invalid payloads", async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const now = new Date(Date.now() - 1000);
+  const validRpgPayload = {
+    workspaceId: "site_rpg_state",
+    userId: ALICE_UID,
+    payloadJson: JSON.stringify({ profiles: [{ employeeId: ALICE_UID, totalXp: 120 }], transactions: [] }),
+    revisionMillis: 1700000005000,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Unauthenticated cannot read or write RPG state
+  await assertFails(
+    unauthDb.collection("rpg_workspace").doc("site_rpg_state").set(validRpgPayload)
+  );
+  await assertFails(
+    unauthDb.collection("rpg_workspace").doc("site_rpg_state").get()
+  );
+
+  // Authenticated user creates RPG workspace state
+  await assertSucceeds(
+    aliceDb.collection("rpg_workspace").doc("site_rpg_state").set(validRpgPayload)
+  );
+
+  // Another authenticated user can read & update RPG workspace state when completing/approving tasks
+  await assertSucceeds(
+    bobDb.collection("rpg_workspace").doc("site_rpg_state").get()
+  );
+  await assertSucceeds(
+    bobDb.collection("rpg_workspace").doc("site_rpg_state").update({
+      userId: BOB_UID,
+      payloadJson: JSON.stringify({ profiles: [{ employeeId: ALICE_UID, totalXp: 185 }], transactions: [] }),
+      revisionMillis: 1700000009000,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  // Spoofed userId on update is rejected
+  await assertFails(
+    bobDb.collection("rpg_workspace").doc("site_rpg_state").update({
+      userId: ALICE_UID,
+      payloadJson: "{}",
+      revisionMillis: 1700000010000,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+});
+
+test("Tasks & Report Templates: supports EMERGENCY priority and GAMIFICATION_SUMMARY reportType", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const now = new Date(Date.now() - 1000);
+  await assertSucceeds(
+    aliceDb.collection("tasks").doc("task_emergency_1").set(
+      validTaskPayload(ALICE_UID, { priority: "EMERGENCY", createdAt: now, updatedAt: now })
+    )
+  );
+  await assertSucceeds(
+    aliceDb.collection("report_templates").doc("tpl_rpg_1").set({
+      userId: ALICE_UID,
+      name: "Отчёт по геймификации и XP",
+      reportType: "GAMIFICATION_SUMMARY",
+      sheetLayout: "SINGLE_SHEET",
+      exportFormat: "PDF",
+      orgHeader: "ООО ГлавСтройИнжиниринг",
+      defaultPeriodDays: 30,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+});
+

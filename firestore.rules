@@ -78,7 +78,7 @@ service cloud.firestore {
              data.groupId is string && data.groupId.size() <= 64 &&
              data.groupName is string && data.groupName.size() <= 120 &&
              data.siteId is string && data.siteId.size() <= 64 &&
-             data.priority is string && data.priority in ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] &&
+             data.priority is string && data.priority in ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'EMERGENCY'] &&
              data.status is string && data.status in ['NEW', 'IN_PROGRESS', 'ON_REVIEW', 'APPROVED', 'REJECTED', 'OVERDUE', 'CANCELLED', 'ARCHIVED'] &&
              data.dueDateEpochDay is int &&
              data.originalDueDateEpochDay is int &&
@@ -155,7 +155,7 @@ service cloud.firestore {
                'NEXT_DAY_PLAN', 'DAILY_REPORT', 'PERIOD_REPORT', 'PHOTO_QUALITY',
                'OVERDUE_CARRYOVER', 'APPROVAL_SLA', 'DISCIPLINE_RATING',
                'GROUP_SITE_SUMMARY', 'IDLE_ACTIVITY', 'RECURRING_EXECUTION',
-               'PERIOD_COMPARISON', 'INDIVIDUAL_1ON1', 'CUSTOM'
+               'PERIOD_COMPARISON', 'INDIVIDUAL_1ON1', 'GAMIFICATION_SUMMARY', 'CUSTOM'
              ] &&
              data.sheetLayout is string && data.sheetLayout in ['SINGLE_SHEET', 'SPLIT_SHEETS'] &&
              data.exportFormat is string && data.exportFormat in ['PDF', 'XLSX', 'DOCX', 'CSV'] &&
@@ -356,6 +356,43 @@ service cloud.firestore {
                        request.resource.data.taskId == resource.data.taskId;
 
       allow delete: if isSignedIn() && isValidId(photoId);
+    }
+
+    // 8. RpgWorkspaceDocument Validation Helper (Cloud-Synced RPG & XP Progression State)
+    function isValidRpgWorkspaceDocument(data) {
+      return data.workspaceId is string && data.workspaceId.size() >= 1 && data.workspaceId.size() <= 128 &&
+             data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.payloadJson is string && data.payloadJson.size() >= 2 && data.payloadJson.size() <= 800000 &&
+             data.revisionMillis is int && data.revisionMillis >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /rpg_workspace/{workspaceId} {
+      allow get, list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+                       isValidId(workspaceId) &&
+                       request.resource.data.keys().hasAll([
+                         'workspaceId', 'userId', 'payloadJson', 'revisionMillis',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       request.resource.data.keys().hasOnly([
+                         'workspaceId', 'userId', 'payloadJson', 'revisionMillis',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidRpgWorkspaceDocument(request.resource.data);
+
+      allow update: if isSignedIn() &&
+                       isValidId(workspaceId) &&
+                       isValidRpgWorkspaceDocument(request.resource.data) &&
+                       request.resource.data.workspaceId == resource.data.workspaceId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'userId', 'payloadJson', 'revisionMillis', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(workspaceId);
     }
   }
 }

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -77,6 +78,7 @@ import com.example.domain.rpg.Quest
 import com.example.domain.rpg.QuestCadence
 import com.example.domain.rpg.RpgProgressionEngine
 import com.example.domain.rpg.RpgWorkspaceState
+import com.example.domain.rpg.ServiceSpecialization
 import com.example.domain.rpg.SkillBranch
 import com.example.domain.rpg.XpTransaction
 import java.text.SimpleDateFormat
@@ -109,7 +111,7 @@ fun RpgProgressionHubContent(
         visibleEmployees.firstOrNull { it.id == inspectedEmployeeId } ?: activeEmployee
     }
     val isSelf = targetEmployee.id == activeEmployee.id
-    val profile = rpgState.profiles[targetEmployee.id] ?: EmployeeRpgProfile(employeeId = targetEmployee.id)
+    val profile = rpgState.profileForEmployee(targetEmployee)
     val userLevel = remember(profile.totalXp, rpgState.config) {
         RpgProgressionEngine.resolveUserLevel(profile.totalXp, rpgState.config)
     }
@@ -389,6 +391,17 @@ private fun RpgHeroSummaryCard(
                                 fontWeight = FontWeight.Medium
                             )
                         }
+                        val cleanSub = com.example.data.seed.CorporateSeedData.sanitizeSubdivisionName(targetEmployee.groupName)
+                        val cleanPos = com.example.data.seed.CorporateSeedData.sanitizePositionName(targetEmployee.position, targetEmployee.role)
+                        val cleanSite = com.example.data.seed.CorporateSeedData.sanitizeSiteOrLocation(
+                            raw = targetEmployee.siteName,
+                            fallbackSubdivision = cleanSub
+                        )
+                        Text(
+                            text = "${com.example.data.seed.CorporateSeedData.DEFAULT_ORG_NAME}, $cleanSub, $cleanPos, Участок: $cleanSite",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 Surface(
@@ -465,7 +478,7 @@ private fun RpgHeroSummaryCard(
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
                             modifier = Modifier
                                 .weight(1f)
-                                .height(48.dp)
+                                .heightIn(min = 48.dp)
                                 .testTag("rpg_prestige_button")
                         ) {
                             Icon(Icons.Default.WorkspacePremium, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -478,7 +491,7 @@ private fun RpgHeroSummaryCard(
                             onClick = onRequestAdjust,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(48.dp)
+                                .heightIn(min = 48.dp)
                                 .testTag("rpg_manual_adjust_button")
                         ) {
                             Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -625,7 +638,7 @@ private fun RpgProfileAndStreakTab(
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("rpg_recover_streak_button")
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -749,7 +762,7 @@ private fun RpgProfileAndStreakTab(
                                     onClick = { onEquipItem(item.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                     modifier = Modifier
-                                        .height(40.dp)
+                                        .heightIn(min = 40.dp)
                                         .testTag("rpg_equip_${item.id}")
                                 ) {
                                     Text(if (equipped) "Снять" else "Надеть", style = MaterialTheme.typography.labelSmall)
@@ -770,6 +783,7 @@ private fun RpgProfileAndStreakTab(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RpgSkillsTreeTab(
     targetEmployee: CorporateEmployee,
@@ -779,6 +793,11 @@ private fun RpgSkillsTreeTab(
     onUpgradeSkill: (String) -> Unit,
     onRequestReset: () -> Unit
 ) {
+    val defaultService = remember(targetEmployee) {
+        RpgProgressionEngine.resolveEmployeeServiceSpecialization(targetEmployee)
+    }
+    var selectedService by remember(defaultService) { mutableStateOf(defaultService) }
+
     val canResetThisSeason = isSelf &&
         profile.skillPointsSpent > 0 &&
         profile.seasonSkillResetDoneForSeasonId != rpgState.currentSeason.id
@@ -790,40 +809,72 @@ private fun RpgSkillsTreeTab(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
+            Column(
                 modifier = Modifier.padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Дерево навыков (Доступно: ${profile.skillPointsAvailable} SP)",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Потрачено: ${profile.skillPointsSpent} SP • Сезон ${rpgState.currentSeason.quarterCode}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (isSelf) {
-                    OutlinedButton(
-                        onClick = onRequestReset,
-                        enabled = canResetThisSeason,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("rpg_reset_skills_button")
-                    ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (profile.seasonSkillResetDoneForSeasonId == rpgState.currentSeason.id) {
-                                "Сброс исп."
-                            } else {
-                                "Сброс (-${rpgState.config.seasonalResetSpPenalty} SP)"
-                            },
-                            style = MaterialTheme.typography.labelSmall
+                            text = "Дерево навыков (Доступно: ${profile.skillPointsAvailable} SP)",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Авто-распределение опыта от типа задач (физ. труд, АСУТП/электрика, документация, ТБ/ирония) + ручная прокачка за SP",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (isSelf) {
+                        OutlinedButton(
+                            onClick = onRequestReset,
+                            enabled = canResetThisSeason,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("rpg_reset_skills_button")
+                        ) {
+                            Text(
+                                text = if (profile.seasonSkillResetDoneForSeasonId == rpgState.currentSeason.id) {
+                                    "Сброс исп."
+                                } else {
+                                    "Сброс (-${rpgState.config.seasonalResetSpPenalty} SP)"
+                                },
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                Text(
+                    text = "Специализация службы (адаптация названий навыков):",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    ServiceSpecialization.entries.forEach { svc ->
+                        FilterChip(
+                            selected = selectedService == svc,
+                            onClick = { selectedService = svc },
+                            label = { Text(svc.shortTitleRu, style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.testTag("rpg_service_chip_${svc.code}")
                         )
                     }
                 }
+                Text(
+                    text = "${selectedService.fullTitleRu}: ${selectedService.descriptionRu}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
 
@@ -860,10 +911,16 @@ private fun RpgSkillsTreeTab(
                             currentLvl < def.maxLevel &&
                             prereqOk &&
                             roleOk
+                        val resolvedTitle = def.titleForService(selectedService)
+                        val resolvedDesc = def.descriptionForService(selectedService)
 
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                            color = if (def.isHumorousOrPenaltySkill) {
+                                Color(0xFFD97706).copy(alpha = 0.08f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+                            },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
@@ -872,13 +929,33 @@ private fun RpgSkillsTreeTab(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "$resolvedTitle ($currentLvl/${def.maxLevel})",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.weight(1f, fill = false)
+                                        )
+                                        if (def.isHumorousOrPenaltySkill) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFFD97706).copy(alpha = 0.16f)
+                                            ) {
+                                                Text(
+                                                    text = "Ирония / Авто",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color(0xFFB45309),
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                     Text(
-                                        text = "${def.titleRu} ($currentLvl/${def.maxLevel})",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = def.descriptionRu,
+                                        text = resolvedDesc,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -890,7 +967,9 @@ private fun RpgSkillsTreeTab(
                                         )
                                     } else if (!prereqOk && def.prerequisiteSkillId != null) {
                                         val reqTitle = RpgProgressionEngine.skillCatalog
-                                            .firstOrNull { it.id == def.prerequisiteSkillId }?.titleRu ?: def.prerequisiteSkillId
+                                            .firstOrNull { it.id == def.prerequisiteSkillId }
+                                            ?.titleForService(selectedService)
+                                            ?: def.prerequisiteSkillId
                                         Text(
                                             text = "Требуется базовый навык: $reqTitle",
                                             style = MaterialTheme.typography.labelSmall,
@@ -904,7 +983,7 @@ private fun RpgSkillsTreeTab(
                                         enabled = canUpgrade,
                                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                         modifier = Modifier
-                                            .height(40.dp)
+                                            .heightIn(min = 40.dp)
                                             .testTag("rpg_upgrade_${def.id}")
                                     ) {
                                         Text(
@@ -1132,8 +1211,11 @@ private fun RpgLeaderboardAndLogTab(
     val leaderboard = remember(rpgState, viewer, availableEmployees) {
         RpgProgressionEngine.buildLeaderboard(rpgState, viewer, availableEmployees)
     }
-    val empTransactions = remember(rpgState.transactions, targetEmployee.id) {
-        rpgState.transactions.filter { it.employeeId == targetEmployee.id }.take(25)
+    val empTransactions = remember(rpgState.transactions, targetEmployee.id, targetEmployee.email) {
+        val canonicalId = com.example.data.model.SiteMemberDocument.canonicalMemberId(targetEmployee.id, targetEmployee.email)
+        val normId = targetEmployee.id.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+        val validIds = setOf(targetEmployee.id, canonicalId, normId)
+        rpgState.transactions.filter { it.employeeId in validIds }.take(25)
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1490,7 +1572,7 @@ fun AdminGamificationSection(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("admin_save_gamification_config_button")
                 ) {
                     Text("Сохранить правила XP")

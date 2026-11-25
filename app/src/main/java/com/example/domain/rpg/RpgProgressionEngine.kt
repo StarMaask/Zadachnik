@@ -18,69 +18,156 @@ data class RpgOperationResult(
 object RpgProgressionEngine {
 
     val skillCatalog: List<SkillDefinition> = listOf(
-        // 1. Физический труд и монтаж (КИПиА, кабели, шкафы)
+        // =========================================================================
+        // 1. ФИЗИЧЕСКИЙ ТРУД И ПОЛЕВОЙ МОНТАЖ (УЭСАиТМ / ОГЭ / ОГМ / ОЭН)
+        // =========================================================================
         SkillDefinition(
             id = "sk_phys_montage",
             branch = SkillBranch.PROFESSIONAL,
-            titleRu = "Монтаж без мата и кувалды",
-            descriptionRu = "+2% к XP за безупречный силовой и кабельный монтаж в щитах АСУТП",
+            titleRu = "Монтаж без мата и кувалды (Шкафы САиТМ)",
+            descriptionRu = "+2% к XP за физический труд: сборка шкафов автоматики, прокладка кабельных лотков и установка датчиков КИПиА",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
-            prerequisiteSkillId = null
+            prerequisiteSkillId = null,
+            serviceTitlesRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "Монтаж без мата и кувалды (Шкафы САиТМ)",
+                ServiceSpecialization.OGE to "Укротитель силовых муфт 10 кВ (ОГЭ)",
+                ServiceSpecialization.OGM to "Повелитель фланцев и шпилек М36 (ОГМ)",
+                ServiceSpecialization.OEN to "Богатырь линейной задвижки (ОЭН)"
+            ),
+            serviceDescriptionsRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "+2% к XP за физический монтаж шкафов САиТМ, импульсных линий и датчиков давления",
+                ServiceSpecialization.OGE to "+2% к XP за разделку бронированного силового кабеля и протяжку шин в РУ-6/10 кВ",
+                ServiceSpecialization.OGM to "+2% к XP за физический демонтаж/монтаж задвижек, насосов МНА и замену торцевых уплотнений",
+                ServiceSpecialization.OEN to "+2% к XP за шурфовку, ремонт изоляции трубы и работу на камерах пуска-приёма СОД"
+            )
         ),
         SkillDefinition(
             id = "sk_phys_cable",
             branch = SkillBranch.PROFESSIONAL,
-            titleRu = "Кабельный ниндзя (прозвонка)",
-            descriptionRu = "+3% к XP за быструю расшивку и отсутствие КЗ в кабельных линиях",
+            titleRu = "Кабельный ниндзя (Прозвонка с закрытыми глазами)",
+            descriptionRu = "+3% к XP за скоростную расшивку клеммников КИПиА и обжим НШВИ без единого КЗ",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_phys_montage"
+            prerequisiteSkillId = "sk_phys_montage",
+            serviceTitlesRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "Кабельный ниндзя (Прозвонка с закрытыми глазами)",
+                ServiceSpecialization.OGE to "Гроза кабельных эстакад и фидеров (ОГЭ)",
+                ServiceSpecialization.OGM to "Виртуоз подшипников и сальников (ОГМ)",
+                ServiceSpecialization.OEN to "Мастер запасовки скребка КПП СОД (ОЭН)"
+            ),
+            serviceDescriptionsRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "+3% к XP за быструю расшивку многожильных контрольных кабелей в кроссовых шкафах АСУТП",
+                ServiceSpecialization.OGE to "+3% к XP за безупречную прокладку силовых линий и подключение ячеек КРУН",
+                ServiceSpecialization.OGM to "+3% к XP за переборку редукторов и маслосистем без «лишних деталей» после сборки",
+                ServiceSpecialization.OEN to "+3% к XP за подготовку камер пуска-приёма СОД и опрессовку технологических трубопроводов"
+            )
         ),
-        // 2. Умственный труд: электрика, электроника и ПЛК
+        SkillDefinition(
+            id = "sk_phys_novice_grind",
+            branch = SkillBranch.PROFESSIONAL,
+            titleRu = "Подай-принеси и мастер болгарки 150 мм (Старт)",
+            descriptionRu = "Юмор начального этапа (+2% к XP): таскание бухт КВВГ, резка листов металла, засыпка еврокубов песком и поиск «ведра компрессии»",
+            maxLevel = 5,
+            xpBonusPercentPerLevel = 2,
+            prerequisiteSkillId = null,
+            isHumorousOrPenaltySkill = true,
+            serviceTitlesRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "Подай-принеси и мастер болгарки 150 мм (Старт САиТМ)",
+                ServiceSpecialization.OGE to "Носитель диэлектрических бот и заземлений (Старт ОГЭ)",
+                ServiceSpecialization.OGM to "Младший помощник кувалды и ключа на 46 (Старт ОГМ)",
+                ServiceSpecialization.OEN to "Обходчик-марафонец с лопатой (Старт ОЭН)"
+            )
+        ),
+
+        // =========================================================================
+        // 2. УМСТВЕННЫЙ ТРУД: ЭЛЕКТРИКА, ЭЛЕКТРОНИКА И АСУТП
+        // =========================================================================
         SkillDefinition(
             id = "sk_mind_plc",
             branch = SkillBranch.QUALITY,
-            titleRu = "Заклинатель ПЛК и SCADA",
-            descriptionRu = "+2% к XP за пусконаладку контроллеров и безглючный софт",
+            titleRu = "Заклинатель ПЛК, SCADA и Modbus",
+            descriptionRu = "+2% к XP за умственный труд: диагностика контроллеров АСУТП, СДКУ, радиосвязи МПВ и пусконаладка защит",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
-            prerequisiteSkillId = null
+            prerequisiteSkillId = null,
+            serviceTitlesRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "Заклинатель ПЛК, SCADA и Modbus (УЭСАиТМ)",
+                ServiceSpecialization.OGE to "Шаман микропроцессорной РЗА и АВР (ОГЭ)",
+                ServiceSpecialization.OGM to "Аналитик вибродиагностики и термографии МНА (ОГМ)",
+                ServiceSpecialization.OEN to "Повелитель гидравлических режимов МН (ОЭН)"
+            ),
+            serviceDescriptionsRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "+2% к XP за наладку ПЛК, опрос радиостанций, ССВД и маскирование защит МНА на холостом ходу",
+                ServiceSpecialization.OGE to "+2% к XP за расчёт уставок релейной защиты, настройку АВР и анализ осциллограмм",
+                ServiceSpecialization.OGM to "+2% к XP за спектральный анализ вибрации насосных агрегатов и диагностику торцевых уплотнений",
+                ServiceSpecialization.OEN to "+2% к XP за контроль профиля давлений, расхода и герметичности магистрального нефтепровода"
+            )
         ),
         SkillDefinition(
             id = "sk_mind_logic",
             branch = SkillBranch.QUALITY,
-            titleRu = "Осциллограф головного мозга",
-            descriptionRu = "+3% к XP за точный поиск плавающих сбоев в аналоговых цепях 4-20мА",
+            titleRu = "Осциллограф головного мозга (Петля 4–20 мА / HART)",
+            descriptionRu = "+3% к XP за поиск плавающей наводки в цепях Метранов, пожарных извещателей и датчиков уровня КНС",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_mind_plc"
+            prerequisiteSkillId = "sk_mind_plc",
+            serviceTitlesRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "Осциллограф головного мозга (Петля 4–20 мА / HART)",
+                ServiceSpecialization.OGE to "Телепат гармоник, фазировки и cos φ (ОГЭ)",
+                ServiceSpecialization.OGM to "Магистр лазерной центровки валов (ОГМ)",
+                ServiceSpecialization.OEN to "Дешифратор внутритрубной дефектоскопии ВИП (ОЭН)"
+            ),
+            serviceDescriptionsRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "+3% к XP за устранение ошибок ССВД МНС, калибровку датчиков Метран и настройку токовых петель",
+                ServiceSpecialization.OGE to "+3% к XP за поиск однофазных замыканий на землю и испытания изоляции повышенным напряжением",
+                ServiceSpecialization.OGM to "+3% к XP за выверку соосности валов насоса и электродвигателя с точностью до 0,02 мм",
+                ServiceSpecialization.OEN to "+3% к XP за точную идентификацию дефектов стенки трубы по данным дефектоскопа"
+            )
         ),
-        // 3. Документация и исполнительные схемы
+
+        // =========================================================================
+        // 3. ДОКУМЕНТАЦИЯ, СХЕМЫ И ИНЖЕНЕРНАЯ БЮРОКРАТИЯ
+        // =========================================================================
         SkillDefinition(
             id = "sk_doc_bureau",
             branch = SkillBranch.TEAM,
-            titleRu = "Властелин ГОСТов и ПУЭ",
-            descriptionRu = "+2% к XP за исполнительную документацию, сданную с 1-го раза",
+            titleRu = "Властелин ГОСТов, ПУЭ и кабельных журналов",
+            descriptionRu = "+2% к XP за работу с документацией: журналы распоряжений, сводные таблицы радиостанций, планы на месяц и письма",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
-            prerequisiteSkillId = null
+            prerequisiteSkillId = null,
+            serviceTitlesRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "Властелин ГОСТов, ПУЭ и кабельных журналов (САиТМ)",
+                ServiceSpecialization.OGE to "Архивариус однолинейных схем и бланков переключений (ОГЭ)",
+                ServiceSpecialization.OGM to "Летописец формуляров МНА и дефектных ведомостей (ОГМ)",
+                ServiceSpecialization.OEN to "Хранитель паспортов РВС и градуировочных таблиц (ОЭН)"
+            )
         ),
         SkillDefinition(
             id = "sk_doc_act",
             branch = SkillBranch.TEAM,
-            titleRu = "Печать одобрения бюрократа",
-            descriptionRu = "+3% к XP за акты ТУ и допуски Ростехнадзора без замечаний",
+            titleRu = "Печать одобрения (Акты поверки и наряды с 1-го раза)",
+            descriptionRu = "+3% к XP за подготовку графиков поверки Метранов, актов приёмки АСУТП и исполнительных схем без единого возврата",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_doc_bureau"
+            prerequisiteSkillId = "sk_doc_bureau",
+            serviceTitlesRu = mapOf(
+                ServiceSpecialization.ASUTP_UESAITM to "Печать одобрения (Акты поверки и схемы АСУТП с 1-го раза)",
+                ServiceSpecialization.OGE to "Мастер наряда-допуска в электроустановках (ОГЭ)",
+                ServiceSpecialization.OGM to "Гуру актов гидроиспытаний и ревизии арматуры (ОГМ)",
+                ServiceSpecialization.OEN to "Маэстро актов пуска-приёма СОД и техкарт (ОЭН)"
+            )
         ),
-        // 4. ТБ, дисциплина и тонкий юмор за косяки
+
+        // =========================================================================
+        // 4. ТБ, ВЫЖИВАНИЕ И ИРОНИЧНЫЕ НАВЫКИ (ЗА КОСЯКИ, ВОЗВРАТЫ И НАЧАЛЬНЫЙ ЭТАП)
+        // =========================================================================
         SkillDefinition(
             id = "sk_safe_pue",
             branch = SkillBranch.SAFETY,
-            titleRu = "Выжил после 380В",
-            descriptionRu = "+2% к XP за соблюдение ПУЭ и ТБ (инстинкт самосохранения 80 lvl)",
+            titleRu = "Выжил после 380В (Инстинкт самосохранения)",
+            descriptionRu = "+2% к XP за соблюдение ПУЭ и проверку отсутствия напряжения перед тем, как лезть отвёрткой в шкаф",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
             prerequisiteSkillId = null
@@ -88,28 +175,78 @@ object RpgProgressionEngine {
         SkillDefinition(
             id = "sk_safe_humor",
             branch = SkillBranch.SAFETY,
-            titleRu = "Иммунитет к изоленте",
-            descriptionRu = "+3% к XP за отказ от синей изоленты в пользу пайки и клемм WAGO",
+            titleRu = "Магистр синей изоленты и стяжек",
+            descriptionRu = "Тонкий инженерный юмор (+3% к XP): если держится на синей изоленте — значит по ГОСТу, но за клеммы WAGO и бирки дают бонус",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_safe_pue"
+            prerequisiteSkillId = "sk_safe_pue",
+            isHumorousOrPenaltySkill = true
         ),
-        // 5. Специализации будущих служб (ОГЭ, ОГМ, ОЭН) и Лидерство
+        SkillDefinition(
+            id = "sk_irony_excuse",
+            branch = SkillBranch.SAFETY,
+            titleRu = "Гуру объяснительных: «Оно само сработало!»",
+            descriptionRu = "Ирония за возвраты отчётов (+1% утешительного XP): автоматически качается при отклонении отчёта или замечаниях («Это наводка в линии, а не мой косяк!»)",
+            maxLevel = 5,
+            xpBonusPercentPerLevel = 1,
+            prerequisiteSkillId = null,
+            isHumorousOrPenaltySkill = true
+        ),
+        SkillDefinition(
+            id = "sk_irony_blame",
+            branch = SkillBranch.SAFETY,
+            titleRu = "Стрелочник 80-го уровня («Это смежники и магнитные бури!»)",
+            descriptionRu = "Не очень тонкий юмор за переносы задач и просрочки (+1% XP): автоматически качается при переносе невыполненных объёмов на завтра",
+            maxLevel = 5,
+            xpBonusPercentPerLevel = 1,
+            prerequisiteSkillId = null,
+            isHumorousOrPenaltySkill = true
+        ),
+
+        // =========================================================================
+        // 5. СПЕЦСЛУЖБЫ (УЭСАиТМ / ОГЭ / ОГМ / ОЭН) И НАДЗОР ИТР
+        // =========================================================================
+        SkillDefinition(
+            id = "sk_spec_asutp",
+            branch = SkillBranch.LEADERSHIP,
+            titleRu = "Спецкурс УЭСАиТМ: Телемеханика, ССВД и МПВ",
+            descriptionRu = "+2% к XP за профильные задачи участка средств автоматики и телемеханики (АСУТП, пожарная автоматика, связь)",
+            maxLevel = 5,
+            xpBonusPercentPerLevel = 2,
+            prerequisiteSkillId = null
+        ),
         SkillDefinition(
             id = "sk_spec_oge",
             branch = SkillBranch.LEADERSHIP,
-            titleRu = "Энергия трансформаторов (ОГЭ)",
-            descriptionRu = "+2% к XP за режим работы электроустановок и КУ",
+            titleRu = "Спецкурс ОГЭ: Энергия трансформаторов и РУ",
+            descriptionRu = "+2% к XP за задачи отдела главного энергетика (электроснабжение, АВР, ЗРУ, освещение и кабельные сети)",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
-            prerequisiteSkillId = null,
-            minRoleWeight = CorporateRole.ITR.hierarchyWeight
+            prerequisiteSkillId = null
         ),
         SkillDefinition(
             id = "sk_spec_ogm",
             branch = SkillBranch.LEADERSHIP,
-            titleRu = "Механика гидравлики (ОГМ)",
-            descriptionRu = "+2% к XP за ревизию задвижек, насосов и приводов",
+            titleRu = "Спецкурс ОГМ: Механика МНА и запорной арматуры",
+            descriptionRu = "+2% к XP за задачи отдела главного механика (насосы, приводы задвижек, КНС, откачка и механообработка)",
+            maxLevel = 5,
+            xpBonusPercentPerLevel = 2,
+            prerequisiteSkillId = null
+        ),
+        SkillDefinition(
+            id = "sk_spec_oen",
+            branch = SkillBranch.LEADERSHIP,
+            titleRu = "Спецкурс ОЭН: Эксплуатация нефтепроводов и РВС",
+            descriptionRu = "+2% к XP за задачи отдела эксплуатации нефтепроводов (линейная часть, технологические трубопроводы, еврокубы и откачка)",
+            maxLevel = 5,
+            xpBonusPercentPerLevel = 2,
+            prerequisiteSkillId = null
+        ),
+        SkillDefinition(
+            id = "sk_lead_review",
+            branch = SkillBranch.LEADERSHIP,
+            titleRu = "Око Технадзора (Оперативная приёмка ИТР)",
+            descriptionRu = "+2% к XP за быструю проверку фотоотчётов подчинённых и жёсткий отсев халтуры",
             maxLevel = 5,
             xpBonusPercentPerLevel = 2,
             prerequisiteSkillId = null,
@@ -118,11 +255,11 @@ object RpgProgressionEngine {
         SkillDefinition(
             id = "sk_lead_mentor",
             branch = SkillBranch.LEADERSHIP,
-            titleRu = "Дедлайн-терапевт смены",
-            descriptionRu = "+3% к XP за успешный разгон спящих бригад и наставничество",
+            titleRu = "Дедлайн-терапевт смены (Разгон спящих бригад)",
+            descriptionRu = "+3% к XP за координацию участка, проведение планёрок и закрытие сменных заданий без переносов",
             maxLevel = 5,
             xpBonusPercentPerLevel = 3,
-            prerequisiteSkillId = "sk_spec_oge",
+            prerequisiteSkillId = "sk_lead_review",
             minRoleWeight = CorporateRole.ITR.hierarchyWeight
         )
     )
@@ -393,6 +530,206 @@ object RpgProgressionEngine {
         else -> 1.0
     }
 
+    fun resolveEmployeeServiceSpecialization(
+        employee: CorporateEmployee? = null,
+        task: TaskDocument? = null
+    ): ServiceSpecialization {
+        val combined = listOfNotNull(
+            employee?.siteName,
+            employee?.groupName,
+            employee?.position,
+            task?.geoLocation,
+            task?.groupName,
+            task?.title
+        ).joinToString(" ").lowercase()
+
+        return when {
+            combined.contains("огэ") ||
+                combined.contains("главного энергетика") ||
+                combined.contains("энерго") ||
+                combined.contains("зру") ||
+                combined.contains("трансформатор") -> ServiceSpecialization.OGE
+            combined.contains("огм") ||
+                combined.contains("главного механика") ||
+                combined.contains("механик") && !combined.contains("электромеханик") && !combined.contains("телемехан") -> ServiceSpecialization.OGM
+            combined.contains("оэн") ||
+                combined.contains("эксплуатации нефтепроводов") ||
+                combined.contains("трубопровод") ||
+                combined.contains("кпп сод") -> ServiceSpecialization.OEN
+            else -> ServiceSpecialization.ASUTP_UESAITM
+        }
+    }
+
+    /**
+     * Определяет характер работ по содержанию назначенной задачи:
+     * физический труд, умственный труд в электрике/электронике/АСУТП, документация, ТБ/ирония и спецслужба.
+     */
+    fun classifyTaskWorkNatures(task: TaskDocument): List<TaskWorkNature> {
+        val text = buildString {
+            append(task.title).append(' ')
+            append(task.description).append(' ')
+            append(task.geoLocation).append(' ')
+            task.visibleTags.forEach { append(it).append(' ') }
+            task.decodedSubtasks().forEach { append(it.title).append(' ') }
+        }.lowercase()
+
+        val natures = mutableSetOf<TaskWorkNature>()
+
+        val isPhysical = listOf(
+            "монтаж", "демонтаж", "отпилить", "распил", "болгарк", "перевести", "перенести",
+            "отнести", "установить", "еврокуб", "песк", "песком", "лист", "металл", "шкаф",
+            "крышк", "трактор", "кабел", "задвиж", "кнс", "откачк", "фгу", "проссвет", "мешк"
+        ).any { text.contains(it) }
+        if (isPhysical) {
+            natures.add(TaskWorkNature.PHYSICAL_LABOR)
+        }
+
+        val isMentalAutomationOrElectrical = listOf(
+            "асутп", "саитм", "уэсаитм", "кипиа", "датчик", "метран", "извещател", "ссвд",
+            "мнс", "плк", "scada", "сигнализац", "пожарн", "радиостанц", "радиосвяз", "мпв",
+            "автоматик", "телемехан", "схем", "питани", "ошибк", "устранить", "пуск", "мна",
+            "холостом", "маскиров", "защит", "контроллер", "авр", "рза", "ток", "напряж"
+        ).any { text.contains(it) }
+        if (isMentalAutomationOrElectrical) {
+            natures.add(TaskWorkNature.MENTAL_AUTOMATION_ELECTRICAL)
+        }
+
+        val isDocumentation = listOf(
+            "журнал", "распечатать", "план", "таблиц", "переч", "письм", "совещани", "планерк",
+            "планёрк", "акт", "поверк", "отчет", "отчёт", "паспорт", "наряд", "сводн", "график",
+            "документ", "ведомост", "протокол", "согласова"
+        ).any { text.contains(it) }
+        if (isDocumentation) {
+            natures.add(TaskWorkNature.DOCUMENTATION_AND_SCHEMES)
+        }
+
+        val isSafety = listOf(
+            "защит", "пожар", "тб", "пуэ", "безопас", "исправн", "провер", "блокиров", "допуск"
+        ).any { text.contains(it) }
+        if (isSafety) {
+            natures.add(TaskWorkNature.SAFETY_AND_IRONY)
+        }
+
+        natures.add(TaskWorkNature.SERVICE_SPECIALIZATION)
+        if (natures.size == 1) {
+            // Если по тексту не сработал узкий фильтр, для УЭСАиТМ по умолчанию распределяем в АСУТП/Электронику
+            natures.add(TaskWorkNature.MENTAL_AUTOMATION_ELECTRICAL)
+        }
+        return natures.toList()
+    }
+
+    /**
+     * Подбирает конкретные навыки дерева для автоматической прокачки от выполнения (или провала) задачи.
+     */
+    fun classifyTaskAutoSkillIds(
+        task: TaskDocument,
+        employee: CorporateEmployee,
+        profile: EmployeeRpgProfile,
+        isPoorExecution: Boolean = false,
+        currentLevel: Int = 1
+    ): List<String> {
+        val currentSkillMap = profile.skills.associate { it.skillId to it.level }
+        val resultIds = mutableListOf<String>()
+
+        if (isPoorExecution) {
+            // За плохое выполнение (возврат, просрочка, перенос) автоматически качаются ироничные навыки!
+            resultIds.add("sk_irony_excuse")
+            if (task.carryoverCount > 0L || task.taskStatus == TaskStatus.OVERDUE) {
+                resultIds.add("sk_irony_blame")
+            }
+            if (currentLevel <= 4) {
+                resultIds.add("sk_phys_novice_grind")
+            }
+            return resultIds.distinct()
+        }
+
+        val natures = classifyTaskWorkNatures(task)
+        val service = resolveEmployeeServiceSpecialization(employee, task)
+
+        if (TaskWorkNature.PHYSICAL_LABOR in natures) {
+            if (currentLevel <= 3 && (currentSkillMap["sk_phys_novice_grind"] ?: 0) < 2) {
+                resultIds.add("sk_phys_novice_grind")
+            }
+            val montageLvl = currentSkillMap["sk_phys_montage"] ?: 0
+            if (montageLvl < 1) {
+                resultIds.add("sk_phys_montage")
+            } else {
+                resultIds.add(if (montageLvl <= (currentSkillMap["sk_phys_cable"] ?: 0)) "sk_phys_montage" else "sk_phys_cable")
+            }
+        }
+
+        if (TaskWorkNature.MENTAL_AUTOMATION_ELECTRICAL in natures) {
+            val plcLvl = currentSkillMap["sk_mind_plc"] ?: 0
+            if (plcLvl < 1) {
+                resultIds.add("sk_mind_plc")
+            } else {
+                resultIds.add(if (plcLvl <= (currentSkillMap["sk_mind_logic"] ?: 0)) "sk_mind_plc" else "sk_mind_logic")
+            }
+        }
+
+        if (TaskWorkNature.DOCUMENTATION_AND_SCHEMES in natures) {
+            val docLvl = currentSkillMap["sk_doc_bureau"] ?: 0
+            if (docLvl < 1) {
+                resultIds.add("sk_doc_bureau")
+            } else {
+                resultIds.add(if (docLvl <= (currentSkillMap["sk_doc_act"] ?: 0)) "sk_doc_bureau" else "sk_doc_act")
+            }
+        }
+
+        if (TaskWorkNature.SAFETY_AND_IRONY in natures) {
+            val pueLvl = currentSkillMap["sk_safe_pue"] ?: 0
+            if (pueLvl < 1) {
+                resultIds.add("sk_safe_pue")
+            } else {
+                resultIds.add(if (pueLvl <= (currentSkillMap["sk_safe_humor"] ?: 0)) "sk_safe_pue" else "sk_safe_humor")
+            }
+        }
+
+        // Автоматическая прокачка профильного навыка службы (УЭСАиТМ / ОГЭ / ОГМ / ОЭН)
+        val specSkillId = when (service) {
+            ServiceSpecialization.ASUTP_UESAITM -> "sk_spec_asutp"
+            ServiceSpecialization.OGE -> "sk_spec_oge"
+            ServiceSpecialization.OGM -> "sk_spec_ogm"
+            ServiceSpecialization.OEN -> "sk_spec_oen"
+        }
+        resultIds.add(specSkillId)
+
+        if (employee.role.hierarchyWeight >= CorporateRole.ITR.hierarchyWeight) {
+            val revLvl = currentSkillMap["sk_lead_review"] ?: 0
+            resultIds.add(if (revLvl < 1) "sk_lead_review" else "sk_lead_mentor")
+        }
+
+        return resultIds.distinct()
+    }
+
+    private fun autoAdvanceProfileSkills(
+        profile: EmployeeRpgProfile,
+        employee: CorporateEmployee,
+        skillIdsToAdvance: List<String>,
+        maxAutoGainCount: Int = 2
+    ): Pair<EmployeeRpgProfile, List<String>> {
+        val skillMap = profile.skills.associate { it.skillId to it.level }.toMutableMap()
+        val advancedTitles = mutableListOf<String>()
+        val service = resolveEmployeeServiceSpecialization(employee)
+
+        for (skillId in skillIdsToAdvance) {
+            if (advancedTitles.size >= maxAutoGainCount) break
+            val def = skillCatalog.firstOrNull { it.id == skillId } ?: continue
+            if (employee.role.hierarchyWeight < def.minRoleWeight) continue
+            if (def.prerequisiteSkillId != null && (skillMap[def.prerequisiteSkillId] ?: 0) < 1) continue
+            val curLvl = skillMap[skillId] ?: 0
+            if (curLvl < def.maxLevel) {
+                val nextLvl = curLvl + 1
+                skillMap[skillId] = nextLvl
+                advancedTitles.add("${def.titleForService(service)} (ур. $nextLvl)")
+            }
+        }
+
+        if (advancedTitles.isEmpty()) return profile to emptyList()
+        val updatedSkills = skillMap.entries.map { (k, v) -> UserSkill(skillId = k, level = v) }
+        return profile.copy(skills = updatedSkills) to advancedTitles
+    }
+
     fun skillMultiplierForTask(
         profile: EmployeeRpgProfile,
         priority: TaskPriority,
@@ -405,10 +742,12 @@ object RpgProgressionEngine {
             if (us.level <= 0) return@forEach
             val def = skillCatalog.firstOrNull { it.id == us.skillId } ?: return@forEach
             val applies = when (def.id) {
-                "sk_phys_montage", "sk_phys_cable", "sk_mind_plc", "sk_mind_logic" -> true
+                "sk_phys_montage", "sk_phys_cable", "sk_phys_novice_grind",
+                "sk_mind_plc", "sk_mind_logic" -> true
                 "sk_doc_bureau", "sk_doc_act" -> firstTry
-                "sk_safe_pue", "sk_safe_humor" -> true
-                "sk_spec_oge", "sk_spec_ogm", "sk_lead_mentor" -> true
+                "sk_safe_pue", "sk_safe_humor", "sk_irony_excuse", "sk_irony_blame" -> true
+                "sk_spec_asutp", "sk_spec_oge", "sk_spec_ogm", "sk_spec_oen",
+                "sk_lead_review", "sk_lead_mentor" -> true
                 else -> false
             }
             if (applies) {
@@ -491,7 +830,7 @@ object RpgProgressionEngine {
         employeeId: String,
         currentEpochDay: Long
     ): Int {
-        val profile = state.profiles[employeeId] ?: EmployeeRpgProfile(employeeId)
+        val profile = state.profileForId(employeeId)
         val effectivePriority = task.lockedPriorityAtCompletion ?: task.taskPriority
         val isOverdue = task.taskStatus == TaskStatus.OVERDUE || currentEpochDay > task.dueDateEpochDay || task.carryoverCount > 0L
         val isEarly = currentEpochDay < task.dueDateEpochDay && task.carryoverCount == 0L
@@ -510,10 +849,12 @@ object RpgProgressionEngine {
         ).first
     }
 
-    fun ensureProfile(state: RpgWorkspaceState, employeeId: String): RpgWorkspaceState {
-        if (employeeId.isBlank() || state.profiles.containsKey(employeeId)) return state
+    fun ensureProfile(state: RpgWorkspaceState, employeeId: String, email: String = ""): RpgWorkspaceState {
+        if (employeeId.isBlank()) return state
+        val existing = state.profileForId(employeeId, email).copy(employeeId = employeeId)
+        if (state.profiles[employeeId] == existing) return state
         return state.copy(
-            profiles = state.profiles + (employeeId to EmployeeRpgProfile(employeeId = employeeId))
+            profiles = state.profiles + (employeeId to existing)
         )
     }
 
@@ -589,6 +930,28 @@ object RpgProgressionEngine {
                 }
 
                 val updatedStreak = advanceStreak(profile.streak, currentEpochDay)
+                val autoSkillTargets = classifyTaskAutoSkillIds(
+                    task = task,
+                    employee = emp,
+                    profile = profile,
+                    isPoorExecution = isOverdue || wasRejected,
+                    currentLevel = oldLevel
+                )
+                val (profileWithAutoSkills, autoAdvancedLabels) = autoAdvanceProfileSkills(
+                    profile = profile,
+                    employee = emp,
+                    skillIdsToAdvance = autoSkillTargets,
+                    maxAutoGainCount = 2
+                )
+                val workNaturesSummary = classifyTaskWorkNatures(task)
+                    .filter { it != TaskWorkNature.SERVICE_SPECIALIZATION }
+                    .joinToString(", ") { it.titleRu.substringBefore(":") }
+                val autoSkillNote = if (autoAdvancedLabels.isNotEmpty()) {
+                    " • Авто-прокачка (${workNaturesSummary.ifBlank { "АСУТП" }}): ${autoAdvancedLabels.joinToString(", ")}"
+                } else {
+                    " • Профиль задачи: ${workNaturesSummary.ifBlank { "АСУТП" }}"
+                }
+
                 val tx = XpTransaction(
                     id = "xp_${nowMillis}_${emp.id.take(6)}_${(100..999).random()}",
                     employeeId = emp.id,
@@ -599,7 +962,7 @@ object RpgProgressionEngine {
                     xpDelta = xpEarned,
                     reputationDelta = repDelta,
                     priorityAtCompletion = effectivePriority,
-                    appliedMultipliersSummary = multSummary,
+                    appliedMultipliersSummary = "$multSummary$autoSkillNote",
                     reason = "${txType.titleRu}: ${task.title}",
                     actorId = supervisor?.id ?: emp.id,
                     actorName = supervisor?.shortName ?: emp.shortName,
@@ -607,6 +970,7 @@ object RpgProgressionEngine {
                     createdAtMillis = nowMillis
                 )
 
+                working = working.copy(profiles = working.profiles + (emp.id to profileWithAutoSkills))
                 working = applyTransactionToProfile(working, emp.id, tx)
                 val afterTxProfile = working.profiles.getValue(emp.id).copy(streak = updatedStreak)
                 working = working.copy(profiles = working.profiles + (emp.id to afterTxProfile))
@@ -646,7 +1010,8 @@ object RpgProgressionEngine {
                     working = working.copy(profiles = working.profiles + (emp.id to leveledProfile))
                     latestLevelUp = newLevel
                 }
-                notes.add("${emp.shortName}: +$xpEarned XP")
+                val skillBannerPart = if (autoAdvancedLabels.isNotEmpty()) " [Навык: ${autoAdvancedLabels.first()}]" else ""
+                notes.add("${emp.shortName}: +$xpEarned XP$skillBannerPart")
             }
         }
 
@@ -733,6 +1098,16 @@ object RpgProgressionEngine {
             working = ensureProfile(working, emp.id)
             val idempKey = "${task.id}_REJECT_PENALTY_${emp.id}_${task.revisionTimestamp}"
             if (working.transactions.none { it.idempotencyKey == idempKey }) {
+                val curProfile = working.profiles.getValue(emp.id)
+                val curLevel = resolveUserLevel(curProfile.totalXp, working.config).level
+                val (profileWithIrony, ironyUpgraded) = autoAdvanceProfileSkills(
+                    profile = curProfile,
+                    employee = emp,
+                    skillIdsToAdvance = listOf("sk_irony_excuse", if (curLevel <= 3) "sk_phys_novice_grind" else "sk_irony_blame"),
+                    maxAutoGainCount = 1
+                )
+                working = working.copy(profiles = working.profiles + (emp.id to profileWithIrony))
+                val ironyNote = if (ironyUpgraded.isNotEmpty()) " • Ироничный навык: ${ironyUpgraded.first()}" else ""
                 val base = working.config.ruleFor(task.taskPriority).baseXp
                 val xpPenalty = -(base * working.config.rejectedPenaltyRate).roundToInt().coerceAtLeast(2)
                 val tx = XpTransaction(
@@ -745,7 +1120,7 @@ object RpgProgressionEngine {
                     xpDelta = xpPenalty,
                     reputationDelta = -4,
                     priorityAtCompletion = task.taskPriority,
-                    appliedMultipliersSummary = "Штраф за возврат",
+                    appliedMultipliersSummary = "Штраф за возврат$ironyNote",
                     reason = "Отклонено: $reason",
                     actorId = supervisor.id,
                     actorName = supervisor.shortName,
@@ -755,7 +1130,7 @@ object RpgProgressionEngine {
                 working = applyTransactionToProfile(working, emp.id, tx)
             }
         }
-        return RpgOperationResult(state = working, bannerNote = "Репутация скорректирована (-4)")
+        return RpgOperationResult(state = working, bannerNote = "Репутация скорректирована (-4), прокачан ироничный навык за возврат")
     }
 
     /**
@@ -852,7 +1227,29 @@ object RpgProgressionEngine {
             val idempKey = "CARRYOVER_RISK_${empId}_$currentEpochDay"
             if (working.transactions.none { it.idempotencyKey == idempKey }) {
                 val prof = working.profiles.getValue(empId)
-                val riskedStreak = if (prof.streak.currentDays > 0) prof.streak.copy(isAtRisk = true) else prof.streak
+                val fallbackEmp = emp ?: CorporateEmployee(
+                    id = empId,
+                    fullName = empId,
+                    shortName = empId,
+                    position = "Инженер по КИПиА",
+                    role = CorporateRole.WORKER,
+                    groupId = "grp_1",
+                    groupName = "ЛПДС \"Быково\"",
+                    siteId = "site_1",
+                    siteName = "УЭСАиТМ",
+                    supervisorId = null,
+                    phone = "",
+                    email = ""
+                )
+                val (profWithBlameSkill, blameUpgraded) = autoAdvanceProfileSkills(
+                    profile = prof,
+                    employee = fallbackEmp,
+                    skillIdsToAdvance = listOf("sk_irony_blame", "sk_irony_excuse"),
+                    maxAutoGainCount = 1
+                )
+                working = working.copy(profiles = working.profiles + (empId to profWithBlameSkill))
+                val ironySummary = if (blameUpgraded.isNotEmpty()) " • Ирония: ${blameUpgraded.first()}" else ""
+                val riskedStreak = if (profWithBlameSkill.streak.currentDays > 0) profWithBlameSkill.streak.copy(isAtRisk = true) else profWithBlameSkill.streak
                 val tx = XpTransaction(
                     id = "xp_${nowMillis}_ovd_${(100..999).random()}",
                     employeeId = empId,
@@ -860,7 +1257,7 @@ object RpgProgressionEngine {
                     type = XpTransactionType.OVERDUE_PENALTY,
                     xpDelta = 0,
                     reputationDelta = -2,
-                    appliedMultipliersSummary = "Перенос невыполненных задач",
+                    appliedMultipliersSummary = "Перенос невыполненных задач$ironySummary",
                     reason = "Автоперенос незакрытых задач на следующий день",
                     idempotencyKey = idempKey,
                     createdAtMillis = nowMillis
@@ -1103,7 +1500,7 @@ object RpgProgressionEngine {
         employees: List<CorporateEmployee>
     ): List<LeaderboardEntry> {
         return employees.mapNotNull { emp ->
-            val prof = state.profiles[emp.id] ?: EmployeeRpgProfile(emp.id)
+            val prof = state.profileForEmployee(emp)
             val isSelf = emp.id == viewer.id
             val isSameGroup = emp.groupId == viewer.groupId ||
                 emp.groupName.equals(viewer.groupName, ignoreCase = true)

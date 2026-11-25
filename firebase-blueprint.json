@@ -586,6 +586,47 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "RpgWorkspaceDocument": {
+      "title": "RpgWorkspaceDocument",
+      "description": "Cloud-synced RPG progression state including XP, skills, achievements, quests, streaks, reputation, and transactions across all site employees.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Workspace RPG state document identifier (e.g., site_rpg_state)."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user who last synced the RPG state."
+        },
+        "payloadJson": {
+          "type": "string",
+          "description": "Serialized JSON payload of RpgWorkspaceState."
+        },
+        "revisionMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds of the latest RPG state mutation."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "userId",
+        "payloadJson",
+        "revisionMillis",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -630,6 +671,12 @@
         "$ref": "#/entities/SiteMemberDocument"
       },
       "description": "Site-wide employee role requests and role assignments managed by the Head."
+    },
+    "/rpg_workspace/{workspaceId}": {
+      "schema": {
+        "$ref": "#/entities/RpgWorkspaceDocument"
+      },
+      "description": "Shared cloud RPG progression state across site employees and supervisors."
     }
   }
 }

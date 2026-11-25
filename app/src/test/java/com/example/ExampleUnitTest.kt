@@ -1918,6 +1918,197 @@ class ExampleUnitTest {
         assertTrue(wrappedVolume.size >= 2)
         assertEquals(longVolume, wrappedVolume.joinToString(" "))
     }
+
+    @Test
+    fun `report orders confirmed tasks first and outputs metadata in exact Organization Subdivision Position Site order`() {
+        val today = LocalDate.of(2026, 11, 17).toEpochDay()
+        val head = CorporateEmployee(
+            id = "emp_head_star",
+            fullName = "Старшинов Максим Юрьевич",
+            shortName = "Старшинов М.Ю.",
+            position = "Начальник",
+            role = CorporateRole.HEAD,
+            groupId = "grp_1",
+            groupName = "ЛПДС \"Быково\"",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = null,
+            phone = "",
+            email = "head@transneft.ru"
+        )
+        val worker = CorporateSeedData.findEmployee("emp_worker_1")
+
+        // Mixed tasks: NEW first, then APPROVED, then IN_PROGRESS, then APPROVED
+        val mixedTasks = listOf(
+            TaskDocument(
+                id = "t_unconf_new",
+                title = "Отнести листы металла в кроссовую",
+                assigneeId = worker.id,
+                assigneeName = "Бойцов Д.С.",
+                groupId = head.groupId,
+                groupName = head.groupName,
+                geoLocation = "УЭСАиТМ",
+                status = TaskStatus.NEW.code,
+                dueDateEpochDay = today
+            ),
+            TaskDocument(
+                id = "t_conf_1",
+                title = "Планерка в 16:00",
+                assigneeId = worker.id,
+                assigneeName = "Плиткин Д.А.",
+                groupId = head.groupId,
+                groupName = head.groupName,
+                geoLocation = "УЭСАиТМ",
+                status = TaskStatus.APPROVED.code,
+                approvedByName = head.fullName,
+                dueDateEpochDay = today
+            ),
+            TaskDocument(
+                id = "t_unconf_prog",
+                title = "Заполнение песком еврокубов",
+                assigneeId = worker.id,
+                assigneeName = "Абрамов А.А.",
+                groupId = head.groupId,
+                groupName = head.groupName,
+                geoLocation = "УЭСАиТМ",
+                status = TaskStatus.IN_PROGRESS.code,
+                dueDateEpochDay = today
+            ),
+            TaskDocument(
+                id = "t_conf_2",
+                title = "Пуск МНА-2 на холостом ходу. Маскирование защит",
+                assigneeId = worker.id,
+                assigneeName = "Старшинов М.Ю.",
+                groupId = head.groupId,
+                groupName = head.groupName,
+                geoLocation = "УЭСАиТМ",
+                status = TaskStatus.APPROVED.code,
+                approvedByName = head.fullName,
+                dueDateEpochDay = today
+            )
+        )
+
+        val tpl = ReportTemplateDocument(
+            id = "tpl_order_test",
+            name = "Отчет за текущий день",
+            reportType = ReportType.DAILY_REPORT.code,
+            sheetLayout = SheetLayout.SINGLE_SHEET.code,
+            exportFormat = ExportFormat.PDF.code
+        )
+
+        val preview = ReportDocumentGenerator.buildPreview(
+            actor = head,
+            template = tpl,
+            allTasks = mixedTasks,
+            currentEpochDay = today,
+            contentScope = com.example.domain.reporting.ReportContentScope.REPORT_ONLY,
+            allEmployees = listOf(head, worker)
+        )
+
+        // 1. Metadata strictly follows: Организация, Подразделение, Должность, Участок
+        assertEquals(
+            "ООО «Транснефть-Балтика», ЛПДС \"Быково\", Начальник, Участок: УЭСАиТМ — Старшинов Максим Юрьевич",
+            preview.preparedByLabel
+        )
+        assertTrue(preview.signatureBlock.first().contains("ООО «Транснефть-Балтика», ЛПДС \"Быково\", Начальник, Участок: УЭСАиТМ"))
+
+        // 2. Confirmed reports ALWAYS come first (rows 0 and 1), uncompleted/unconfirmed come after (rows 2 and 3)
+        val rows = preview.sheets.single().sections.single().rows
+        assertEquals(4, rows.size)
+        assertTrue(ReportDocumentGenerator.isConfirmedReportRow(rows[0]))
+        assertTrue(ReportDocumentGenerator.isConfirmedReportRow(rows[1]))
+        assertFalse(ReportDocumentGenerator.isConfirmedReportRow(rows[2]))
+        assertFalse(ReportDocumentGenerator.isConfirmedReportRow(rows[3]))
+        assertTrue(preview.summaryText.contains("ЧАСТЬ 1. ПОДТВЕРЖДЁННЫЕ ОТЧЁТЫ (2 поз.)"))
+        assertTrue(preview.summaryText.contains("ЧАСТЬ 2. НЕВЫПОЛНЕННЫЕ И НЕПОДТВЕРЖДЁННЫЕ ЗАДАЧИ (2 поз.)"))
+    }
+
+    @Test
+    fun `rpg automatically distributes skill experience by task work nature, handles humorous skills on rejection and adapts names for ASUTP OGE OGM OEN`() {
+        val today = CorporateSeedData.BASE_EPOCH_DAY
+        val asutpWorker = CorporateEmployee(
+            id = "emp_asutp_1",
+            fullName = "Плиткин Дмитрий Александрович",
+            shortName = "Плиткин Д.А.",
+            position = "Инженер по КИПиА",
+            role = CorporateRole.WORKER,
+            groupId = "grp_1",
+            groupName = "ЛПДС \"Быково\"",
+            siteId = "site_1",
+            siteName = "УЭСАиТМ",
+            supervisorId = null,
+            phone = "",
+            email = "kip@site.ru"
+        )
+        val head = CorporateSeedData.findEmployee("emp_head_1")
+
+        // 1. Physical + Mental ASUTP + Documentation task automatically levels matching skill branches
+        val complexAsutpTask = TaskDocument(
+            id = "t_auto_skill_1",
+            title = "Монтаж шкафа ССВД МНС-2, наладка ПЛК SCADA и заполнение кабельного журнала",
+            description = "Взять болгарку 150мм, подключить датчик Метран 4-20мА и оформить акт поверки",
+            assigneeId = asutpWorker.id,
+            assigneeName = asutpWorker.shortName,
+            groupId = asutpWorker.groupId,
+            groupName = asutpWorker.groupName,
+            geoLocation = "УЭСАиТМ",
+            priority = TaskPriority.HIGH.code,
+            dueDateEpochDay = today
+        )
+
+        val natures = RpgProgressionEngine.classifyTaskWorkNatures(complexAsutpTask)
+        assertTrue(com.example.domain.rpg.TaskWorkNature.PHYSICAL_LABOR in natures)
+        assertTrue(com.example.domain.rpg.TaskWorkNature.MENTAL_AUTOMATION_ELECTRICAL in natures)
+        assertTrue(com.example.domain.rpg.TaskWorkNature.DOCUMENTATION_AND_SCHEMES in natures)
+
+        var state = RpgWorkspaceState()
+        val compRes = RpgProgressionEngine.recordTaskCompletionOrApproval(
+            state = state,
+            task = complexAsutpTask,
+            assignees = listOf(asutpWorker),
+            supervisor = head,
+            currentEpochDay = today,
+            isApprovalStep = true
+        )
+        state = compRes.state
+        val profAfterGoodTask = state.profiles.getValue(asutpWorker.id)
+        assertTrue("Skills should auto-advance without manual SP spend", profAfterGoodTask.skills.sumOf { it.level } >= 1)
+
+        // 2. Poor execution (rejection & carryover) automatically advances humorous skills
+        val rejectedRes = RpgProgressionEngine.recordTaskRejection(
+            state = state,
+            task = complexAsutpTask,
+            assignees = listOf(asutpWorker),
+            supervisor = head,
+            reason = "Синяя изолента вместо клемм WAGO"
+        )
+        state = rejectedRes.state
+        val profAfterReject = state.profiles.getValue(asutpWorker.id)
+        assertTrue(
+            "Humorous excuse skill must auto-advance on task rejection",
+            (profAfterReject.skills.firstOrNull { it.skillId == "sk_irony_excuse" }?.level ?: 0) >= 1
+        )
+
+        state = RpgProgressionEngine.processCarryoverPenalties(
+            state = state,
+            movedTasks = listOf(complexAsutpTask),
+            employees = listOf(asutpWorker, head),
+            currentEpochDay = today + 1L
+        )
+        val profAfterCarryover = state.profiles.getValue(asutpWorker.id)
+        assertTrue(
+            "Humorous blame skill must auto-advance on task carryover",
+            (profAfterCarryover.skills.firstOrNull { it.skillId == "sk_irony_blame" }?.level ?: 0) >= 1
+        )
+
+        // 3. Service specialization skill naming adapts across УЭСАиТМ (АСУТП), ОГЭ, ОГМ, ОЭН
+        val plcSkill = RpgProgressionEngine.skillCatalog.first { it.id == "sk_mind_plc" }
+        assertTrue(plcSkill.titleForService(com.example.domain.rpg.ServiceSpecialization.ASUTP_UESAITM).contains("ПЛК"))
+        assertTrue(plcSkill.titleForService(com.example.domain.rpg.ServiceSpecialization.OGE).contains("РЗА"))
+        assertTrue(plcSkill.titleForService(com.example.domain.rpg.ServiceSpecialization.OGM).contains("МНА"))
+        assertTrue(plcSkill.titleForService(com.example.domain.rpg.ServiceSpecialization.OEN).contains("МН"))
+    }
 }
+
 
 
